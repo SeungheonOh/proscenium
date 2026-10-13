@@ -98,7 +98,7 @@ const nodeTracks: Tracks = {
  * border its outset too.
  */
 function decorationTracks(type: HostType): Tracks {
-  const frame = type === "window" || type === "web";
+  const frame = type === "window" || type === "mirror" || type === "web";
   return {
     ...nodeTracks,
     blur: [["shaders.blur.blur", number]], dim: [["shaders.dim.amount", number]],

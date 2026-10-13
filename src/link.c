@@ -13,6 +13,7 @@
 
 #include "content.h"
 #include "display.h"
+#include "input.h"
 #include "server.h"
 #include "stage.h"
 
@@ -484,9 +485,40 @@ static bool dispatch(struct director *director, const struct json_value *message
     if (json_is_string(type, "measure")) return measure_texts(director, message, error);
     if (json_is_string(type, "set-clipboard")) {
         const struct json_value *text = json_get(message, "text");
-        if (!text || text->type != JSON_STRING)
-            return protocol_fail(error, "set-clipboard requires text.");
-        clipboard_set_text(server, text->string.chars, text->string.length);
+        if (text && text->type == JSON_STRING) {
+            clipboard_set_text(server, text->string.chars, text->string.length);
+            return true;
+        }
+        const struct json_value *mime = json_get(message, "mime"),
+                                *path = json_get(message, "path");
+        if (!mime || mime->type != JSON_STRING || !path || path->type != JSON_STRING)
+            return protocol_fail(error, "set-clipboard requires text, or a mime type and a file.");
+        return clipboard_set_file(server, mime->string.chars, path->string.chars, error);
+    }
+    if (json_is_string(type, "grab-keyboard") || json_is_string(type, "watch-input")) {
+        bool grab = json_is_string(type, "grab-keyboard");
+        const struct json_value *value = json_get(message, grab ? "grab" : "watch");
+        if (!value || (value->type != JSON_TRUE && value->type != JSON_FALSE))
+            return protocol_fail(error, "%s requires a boolean.",
+                                 grab ? "grab-keyboard" : "watch-input");
+        if (grab) input_grab_keyboard(server, value->type == JSON_TRUE);
+        else server->seat_state.input_watched = value->type == JSON_TRUE;
+        return true;
+    }
+    if (json_is_string(type, "warp-pointer")) {
+        const struct json_value *name = json_get(message, "output");
+        struct output *output =
+            name && name->type == JSON_STRING ? output_by_name(server, name->string.chars) : NULL;
+        if (!output) return protocol_fail(error, "Unknown output.");
+        double position[2];
+        const char *names[] = {"x", "y"};
+        for (int i = 0; i < 2; i++) {
+            const struct json_value *value = json_get(message, names[i]);
+            if (!value || value->type != JSON_NUMBER || !(fabs(value->number) < 1e12))
+                return protocol_fail(error, "warp-pointer requires numbers x and y.");
+            position[i] = value->number;
+        }
+        input_warp_pointer(server, output, position[0], position[1]);
         return true;
     }
     if (json_is_string(type, "capture")) {

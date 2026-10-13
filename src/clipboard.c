@@ -2,13 +2,15 @@
  * The clipboard, for the director.
  *
  * Text a client copies is sent to the director, which keeps the history a menu
- * shows, and the director can set the clipboard. Reads and writes are
- * non-blocking pipe transfers on the event loop, bounded in size and time;
- * selections password managers mark as secret are never read.
+ * shows, and the director can set the clipboard, to text or to a file's data of
+ * any type, such as a screenshot. Reads and writes are non-blocking pipe
+ * transfers on the event loop, bounded in size and time; selections password
+ * managers mark as secret are never read.
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <wlr/types/wlr_data_device.h>
 #include <wlr/types/wlr_primary_selection.h>
@@ -24,6 +26,7 @@
 #define READ_LIMIT (256 * 1024)
 #define TRANSFER_TIMEOUT 2000
 #define WRITE_LIMIT (4 * 1024 * 1024)
+#define FILE_LIMIT (64 * 1024 * 1024)
 #define TRANSFERS_MAX 32
 
 static const char *const TEXT_TYPES[] = {"text/plain;charset=utf-8", "text/plain;charset=UTF-8",
@@ -47,7 +50,7 @@ struct selection_read {
     struct strbuf bytes;
 };
 
-/* Text the compositor owns: the director's clipboard. */
+/* Data the compositor owns: the director's clipboard. */
 struct text_source {
     struct wlr_data_source base;
     struct clipboard *clipboard;
@@ -214,23 +217,63 @@ static void text_destroy(struct wlr_data_source *base) {
 
 static const struct wlr_data_source_impl text_impl = {.send = text_send, .destroy = text_destroy};
 
-void clipboard_set_text(struct server *server, const char *text, size_t length) {
-    if (!server->clipboard || length > WRITE_LIMIT) return;
+/* Own the first seat's selection with LENGTH bytes of DATA, taken over, offered as TYPES. */
+static void offer(struct server *server, char *data, size_t length, const char *const *types,
+                  size_t type_count) {
     struct text_source *source = xcalloc(1, sizeof *source);
     source->clipboard = server->clipboard;
     source->references = 1;
-    /* The text may hold NUL bytes: it is copied by length. */
-    source->text = xmalloc(length + 1);
-    memcpy(source->text, text, length);
-    source->text[length] = '\0';
+    source->text = data;
     source->length = length;
     wlr_data_source_init(&source->base, &text_impl);
-    static const char *const offered[] = {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING"};
-    for (size_t i = 0; i < ARRAY_LENGTH(offered); i++) {
+    for (size_t i = 0; i < type_count; i++) {
         char **entry = wl_array_add(&source->base.mime_types, sizeof *entry);
-        *entry = xstrdup(offered[i]);
+        *entry = xstrdup(types[i]);
     }
     wlr_seat_set_selection(server->seat, &source->base, wl_display_next_serial(server->wl_display));
+}
+
+void clipboard_set_text(struct server *server, const char *text, size_t length) {
+    if (!server->clipboard || length > WRITE_LIMIT) return;
+    /* The text may hold NUL bytes: it is copied by length. */
+    char *copy = xmalloc(length + 1);
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    static const char *const offered[] = {"text/plain;charset=utf-8", "text/plain", "UTF8_STRING"};
+    offer(server, copy, length, offered, ARRAY_LENGTH(offered));
+}
+
+bool clipboard_set_file(struct server *server, const char *mime, const char *path,
+                        struct protocol_error *error) {
+    /* Only files in the runtime directory, which the director writes for this. */
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    size_t prefix = runtime ? strlen(runtime) : 0;
+    if (!prefix || strncmp(path, runtime, prefix) || path[prefix] != '/' || strstr(path, "/.."))
+        return protocol_fail(error, "set-clipboard takes files in the runtime directory.");
+    if (!*mime || strlen(mime) > 255 || strchr(mime, '\n'))
+        return protocol_fail(error, "set-clipboard requires a mime type.");
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat info;
+    if (fd < 0 || fstat(fd, &info) < 0 || !S_ISREG(info.st_mode) || info.st_size > FILE_LIMIT) {
+        if (fd >= 0) close(fd);
+        return protocol_fail(error, "set-clipboard could not read the file.");
+    }
+    size_t length = (size_t)info.st_size, done = 0;
+    char *data = xmalloc(length + 1);
+    while (done < length) {
+        ssize_t count = read(fd, data + done, length - done);
+        if (count <= 0 && !(count < 0 && errno == EINTR)) break;
+        if (count > 0) done += (size_t)count;
+    }
+    close(fd);
+    unlink(path);
+    if (done < length) {
+        free(data);
+        return protocol_fail(error, "set-clipboard could not read the file.");
+    }
+    if (server->clipboard) offer(server, data, length, &mime, 1);
+    else free(data);
+    return true;
 }
 
 /* Client requests. */

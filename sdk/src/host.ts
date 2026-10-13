@@ -57,7 +57,7 @@ export interface Instance extends StageElement {
 type Parent = Instance | Container;
 
 /** Nodes a <Box> can lay out; the rest (bindings, cameras, ...) have no box. */
-const flexItems = new Set<HostType>(["group", "rect", "box", "text", "image", "web", "window"]);
+const flexItems = new Set<HostType>(["group", "rect", "box", "text", "image", "web", "window", "mirror"]);
 const bubblingEvents = new Set(["pointerdown", "pointermove", "pointerup", "wheel"]);
 /** Events that come in streams: as in the DOM, their updates batch instead of rendering at once. */
 const continuousEvents = new Set(["pointermove", "wheel", "drag", "resize", "move", "update"]);

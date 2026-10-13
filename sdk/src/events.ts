@@ -70,6 +70,29 @@ export interface StageRequestEvent extends Partial<StagePointerEvent> {
   edges?: number;
 }
 
+/** Input `useInput` heard, on its way to its target as ever. */
+export interface StageInputEvent {
+  kind: "key" | "button" | "wheel" | "gesture";
+  /** For a key, its keysym name, e.g. "Return". */
+  key?: string;
+  /** For a button, its Linux input code (272 left, 273 right, 274 middle). */
+  button?: number;
+}
+
+/** A key `useKeyboardGrab` took: pressed, repeated while held, or released. */
+export interface StageKeyEvent {
+  /** Its keysym's name with the modifiers applied, e.g. "Return", "a", "A", "question". */
+  key: string;
+  /** What it types, e.g. "a"; empty for keys that type nothing. */
+  text: string;
+  /** Evdev key code, the same whatever the layout. */
+  code: number;
+  pressed: boolean;
+  /** A press the compositor repeats while the key is held. */
+  repeat: boolean;
+  modifiers: Modifier[];
+}
+
 /** Position a native drag left a node at, in its parent space. */
 export interface StageDragEvent {
   x: number;

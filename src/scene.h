@@ -194,6 +194,8 @@ static inline const char *node_string(const struct node *node, enum prop_key key
 double node_number(const struct node *node, enum prop_key key, double fallback);
 /* Whether a numeric property has a displayed value at all. */
 bool node_has_number(const struct node *node, enum prop_key key);
+/* Whether a property is on its way to a new value. */
+bool node_moving(const struct node *node, enum prop_key key);
 /* SHADING's uniforms as displayed, keyframes included, flattened in the shader's order into OUT. */
 void node_shading_values(const struct node *node, const struct shading *shading, float *out);
 /* Seconds SHADING's clock has run at NOW. */

@@ -1,6 +1,7 @@
-export { Background, Box, Camera, GestureBinding, Group, Image, PointerBinding, Rect, Reserve,
-  Screen, Shortcut, Spacer, Text, WheelBinding, Window } from "./components.js";
-export { useCamera, useClipboard, useCompositorInstance, useFocusedWindow, useModifiers, useOutputs,
+export { Background, Box, Camera, GestureBinding, Group, Image, Mirror, PointerBinding, Rect,
+  Reserve, Screen, Shortcut, Spacer, Text, WheelBinding, Window } from "./components.js";
+export { useCamera, useClipboard, useCompositorInstance, useFocusedWindow, useInput, useKeyboardGrab,
+  useModifiers, useOutputs,
   usePersistentReducer, usePersistentState, useShares, useWindow, useWindowIds, useWindows } from "./hooks.js";
 export { ease, instant, spring, tween } from "./motion.js";
 export { matrix3d, perspective, rotate, rotate3d, rotateX, rotateY, rotateZ, scale, skew, translate,
@@ -19,13 +20,15 @@ export type { CubicBezier, Easing, EasingFunction, Motion, SpringOptions,
   TweenOptions } from "./motion.js";
 export type { Color } from "./color.js";
 export type { AnimatedValues, BackgroundProps, BindingAction, Border, BoxProps, CameraProps, Cursor,
-  DragProps, ElementProps, GestureBindingProps, Grid, GroupProps, ImageProps, ModifierName, Paint,
+  DragProps, ElementProps, GestureBindingProps, Grid, GroupProps, ImageProps, MirrorProps,
+  ModifierName, Paint,
   PaintValues, PointerBindingProps, RectProps, ReserveProps, ScreenProps, Shadow, ShaderProps,
   ShapeProps, ShortcutProps, Style, TextContent, TextProps, Transition,
   WheelBindingProps, WindowProps } from "./props.js";
 export type { Dimension, FlexContainerProps, FlexItemProps, LayoutBox } from "./layout.js";
 export type { Modifier, StageBubblingEvent, StageDragEvent, StageElement,
-  StageErrorEvent, StageEvent, StageGestureEvent, StageLoadEvent, StageMeasureEvent,
+  StageErrorEvent, StageEvent, StageGestureEvent, StageInputEvent, StageKeyEvent, StageLoadEvent,
+  StageMeasureEvent,
   StagePointerEvent, StageRequestEvent, StageResizeEvent,
   StageWheelEvent } from "./events.js";
 export type { CameraInfo, OutputInfo, Rectangle, ShareInfo, WindowInfo } from "./store.js";
@@ -76,4 +79,14 @@ export function getCamera(output?: string): CameraInfo | undefined {
 /** Move a camera (every output's, unless OUTPUT is given), always, even to where it already was. */
 export function moveCamera(move: CameraMove, options?: { output?: string; transition?: Motion }): void {
   currentSession().moveCamera(move, options);
+}
+
+/** Put DATA on the clipboard as MIME, e.g. a screenshot's PNG as "image/png". */
+export function copyData(mime: string, data: Uint8Array): Promise<void> {
+  return currentSession().copyData(mime, data);
+}
+
+/** Move the pointer to (X, Y) on OUTPUT, in its logical pixels, as if it had moved there. */
+export function warpPointer(output: string, x: number, y: number): void {
+  currentSession().warpPointer(output, x, y);
 }

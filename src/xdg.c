@@ -22,7 +22,7 @@ struct popup {
 struct surface_watch {
     struct server *server;
     struct wlr_surface *surface;
-    struct wl_listener commit, destroy;
+    struct wl_listener client_commit, commit, destroy;
 };
 
 /* The window an xdg surface belongs to, through its chain of popup parents. */
@@ -64,8 +64,18 @@ static void handle_surface_commit(struct wl_listener *listener, void *data) {
     else input_surface_committed(watch->server, watch->surface);
 }
 
+/* Before wlroots applies a commit: what is on screen may have to be kept. */
+static void handle_surface_client_commit(struct wl_listener *listener, void *data) {
+    struct surface_watch *watch = wl_container_of(listener, watch, client_commit);
+    struct window *window = window_of_surface(watch->surface);
+    if (window && window->alive) window_client_commit(window, watch->surface);
+}
+
 static void handle_surface_destroy(struct wl_listener *listener, void *data) {
     struct surface_watch *watch = wl_container_of(listener, watch, destroy);
+    struct window *window = window_of_surface(watch->surface);
+    if (window && window->alive) window_surface_destroying(window);
+    wl_list_remove(&watch->client_commit.link);
     wl_list_remove(&watch->commit.link);
     wl_list_remove(&watch->destroy.link);
     input_surface_destroyed(watch->server, watch->surface);
@@ -78,6 +88,8 @@ static void handle_new_surface(struct wl_listener *listener, void *data) {
     struct surface_watch *watch = xcalloc(1, sizeof *watch);
     watch->server = server;
     watch->surface = surface;
+    watch->client_commit.notify = handle_surface_client_commit;
+    wl_signal_add(&surface->events.client_commit, &watch->client_commit);
     watch->commit.notify = handle_surface_commit;
     wl_signal_add(&surface->events.commit, &watch->commit);
     watch->destroy.notify = handle_surface_destroy;

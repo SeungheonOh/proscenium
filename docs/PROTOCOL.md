@@ -159,7 +159,10 @@ and the runtime then shuts down.
 | `focus` | `window`: id or `null` | Focuses the window on the first seat, or clears focus. |
 | `close` | `window`: id | Asks the client to close. |
 | `camera` | `output`: name or `null` (every output); optional `x`, `y`, `zoom` (> 0), `rotation` (radians); optional `transition` ([motion](#motions)) | Moves cameras even to where they already are; reports come back as `camera`. |
-| `set-clipboard` | `text` | Takes ownership of the first seat's clipboard with the text. |
+| `set-clipboard` | `text`, or `mime` and `path` | Takes ownership of the first seat's clipboard with the text, or with the data of the file at `path` (in `$XDG_RUNTIME_DIR`, at most 64 MiB) offered as `mime`, e.g. `image/png`. The compositor reads the file and deletes it. |
+| `warp-pointer` | `output`, `x`, `y` | Moves the pointer to (`x`, `y`) in the output's logical pixels, as if it had moved there: what it is over now hears it. |
+| `grab-keyboard` | `grab`: boolean | While `true`, keys no shortcut takes come to the director as `key` messages instead of reaching windows and pages, which lose keyboard focus meanwhile. A key goes where its press went until it is released. |
+| `watch-input` | `watch`: boolean | While `true`, every key and button press, wheel motion and gesture start is also told to the director as an `input` message; each still reaches its target. |
 | `share-accept` | `id`, then `window`, or `output` (default: the first) with optional `region {x, y, width, height}` in output-logical pixels | Starts a screen share. The client must have asked for that kind of source, and the region must lie within the output and be at least 8×8. |
 | `share-cancel` | `id` | Declines a pending share or stops a running one. |
 | `capture` | `id` (non-negative integer), then a source as in `share-accept` | Takes a screenshot; answered by `captured`. |
@@ -269,6 +272,7 @@ other. The SDK's `<Rect>` and `<Box>` are sent as `group`.
 | `image` | transform, box, `src`, `fit`, `draggable`, `interactive`, `cursor` |
 | `web` | transform, box, `src`, `data`, `revision`, `focusable`, `interactive`, `autoFocus`, `cursor` |
 | `window` | transform, box, `window`, `fullscreen`, `maximized`, `tiled`, `focusable`, `interactive`, `movable`, `resizable` |
+| `mirror` | transform, box, `window` |
 | `background` | `x`, `y`, `transform`, `opacity`, `visible`, `backface`, `pan`, `cursor` |
 | `camera` | `output`, `x`, `y`, `zoom`, `rotation`, `minZoom`, `maxZoom` |
 | `screen` | `output`, `x`, `y`, `transform`, `opacity`, `visible`, `backface` |
@@ -279,10 +283,18 @@ other. The SDK's `<Rect>` and `<Box>` are sent as `group`.
 | `gesture-binding` | `gesture`, `fingers`, `modifiers`, `action` |
 
 *transform* is `x`, `y`, `transform`, `opacity`, `originX`, `originY`,
-`visible` and `backface`. *box* is `width`, `height` and `radius`. The first six
-types also take the `shaders` key: everything a node shows beyond its own
+`visible` and `backface`. *box* is `width`, `height` and `radius`. The first
+seven types also take the `shaders` key: everything a node shows beyond its own
 content (a window's surfaces, a page, an image, text) comes from
 [shaders](#shaders).
+
+A `window` node shows a client window and configures it to its declared size;
+while its size animates, its content is stretched to the box, and a frame of a
+new size arriving on the way fades in over the previous frame, stretched
+likewise, until the box arrives. A `mirror` draws the same window once more,
+live, in its own box (the window's size without one): it takes no input,
+configures nothing and does not count as presenting the window, though its
+outputs receive the window's frames.
 
 ## Shaders
 
@@ -463,7 +475,7 @@ appends its functions to the node's own.
 A motion is one of:
 
 ```json
-{"type":"spring","stiffness":170,"damping":26,"mass":1,"delay":0}
+{"type":"spring","stiffness":170,"damping":26,"mass":1,"delay":0,"velocity":-1200}
 {"type":"tween","duration":0.25,"ease":[0.25,0.1,0.25,1],"delay":0,"repeat":0}
 {"type":"curve","duration":0.5,"points":[0,0.4,1.1,1],"delay":0,"repeat":0}
 {"type":"instant"}
@@ -471,7 +483,7 @@ A motion is one of:
 
 | Kind | Field rules |
 | --- | --- |
-| `spring` | `stiffness`, `damping` and `mass` must be positive. |
+| `spring` | `stiffness`, `damping` and `mass` must be positive. `velocity`, optional, is the speed in units per second the value starts at when the spring retargets it, in place of the speed it had, as when a gesture lets go; every channel the motion retargets takes it. |
 | `tween` | `duration` must be positive. `ease` is a CSS cubic-bezier with both x values in 0..1, or `null` for linear. `repeat` is 0..10000 extra runs, or `"forever"`. |
 | `curve` | Like `tween`, but its progress follows `points` (2 to 1024 numbers), sampled evenly over `duration` and joined linearly; progress may leave 0..1 in between. |
 | any | `delay` is at least 0. |
@@ -589,6 +601,8 @@ A removed prop is sent as `null`, which restores its default.
 | `shares` | `shares: [{id, app, types, source, window, output}]`. `types` lists `"screen"` and/or `"window"`; `source` is `null` while the share waits for an answer. |
 | `captured` | `id`, `path`, `width`, `height`, or `id` and `error` |
 | `measured` | `results: [{key, width, height}]` |
+| `key` | `key` (keysym name), `text` (what it types, or empty), `code` (evdev), `pressed`, `repeat`, `modifiers`: a key the director's keyboard grab took. Held keys repeat after 500 ms, about 33 times a second. |
+| `input` | `kind` (`key`, `button`, `wheel` or `gesture`); `key` adds `key`, `button` adds `button`: input the director watches. |
 | `event` | `node`, `name`, plus fields; see [Events](#events) |
 | `error` | `message`, `fatal` |
 

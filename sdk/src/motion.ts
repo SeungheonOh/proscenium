@@ -10,7 +10,8 @@ export type Easing =
   | "linear" | "ease" | "ease-in" | "ease-out" | "ease-in-out" | CubicBezier | EasingFunction;
 
 export type Motion =
-  | { type: "spring"; stiffness: number; damping: number; mass: number; delay?: number }
+  | { type: "spring"; stiffness: number; damping: number; mass: number; delay?: number;
+      velocity?: number }
   | { type: "tween"; duration: number; ease: CubicBezier | null; delay?: number;
       repeat?: number | "forever" }
   | { type: "curve"; duration: number; points: number[]; delay?: number;
@@ -27,6 +28,12 @@ export interface SpringOptions {
   bounce?: number;
   /** Seconds to hold the starting value first, e.g. to stagger a list. */
   delay?: number;
+  /**
+   * Units per second the value starts moving at, in place of the velocity it
+   * had: a fling's, when a gesture lets go. It applies whenever the value is
+   * retargeted with this motion, so leave it out once the fling has started.
+   */
+  velocity?: number;
 }
 
 export interface TweenOptions {
@@ -55,10 +62,10 @@ export function spring(options: SpringOptions = {}): Motion {
     const damping = bounce >= 0
       ? 4 * Math.PI * (1 - bounce) * mass / duration
       : 4 * Math.PI * mass / (duration * (1 + bounce));
-    return { type: "spring", stiffness, damping, mass, delay: options.delay };
+    return { type: "spring", stiffness, damping, mass, delay: options.delay, velocity: options.velocity };
   }
   return { type: "spring", stiffness: options.stiffness ?? 170, damping: options.damping ?? 26, mass,
-           delay: options.delay };
+           delay: options.delay, velocity: options.velocity };
 }
 
 /** Samples a sampled easing gets: 120 a second, within the wire's bounds. */

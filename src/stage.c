@@ -14,7 +14,9 @@
 
 bool stage_natural_value(void *data, struct node *node, enum prop_key key, double *out) {
     struct server *server = data;
-    if (node->kind != KIND_WINDOW || (key != PROP_WIDTH && key != PROP_HEIGHT)) return false;
+    if ((node->kind != KIND_WINDOW && node->kind != KIND_MIRROR) ||
+        (key != PROP_WIDTH && key != PROP_HEIGHT))
+        return false;
     struct window *window = window_for_node(server, node);
     if (!window) return false;
     double width, height;
@@ -41,7 +43,8 @@ void node_size(struct server *server, const struct node *node, double *width, do
         *width = node_number(node, PROP_WIDTH, 0);
         *height = node_number(node, PROP_HEIGHT, 0);
         return;
-    case KIND_WINDOW: {
+    case KIND_WINDOW:
+    case KIND_MIRROR: {
         double natural_width = 0, natural_height = 0;
         struct window *window = window_for_node(server, node);
         if (window) window_natural_size(window, &natural_width, &natural_height);
@@ -215,10 +218,7 @@ void stage_reindex(struct server *server) {
     }
     cameras_report(server);
     windows_sync_fallback(server);
-    wl_list_for_each(window, &server->windows, link) {
-        window_configure(window);
-        if (window_presentable(window)) window_refresh_snapshot(window);
-    }
+    wl_list_for_each(window, &server->windows, link) window_configure(window);
     outputs_update_reservations(server);
     windows_sweep_departed(server);
     web_refresh_nodes(server, &walk.webs);

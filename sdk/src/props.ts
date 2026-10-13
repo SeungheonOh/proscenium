@@ -307,6 +307,18 @@ export interface WindowProps extends ShapeProps, MotionProps, ShaderProps, Eleme
   children?: ReactNode;
 }
 
+/**
+ * A window drawn once more, live: its frames as they come, scaled to the box
+ * (its own size without one), with the decorations a Window takes. It takes no
+ * input and does not configure the window.
+ */
+export interface MirrorProps extends ShapeProps, MotionProps, ShaderProps, ElementProps<MirrorProps> {
+  /** Window id from `useWindows()`. */
+  window: number;
+  /** Darken the content, 0..1. */
+  dim?: number;
+}
+
 /** The plane its paints cover; `fill` and `grid` are those of `planePaint`. */
 export interface BackgroundProps extends Omit<TransformProps, "originX" | "originY">, MotionProps,
   PointerHandlers, CursorProps, ShaderProps {
@@ -399,8 +411,8 @@ export interface GestureBindingProps {
 }
 
 export type HostType =
-  | "group" | "rect" | "box" | "text" | "image" | "web" | "window" | "background" | "camera" | "screen"
-  | "reserve"
+  | "group" | "rect" | "box" | "text" | "image" | "web" | "window" | "mirror" | "background" | "camera"
+  | "screen" | "reserve"
   | "shortcut" | "pointer-binding" | "wheel-binding" | "gesture-binding";
 
 type Props = Record<string, unknown>;
@@ -580,6 +592,7 @@ const fields: Record<HostType, Record<string, Writer>> = {
     tiled: flag("tiled"), focusable: flag("focusable"), interactive: flag("interactive"),
     movable: flag("movable"), resizable: flag("resizable"),
   },
+  mirror: { ...box, window: number("window") },
   background: { ...placement, pan: flag("pan"), cursor },
   camera: {
     output: text("output"), x: number("x"), y: number("y"), zoom: number("zoom"), rotation,
@@ -608,12 +621,12 @@ const shadingKeys = new Set(["fill", "fillAngle", "border", "borderAngle", "shad
 
 /** Host types whose nodes take shaders. */
 export const shaderTypes = new Set<HostType>(["group", "rect", "box", "text", "image", "web", "window",
-                                              "background"]);
+                                              "mirror", "background"]);
 
 /** How a decorated node's box paint draws its `border`: inside its box under the content, over
  * the content, or outside the box as a frame. These nodes also take `shadow` and `blur`. */
 const borders: Partial<Record<HostType, "inside" | "over" | "frame">> = {
-  rect: "inside", box: "inside", image: "over", web: "frame", window: "frame",
+  rect: "inside", box: "inside", image: "over", web: "frame", window: "frame", mirror: "frame",
 };
 
 type Uniforms = Record<string, UniformValue>;
@@ -739,7 +752,7 @@ function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
     if (box && style === "over") over.push(box);
     else if (box) under.push(box);
   }
-  if (type === "window" && typeof props.dim === "number")
+  if ((type === "window" || type === "mirror") && typeof props.dim === "number")
     under.push({ id: "dim", shader: dimFilter, uniforms: { amount: props.dim }, transition: motions.dim ?? fallback });
   const all = [...under, ...over, ...rest];
   if (!all.length) return undefined;
@@ -778,7 +791,7 @@ function wireShaderTargets(type: HostType, values: Props): WireProps | undefined
   };
   if (values.shadow && borders[type]) add("shadow", shadowUniforms(values.shadow as Shadow, false));
   if (typeof values.blur === "number" && borders[type]) add("blur", { blur: values.blur });
-  if (typeof values.dim === "number" && type === "window") add("dim", { amount: values.dim });
+  if (typeof values.dim === "number" && (type === "window" || type === "mirror")) add("dim", { amount: values.dim });
   if (type === "background") add("plane", planeUniforms(values, false));
   else if (borders[type]) add("box", boxUniforms(type, values, false));
   for (const [id, uniforms] of Object.entries((values.shaders as Record<string, Uniforms> | undefined) ?? {}))

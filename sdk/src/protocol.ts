@@ -121,6 +121,11 @@ export type ServerMessage =
   | { type: "captured"; id: number; path?: string; width?: number; height?: number; error?: string }
   /** Text sizes for a `measure` request, by its keys. */
   | { type: "measured"; results: { key: number; width: number; height: number }[] }
+  /** A key the director's keyboard grab took. */
+  | { type: "key"; key: string; text: string; code: number; pressed: boolean; repeat: boolean;
+      modifiers: Modifier[] }
+  /** Input the director watches, on its way to its target. */
+  | { type: "input"; kind: "key" | "button" | "wheel" | "gesture"; key?: string; button?: number }
   | WireEvent
   | { type: "error"; message: string; fatal?: boolean };
 
@@ -144,6 +149,13 @@ export type ClientMessage =
   | { type: "focus"; window: number | null }
   | { type: "close"; window: number }
   | { type: "set-clipboard"; text: string }
+  /** Hands the file at PATH, in the runtime directory, to the compositor to offer as MIME. */
+  | { type: "set-clipboard"; mime: string; path: string }
+  | { type: "warp-pointer"; output: string; x: number; y: number }
+  /** While GRAB, keys no shortcut takes come as `key` messages instead of reaching clients. */
+  | { type: "grab-keyboard"; grab: boolean }
+  /** While WATCH, every press, scroll and gesture start is also told as an `input` message. */
+  | { type: "watch-input"; watch: boolean }
   | { type: "share-accept"; id: number; window?: number; output?: string; region?: WireRect }
   | { type: "share-cancel"; id: number }
   | { type: "capture"; id: number; window?: number; output?: string; region?: WireRect }

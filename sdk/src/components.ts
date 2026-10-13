@@ -2,8 +2,8 @@
 
 import { createElement, type FC } from "react";
 import type { BackgroundProps, BoxProps, CameraProps, GestureBindingProps, GroupProps, HostType,
-  ImageProps, PointerBindingProps, RectProps, ReserveProps, ScreenProps, ShortcutProps,
-  TextProps, WheelBindingProps, WindowProps } from "./props.js";
+  ImageProps, MirrorProps, PointerBindingProps, RectProps, ReserveProps, ScreenProps,
+  ShortcutProps, TextProps, WheelBindingProps, WindowProps } from "./props.js";
 
 function host<P>(type: HostType): FC<P> {
   return type as unknown as FC<P>;
@@ -29,6 +29,8 @@ export const Text = host<TextProps>("text");
 export const Image = host<ImageProps>("image");
 /** A client window, configured to `width` x `height` when both are given. */
 export const Window = host<WindowProps>("window");
+/** A window drawn once more, live, at any size: a preview. It takes no input and configures nothing. */
+export const Mirror = host<MirrorProps>("mirror");
 /** Infinite plane with an optional dot or line grid; the natural target for canvas gestures. */
 export const Background = host<BackgroundProps>("background");
 /** Camera of one output, or of every output without its own. */

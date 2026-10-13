@@ -28,6 +28,9 @@ struct motion {
     int references;
     enum motion_kind kind;
     double stiffness, damping, mass;
+    /* A spring may start at its own velocity instead of the value's, e.g. after a fling. */
+    bool has_velocity;
+    double velocity;
     /* Tweens and curves: seconds per run; decay: the time constant. */
     double duration;
     double delay;

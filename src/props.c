@@ -161,6 +161,7 @@ static const struct kind_row KINDS[KIND_COUNT] = {
     [KIND_WHEEL_BINDING] = {"wheel-binding", {PROP_MODIFIERS, PROP_ACTION, END}},
     [KIND_GESTURE_BINDING] = {"gesture-binding",
                               {PROP_GESTURE, PROP_FINGERS, PROP_MODIFIERS, PROP_ACTION, END}},
+    [KIND_MIRROR] = {"mirror", {TRANSFORM_PROPS, BOX_PROPS, PROP_WINDOW, END}},
 };
 
 static bool kind_props[KIND_COUNT][PROP_COUNT];
@@ -198,6 +199,7 @@ bool kind_has_shaders(enum node_kind kind) {
     case KIND_IMAGE:
     case KIND_WEB:
     case KIND_WINDOW:
+    case KIND_MIRROR:
     case KIND_BACKGROUND: return true;
     default: return false;
     }
@@ -569,10 +571,13 @@ struct motion *decode_motion(const struct json_value *raw, struct protocol_error
     bool ok = true;
     if (json_is_string(type, "spring")) {
         motion = motion_create(MOTION_SPRING);
+        const struct json_value *velocity = json_given(raw, "velocity");
         ok = decode_field(raw, "stiffness", 170, true, &motion->stiffness, error) &&
              decode_field(raw, "damping", 26, true, &motion->damping, error) &&
              decode_field(raw, "mass", 1, true, &motion->mass, error) &&
-             decode_field(raw, "delay", 0, false, &motion->delay, error);
+             decode_field(raw, "delay", 0, false, &motion->delay, error) &&
+             (!velocity || finite_number(velocity, "velocity", &motion->velocity, error));
+        motion->has_velocity = velocity != NULL;
     } else if (json_is_string(type, "tween")) {
         motion = motion_create(MOTION_TWEEN);
         ok = decode_field(raw, "duration", 0.25, true, &motion->duration, error) &&

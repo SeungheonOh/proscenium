@@ -52,7 +52,7 @@ session or on a tty; `--headless --size 1280x720` runs it without a display, and
 user unit logging to `$XDG_STATE_HOME/proscenium/run.log`.
 
 The compositor starts XWayland, then the director on `--script`
-(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Six examples ship with it, organized as ordinary React
+(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Seven examples ship with it, organized as ordinary React
 apps:
 
 - [`canvas.tsx`](../examples/canvas.tsx): an infinite canvas with
@@ -66,6 +66,15 @@ apps:
   to go, and workspaces in the bar. Its state is one reducer
   ([`hypr/state.ts`](../examples/hypr/state.ts)) that
   [`HyprProvider`](../examples/hypr/HyprProvider.tsx) shares through context.
+- [`niri.tsx`](../examples/niri.tsx): niri, after its source and defaults:
+  columns on an endless horizontal strip per workspace, workspaces stacked per
+  output, its view-fitting, consume/expel, tabbed columns, presets, floating
+  windows and dialogs, the zoomed-out overview (Super+O, the top left corner or
+  a four-finger swipe), three-finger swipes that carry their momentum, Super-drag
+  moves with an insert hint, the Important Hotkeys overlay, the exit dialog, the
+  screenshot UI and the Alt-Tab switcher with live previews, all with niri's
+  springs and bindings. Its state is one reducer
+  ([`niri/state.ts`](../examples/niri/state.ts)) mirroring niri's layout code.
 - [`meta.tsx`](../examples/meta.tsx): Metaworld, an infinite
   canvas of screen-sized rooms placed anywhere, each a Hyprland-style tiler.
   The canvas pans and zooms freely, and windows on it take input in place.
@@ -219,7 +228,8 @@ compositor animates it at the display's refresh rate with a spring or tween from
 the node's `transition`. Retargeting starts from the displayed value and keeps
 velocity, so interrupted moves stay continuous. Settled channels schedule
 nothing. A window is configured once with its target size, not on every frame;
-its content is stretched to the animated box in between.
+its content is stretched to the animated box in between, and a frame of the new
+size crossfades in over the previous one as the box gets there.
 
 Direct manipulation never waits for the director either. Panning the canvas,
 zooming around the pointer, moving and resizing windows and dragging nodes run
@@ -237,6 +247,7 @@ The module's default export is the root component. Host components:
 | `Camera` | Declares an output's camera: world point at its center, `zoom`, `rotation`, `minZoom`/`maxZoom` and the `transition` of programmatic moves. The camera itself is compositor state; read it with `useCamera()`, move it with `moveCamera()`. No camera means world = output pixels. |
 | `Group` | Transform container; with `width`/`height` (and `radius`) it has a box, which `clip` keeps its children inside, `draggable` lets be dragged and its `shaders` paint. |
 | `Window` | A client window by id. `width`/`height` configure the client; omit them for its natural size. `radius`, `border`, `shadow`, `blur`, `dim`, `fullscreen`, `maximized`, `tiled`, `focusable`, `interactive`; `movable`/`resizable` allow native moves and resizes. A removed window with an `exit` animates out from its last frame, even after its client is gone. |
+| `Mirror` | A window drawn once more, live, at any size, e.g. as a switcher's preview: `window` and the decorations a `Window` takes. It takes no input and configures nothing. |
 | `Rect` | A group drawing a rounded box: `fill` (color or gradient), `radius`, `border`, `shadow`, `blur` (frosted glass), `clip`, `draggable`; pointer handlers. |
 | `Box` | A `Rect` that lays out its children with flexbox; see [Layout](#layout). `Spacer` takes up the free space in a row or column. |
 | `Text` | Text laid out by Pango: `<Text size={14} weight="bold">Hello {name}</Text>`. `font`, `color`, `italic`, `markup` (Pango markup), `width` with `align` and `maxLines`, `lineHeight`; `onMeasure` reports its size. A `Text` inside another styles its part, as in React Native: `<Text>Saved <Text weight="bold">3</Text> files</Text>`. |
@@ -282,7 +293,8 @@ window's own edges.
 
 Motion props:
 
-- `transition`: `spring({ stiffness, damping, mass, delay })`,
+- `transition`: `spring({ stiffness, damping, mass, delay, velocity })` (`velocity`
+  starts the value at that speed, as when a fling lets go; leave it out afterwards),
   `spring({ duration, bounce })`, `tween(seconds, easing, { delay, repeat })`
   (`repeat: Infinity` loops) or `instant`; or per prop,
   `{ default: spring(), opacity: tween(0.15), borderAngle: tween(4, "linear", { repeat: Infinity }) }`.
@@ -325,12 +337,15 @@ Hooks and actions:
 | `useWindow(id)`, `useFocusedWindow(seat?)`, `useModifiers(seat?)` | Compositor state; components re-render only when it changes. `useModifiers` lists the modifiers held, e.g. to end a switcher when they are let go. |
 | `useOutputs()` | Outputs with their size, scale and `workArea` (what the world's `Reserve`s leave). |
 | `useCamera(output?)`, `getCamera(output?)`, `moveCamera(move, options?)` | Where a camera is headed, subscribed or once; move it from code. |
-| `useClipboard()` | Text copied this session, newest first (memory only), and `copy(text)`. |
+| `useClipboard()`, `copyData(mime, data)` | Text copied this session, newest first (memory only), and `copy(text)`; `copyData` puts any data on the clipboard, e.g. a screenshot as `image/png`. |
 | `usePersistentState(key, initial)`, `usePersistentReducer(key, reducer, initial)` | `useState` and `useReducer` that survive hot reloads, remounts and restarts (saved as JSON in `$XDG_STATE_HOME/proscenium/<world name>.json`). |
 | `useCompositorInstance()` | Names the compositor process, or `null` before it says hello. Window ids start over when the compositor restarts, so persistent state keyed by window id should be forgotten when this changes; the examples' `sync` actions do so. |
 | `useShares()`, `acceptShare(id, source)`, `cancelShare(id)` | Screen-sharing requests and running shares; see [Screen sharing](#screen-sharing). |
 | `screenshot(source?)`, `encodePng(shot)` | Pixels of a window, an output or a region of one, at full resolution; PNG encoding runs on a worker thread. |
 | `focus(id \| null)`, `close(id)`, `launch(command)` | Keyboard focus, polite close, start a client on this display. |
+| `warpPointer(output, x, y)` | Moves the pointer there, as if it had moved: e.g. to the middle of an output focused by keyboard. |
+| `useKeyboardGrab(handler \| null)` | Holds the keyboard while a handler is given: keys no `Shortcut` takes come to it (`key`, `text`, `code`, `pressed`, `repeat`, `modifiers`) instead of windows and pages, which lose keyboard focus meanwhile. The latest grab holds it until it lets go. For dialogs, overviews and world-drawn text fields. |
+| `useInput(handler \| null)` | Hears every key and button press, wheel turn and gesture start (`kind`, and `key` or `button`) while a handler is given; each still reaches its target. E.g. to close an overlay at any input. |
 | `dwindle`, `masterStack`, `columns`, `grid`, `inset` | Pure tiling layouts from window ids and an area to boxes. |
 
 The SDK knows only the compositor. What a desktop shows about the rest of the
@@ -494,8 +509,11 @@ that changed it.
 Input is resolved synchronously in the compositor against what was last
 presented, so clients never wait for the director:
 
-1. A matching `Shortcut` consumes a key; everything else goes to the focused
-   window, or to the focused page. A press on a window focuses it
+1. A matching `Shortcut` consumes a key; everything else goes to the world while
+   it holds the keyboard (`useKeyboardGrab`), else to the focused page, else to
+   the focused window. A key goes where its press went until it is released.
+   The pointer needs no such grab: the scene decides where it goes (item 2), so
+   a screen-sized node with handlers already takes it all. A press on a window focuses it
    (click-to-focus), new windows receive focus when they map, and closing the
    focused window returns focus to the latest one still on screen; `focus()`
    overrides all three. A client asking to be activated is focused, unless its
@@ -519,7 +537,9 @@ presented, so clients never wait for the director:
 6. Updates from a press render before the next event is handled, like a click
    in React DOM; updates from moves, wheels and drags are batched.
 
-Shortcuts and bindings are inactive while no director is connected.
+Shortcuts and bindings are inactive while no director is connected, and a
+director that goes away gives the keyboard back. `useInput` only listens: what
+it hears still reaches its target, and nothing waits for the director.
 
 Over a client the pointer shows the cursor that client set. Elsewhere it shows
 the `cursor` of the node under it, inherited from its parents, as CSS names it

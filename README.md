@@ -62,9 +62,10 @@ director leaves windows in a fallback cascade rather than hiding them. Options:
 itself (`scripts/setup-desktop-session`), so screen sharing reaches the world's
 share picker.
 
-Examples: `hypr` (tiling workspaces), `deck` (windows as playing cards),
-`shelf` (windows as books), `cube` (workspaces on a turning cube), `meta`
-(rooms on an infinite canvas), `canvas` (a zoomable canvas with a minimap).
+Examples: `hypr` (tiling workspaces), `niri` (niri's scrollable tiling),
+`deck` (windows as playing cards), `shelf` (windows as books), `cube`
+(workspaces on a turning cube), `meta` (rooms on an infinite canvas), `canvas`
+(a zoomable canvas with a minimap).
 
 ## Documentation
 

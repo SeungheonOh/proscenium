@@ -212,7 +212,7 @@ void channel_retarget(struct channel *channel, double target, struct motion *mot
         set_motion(channel, motion);
         channel->start_time = time;
         channel->start_value = channel->value;
-        channel->start_velocity = channel->velocity;
+        channel->start_velocity = motion->has_velocity ? motion->velocity : channel->velocity;
     }
 }
 

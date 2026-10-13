@@ -3,10 +3,13 @@
 // and actions reach through `currentSession`.
 
 import { spawn } from "node:child_process";
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { ReactNode } from "react";
 import { Connection } from "./connection.js";
 import { Container, createRoot, reconciler } from "./host.js";
+import type { StageInputEvent, StageKeyEvent } from "./events.js";
 import type { ServerMessage } from "./protocol.js";
 import { type Motion, wireMotion } from "./motion.js";
 import { Store, type Rectangle } from "./store.js";
@@ -55,6 +58,10 @@ export class Session {
   private readonly screenshots = new Map<number, {
     resolve: (shot: Screenshot) => void; reject: (error: Error) => void }>();
   private nextScreenshot = 1;
+  private nextClipboardFile = 1;
+  /** Whoever holds the keyboard, latest last: only the latest hears keys. */
+  private readonly grabs: ((event: StageKeyEvent) => void)[] = [];
+  private readonly watchers = new Set<(event: StageInputEvent) => void>();
 
   constructor(options: SessionOptions) {
     if (current) throw new Error("A Stage session is already running.");
@@ -146,6 +153,54 @@ export class Session {
     this.connection.send({ type: "set-clipboard", text });
   }
 
+  /** Put DATA on the clipboard as MIME, e.g. a PNG as "image/png". */
+  async copyData(mime: string, data: Uint8Array): Promise<void> {
+    // The compositor reads the file from the runtime directory and deletes it.
+    const directory = process.env.XDG_RUNTIME_DIR ?? tmpdir();
+    const path = join(directory, `proscenium-clipboard-${process.pid}-${this.nextClipboardFile++}`);
+    await writeFile(path, data, { mode: 0o600 });
+    if (this.connection.connected) this.connection.send({ type: "set-clipboard", mime, path });
+    else await rm(path, { force: true });
+  }
+
+  /**
+   * Take the keyboard: until released, keys no shortcut takes go to HANDLER
+   * instead of windows and pages, which lose keyboard focus meanwhile. A later
+   * grab takes over from an earlier one until it is released.
+   */
+  grabKeyboard(handler: (event: StageKeyEvent) => void): () => void {
+    this.grabs.push(handler);
+    if (this.grabs.length === 1) this.sendGrab();
+    return () => {
+      const index = this.grabs.lastIndexOf(handler);
+      if (index < 0) return;
+      this.grabs.splice(index, 1);
+      if (this.grabs.length === 0) this.sendGrab();
+    };
+  }
+
+  /** Hear of every key and button press, scroll and gesture start, which still reach their targets. */
+  watchInput(handler: (event: StageInputEvent) => void): () => void {
+    this.watchers.add(handler);
+    if (this.watchers.size === 1) this.sendWatch();
+    return () => {
+      if (this.watchers.delete(handler) && this.watchers.size === 0) this.sendWatch();
+    };
+  }
+
+  private sendGrab(): void {
+    if (this.connection.connected) this.connection.send({ type: "grab-keyboard", grab: this.grabs.length > 0 });
+  }
+
+  private sendWatch(): void {
+    if (this.connection.connected) this.connection.send({ type: "watch-input", watch: this.watchers.size > 0 });
+  }
+
+  /** Move the pointer to (X, Y) on OUTPUT, in its logical pixels. */
+  warpPointer(output: string, x: number, y: number): void {
+    this.connection.send({ type: "warp-pointer", output, x, y });
+  }
+
   moveCamera(move: CameraMove, options: { output?: string; transition?: Motion } = {}): void {
     this.connection.send({
       type: "camera", output: options.output ?? null, x: move.x, y: move.y, zoom: move.zoom,
@@ -186,8 +241,21 @@ export class Session {
         case "measured":
           this.container.receiveMeasurements(message.results);
           break;
+        case "key": {
+          const { type: _, ...event } = message;
+          this.grabs[this.grabs.length - 1]?.(event);
+          break;
+        }
+        case "input": {
+          const { type: _, ...event } = message;
+          for (const watcher of [...this.watchers]) watcher(event);
+          break;
+        }
         case "welcome":
           this.store.apply(message);
+          // A new connection starts with the keyboard free and nothing watched.
+          if (this.grabs.length) this.sendGrab();
+          if (this.watchers.size) this.sendWatch();
           this.container.requestResync();
           // Before React's first commit there is nothing to show yet; replaying
           // an empty tree would briefly hide every window.

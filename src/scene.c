@@ -227,6 +227,14 @@ struct mat4 node_matrix(const struct node *node, double width, double height) {
                              node_number(node, PROP_Y, 0));
 }
 
+bool node_moving(const struct node *node, enum prop_key key) {
+    const struct prop_channels *channels = &node->channels[key];
+    for (int i = 0; i < channels->count; i++) {
+        if (channels->items[i].motion) return true;
+    }
+    return false;
+}
+
 double node_target(const struct node *node, enum prop_key key, double fallback) {
     const struct prop_channels *channels = &node->channels[key];
     if (channels->count == 1) return from_channel(key, channels->items[0].target);

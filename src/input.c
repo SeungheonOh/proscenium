@@ -75,6 +75,15 @@ struct pressed_key {
     uint32_t keycode;
     struct node *shortcut; /* referenced; NULL for a key forwarded */
     bool repeat;
+    /* The director held the keyboard when it was pressed: its release goes there too. */
+    bool grabbed;
+};
+
+/* A key as the director hears of it: its keysym's name and the text it types. */
+struct key_names {
+    char name[64];
+    char text[16];
+    bool repeats;
 };
 
 struct input {
@@ -110,6 +119,9 @@ struct input {
     struct vec pressed;   /* struct pressed_key */
     struct wl_event_source *repeat_timer;
     struct node *repeating;
+    /* Or a key the director's keyboard grab repeats. */
+    bool repeating_grab;
+    struct key_names repeat_names;
     uint32_t repeat_keycode;
 
     struct wlr_drag *drag;
@@ -554,6 +566,9 @@ void input_release_director(struct server *server) {
     }
     set_ref(&in->gesture, NULL);
     set_ref(&in->entered, NULL);
+    /* What the director held goes back to clients. */
+    server->seat_state.input_watched = false;
+    input_grab_keyboard(server, false);
 }
 
 /* Bindings. */
@@ -815,23 +830,56 @@ static void emit_simple(struct server *server, struct node *node, enum event_nam
     if (event_begin(server, &event, node, name)) event_end(server, &event);
 }
 
+/* A key to the director holding the keyboard. */
+static void send_key(struct server *server, uint32_t keycode, const struct key_names *names,
+                     bool pressed, bool repeat) {
+    struct message message;
+    message_begin(&message, "key");
+    json_key(&message.writer, "key");
+    json_string(&message.writer, names->name);
+    json_key(&message.writer, "text");
+    json_string(&message.writer, names->text);
+    json_key(&message.writer, "code");
+    json_int(&message.writer, keycode);
+    json_key(&message.writer, "pressed");
+    json_bool(&message.writer, pressed);
+    json_key(&message.writer, "repeat");
+    json_bool(&message.writer, repeat);
+    json_key(&message.writer, "modifiers");
+    modifiers_write(server->seat_state.modifiers, &message.writer);
+    message_send(server, &message, NULL);
+}
+
 static int repeat_fired(void *data) {
     struct server *server = data;
     struct input *in = input_of(server);
-    if (!in->repeating || !link_connected(server)) return 0;
-    emit_simple(server, in->repeating, EVENT_PRESS);
+    if (!link_connected(server)) return 0;
+    if (in->repeating) emit_simple(server, in->repeating, EVENT_PRESS);
+    else if (in->repeating_grab)
+        send_key(server, in->repeat_keycode, &in->repeat_names, true, true);
+    else return 0;
     wl_event_source_timer_update(in->repeat_timer, REPEAT_INTERVAL);
     return 0;
 }
 
 static void stop_repeat(struct input *in) {
     set_ref(&in->repeating, NULL);
+    in->repeating_grab = false;
     if (in->repeat_timer) wl_event_source_timer_update(in->repeat_timer, 0);
 }
 
-/* True when a shortcut consumed the key. */
-static bool handle_shortcut(struct server *server, uint32_t keycode, const xkb_keysym_t *syms,
-                            int count, bool pressed) {
+static void start_repeat(struct server *server, uint32_t keycode) {
+    struct input *in = input_of(server);
+    in->repeat_keycode = keycode;
+    if (!in->repeat_timer)
+        in->repeat_timer = wl_event_loop_add_timer(server->loop, repeat_fired, server);
+    wl_event_source_timer_update(in->repeat_timer, REPEAT_DELAY);
+}
+
+/* True when a shortcut, or the director holding the keyboard, took the key. A key
+ * keeps going where its press went until it is released. */
+static bool take_key(struct server *server, uint32_t keycode, const xkb_keysym_t *syms, int count,
+                     const struct key_names *names, bool pressed) {
     struct input *in = input_of(server);
     struct pressed_key *held = NULL;
     size_t held_index = 0;
@@ -845,8 +893,13 @@ static bool handle_shortcut(struct server *server, uint32_t keycode, const xkb_k
     if (!pressed) {
         if (!held) return false;
         struct node *node = held->shortcut;
+        bool grabbed = held->grabbed;
         vec_remove(&in->pressed, held_index);
         if (in->repeat_keycode == keycode) stop_repeat(in);
+        if (grabbed) {
+            if (link_connected(server)) send_key(server, keycode, names, false, false);
+            return true;
+        }
         if (!node) return false;
         emit_simple(server, node, EVENT_RELEASE);
         node_unref(node);
@@ -854,29 +907,70 @@ static bool handle_shortcut(struct server *server, uint32_t keycode, const xkb_k
     }
     if (held) {
         /* A key the backend repeats itself. */
+        if (held->grabbed) {
+            if (link_connected(server)) send_key(server, keycode, names, true, true);
+            return true;
+        }
         if (!held->shortcut) return false;
         if (held->repeat) emit_simple(server, held->shortcut, EVENT_PRESS);
         return true;
     }
+    bool connected = link_connected(server);
     struct shortcut *shortcut =
-        link_connected(server)
-            ? match_shortcut(in, keycode, syms, count, server->seat_state.modifiers)
-            : NULL;
+        connected ? match_shortcut(in, keycode, syms, count, server->seat_state.modifiers) : NULL;
     struct pressed_key *key = vec_push(&in->pressed);
     key->keycode = keycode;
-    if (!shortcut) return false;
+    if (!shortcut) {
+        if (!connected || !server->seat_state.keyboard_grabbed) return false;
+        key->grabbed = true;
+        send_key(server, keycode, names, true, false);
+        if (names->repeats) {
+            stop_repeat(in);
+            in->repeating_grab = true;
+            in->repeat_names = *names;
+            start_repeat(server, keycode);
+        }
+        return true;
+    }
     node_ref(shortcut->node);
     key->shortcut = shortcut->node;
     key->repeat = shortcut->repeat;
     emit_simple(server, shortcut->node, EVENT_PRESS);
     if (shortcut->repeat) {
+        stop_repeat(in);
         set_ref(&in->repeating, shortcut->node);
-        in->repeat_keycode = keycode;
-        if (!in->repeat_timer)
-            in->repeat_timer = wl_event_loop_add_timer(server->loop, repeat_fired, server);
-        wl_event_source_timer_update(in->repeat_timer, REPEAT_DELAY);
+        start_repeat(server, keycode);
     }
     return true;
+}
+
+/* A watching director hears of every key and button press, scroll and gesture start,
+ * which go on to their targets as ever, e.g. to close an overlay at any input. */
+static void notify_watcher(struct server *server, const char *kind, const char *key,
+                           int64_t button) {
+    if (!server->seat_state.input_watched || !link_connected(server)) return;
+    struct message message;
+    message_begin(&message, "input");
+    json_key(&message.writer, "kind");
+    json_string(&message.writer, kind);
+    if (key) {
+        json_key(&message.writer, "key");
+        json_string(&message.writer, key);
+    }
+    if (button >= 0) {
+        json_key(&message.writer, "button");
+        json_int(&message.writer, button);
+    }
+    message_send(server, &message, NULL);
+}
+
+void input_grab_keyboard(struct server *server, bool grab) {
+    struct input *in = input_of(server);
+    if (server->seat_state.keyboard_grabbed == grab) return;
+    server->seat_state.keyboard_grabbed = grab;
+    if (!grab && in->repeating_grab) stop_repeat(in);
+    /* Clients and pages lose the keyboard while the director holds it, and get it back. */
+    keyboard_sync_focus(server);
 }
 
 /* Keyboards. */
@@ -913,7 +1007,17 @@ static void handle_key(struct wl_listener *listener, void *data) {
             ? xkb_state_key_get_syms(keyboard->wlr_keyboard->xkb_state, event->keycode + 8, &syms)
             : 0;
     bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
-    if (handle_shortcut(server, event->keycode, syms, count, pressed)) return;
+    struct key_names names = {0};
+    if (count > 0) xkb_keysym_get_name(syms[0], names.name, sizeof names.name);
+    struct xkb_state *xkb = keyboard->wlr_keyboard->xkb_state;
+    if (xkb) {
+        xkb_state_key_get_utf8(xkb, event->keycode + 8, names.text, sizeof names.text);
+        names.repeats = xkb_keymap_key_repeats(xkb_state_get_keymap(xkb), event->keycode + 8);
+    }
+    if (pressed) notify_watcher(server, "key", names.name, -1);
+    if (take_key(server, event->keycode, syms, count, &names, pressed)) return;
+    /* While the director holds the keyboard, keys pressed before reach no one. */
+    if (server->seat_state.keyboard_grabbed) return;
     struct web_page *page = server->seat_state.focused_page;
     if (page) {
         web_page_key(page, event->keycode, syms, count, pressed,
@@ -929,7 +1033,7 @@ static void handle_modifiers(struct wl_listener *listener, void *data) {
     struct server *server = keyboard->server;
     uint32_t modifiers = wlr_keyboard_get_modifiers(keyboard->wlr_keyboard);
     set_modifiers(server, stage_modifiers(modifiers));
-    if (server->seat_state.focused_page)
+    if (server->seat_state.focused_page && !server->seat_state.keyboard_grabbed)
         web_page_modifiers(server->seat_state.focused_page, modifiers);
     wlr_seat_set_keyboard(server->seat, keyboard->wlr_keyboard);
     wlr_seat_keyboard_notify_modifiers(server->seat, &keyboard->wlr_keyboard->modifiers);
@@ -959,7 +1063,7 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data) {
 void keyboard_sync_focus(struct server *server) {
     struct input *in = input_of(server);
     struct seat_state *state = &server->seat_state;
-    struct web_page *page = state->focused_page;
+    struct web_page *page = state->keyboard_grabbed ? NULL : state->focused_page;
     if (page != in->keyboard_page) {
         if (in->keyboard_page) web_page_focus(in->keyboard_page, false);
         in->keyboard_page = page;
@@ -967,7 +1071,8 @@ void keyboard_sync_focus(struct server *server) {
     }
     struct window *window = state->focused;
     struct wlr_surface *surface =
-        !page && window && window_presentable(window) ? window->surface : NULL;
+        !page && !state->keyboard_grabbed && window && window_presentable(window) ? window->surface
+                                                                                  : NULL;
     if (surface == server->seat->keyboard_state.focused_surface) return;
     if (!surface) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
@@ -978,13 +1083,15 @@ void keyboard_sync_focus(struct server *server) {
         wlr_seat_keyboard_notify_enter(server->seat, surface, NULL, 0, NULL);
         return;
     }
-    /* Keys a shortcut took are never released to clients, so the client is not told of them. */
+    /* Keys a shortcut or the director took are never released to clients, so the client is
+     * not told of them. */
     uint32_t keycodes[WLR_KEYBOARD_KEYS_CAP];
     size_t count = 0;
     for (size_t i = 0; i < keyboard->num_keycodes; i++) {
         bool taken = false;
         VEC_FOR(&in->pressed, struct pressed_key, key) {
-            if (key->keycode == keyboard->keycodes[i] && key->shortcut) taken = true;
+            if (key->keycode == keyboard->keycodes[i] && (key->shortcut || key->grabbed))
+                taken = true;
         }
         if (!taken) keycodes[count++] = keyboard->keycodes[i];
     }
@@ -1141,6 +1248,11 @@ static void after_motion(struct server *server) {
     if (drag_active(server)) drag_frames(server);
 }
 
+void input_warp_pointer(struct server *server, struct output *output, double x, double y) {
+    wlr_cursor_warp_closest(server->cursor, NULL, output->offset + x, y);
+    after_motion(server);
+}
+
 static void handle_motion(struct wl_listener *listener, void *data) {
     struct server *server = wl_container_of(listener, server, cursor_motion);
     struct wlr_pointer_motion_event *event = data;
@@ -1175,6 +1287,7 @@ static void handle_button(struct wl_listener *listener, void *data) {
     struct server *server = wl_container_of(listener, server, cursor_button);
     struct wlr_pointer_button_event *event = data;
     bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
+    if (pressed) notify_watcher(server, "button", NULL, event->button);
     if (drag_active(server)) {
         wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
         struct input *in = input_of(server);
@@ -1233,6 +1346,7 @@ static void handle_axis(struct wl_listener *listener, void *data) {
     struct server *server = wl_container_of(listener, server, cursor_axis);
     struct input *in = input_of(server);
     struct wlr_pointer_axis_event *event = data;
+    if (event->delta) notify_watcher(server, "wheel", NULL, -1);
     struct node *binding = find_binding(server, KIND_WHEEL_BINDING, NULL, NULL);
     struct event message;
     if (binding) {
@@ -1322,6 +1436,7 @@ static void gesture_fields(struct json_writer *w, uint32_t fingers, double dx, d
 /* True when a binding took the gesture; otherwise the client under the pointer gets it. */
 static bool gesture_begin(struct server *server, int gesture, uint32_t fingers) {
     struct input *in = input_of(server);
+    notify_watcher(server, "gesture", NULL, -1);
     struct gesture_match match = {gesture, fingers};
     struct node *binding = find_binding(server, KIND_GESTURE_BINDING, gesture_matches, &match);
     set_ref(&in->gesture, binding);

@@ -122,6 +122,8 @@ struct diffed {
 struct transform_entry {
     void *client; /* struct window * or struct web_page * */
     struct mat3 transform;
+    /* A mirror's: it takes damage, but popups and input follow the window itself. */
+    bool mirror;
 };
 
 struct display {
@@ -552,16 +554,69 @@ static void surface_uv(const struct surface_draw *draw, double uv[8]) {
     }
 }
 
-/* Client content coordinates to the node's local WIDTH x HEIGHT box. */
-static struct mat3 content_transform(struct window *window, double width, double height) {
-    struct wlr_box bounds = window_bounds(window);
+/* Client content coordinates within BOUNDS to the node's local WIDTH x HEIGHT box. */
+static struct mat3 content_transform(struct wlr_box bounds, double width, double height) {
     double scale_x = width / fmax(1, bounds.width), scale_y = height / fmax(1, bounds.height);
     return mat3_affine(scale_x, 0, 0, scale_y, -scale_x * bounds.x, -scale_y * bounds.y);
 }
 
+/* The item of one surface of a window's frame, through CONTENT; PART tells the live
+ * frame from one fading out. */
+static struct item *emit_surface(struct emit *e, struct node *node, struct window *window,
+                                 const struct surface_draw *draw, struct mat3 t,
+                                 struct mat3 content, double width, double height, double radius,
+                                 double opacity, const struct filter *filter, int part, int index) {
+    double local_x, local_y;
+    mat3_apply(content, draw->x, draw->y, &local_x, &local_y);
+    struct box box = {local_x, local_y, draw->width * content.a, draw->height * content.d};
+    struct item *item =
+        emit_item(e, node->id, part, index, mat3_box_bounds(t, box, 1), ITEM_SURFACE);
+    if (!item) return NULL;
+    item->surface.transform = t;
+    item->surface.box = box;
+    item->surface.mask = (struct box){0, 0, width, height};
+    item->surface.radius = radius;
+    item->surface.opacity = opacity;
+    surface_uv(draw, item->surface.uv);
+    item->signature = signature_of(e, &item->surface, sizeof item->surface);
+    filter_item(e, item, node, filter);
+    item->surface.texture = draw->texture;
+    item->window = window;
+    window_ref(window);
+    item->surface_ptr = draw->surface;
+    if (opacity >= 1 && filter->keeps_opacity) {
+        struct box opaque;
+        bool has_opaque = false;
+        if (draw->opaque_whole) {
+            opaque = (struct box){draw->x, draw->y, draw->width, draw->height};
+            has_opaque = true;
+        } else if (draw->opaque_box_valid) {
+            opaque = (struct box){draw->x + draw->opaque_box.x, draw->y + draw->opaque_box.y,
+                                  draw->opaque_box.width, draw->opaque_box.height};
+            has_opaque = true;
+        }
+        if (has_opaque) {
+            double ox, oy;
+            mat3_apply(content, opaque.x, opaque.y, &ox, &oy);
+            struct box local = {ox, oy, opaque.width * content.a, opaque.height * content.d};
+            /* Only within the box it is masked to, and not at the rounded corners. */
+            item->opaque_valid =
+                box_intersect(local, item->surface.mask, &local) &&
+                opaque_rectangle(e, t, inset_box(local, (double[]){radius, radius, radius, radius}),
+                                 &item->opaque);
+        }
+    }
+    /* A display may show the surface long without drawing it again. */
+    render_touch_mipmap(e->server->renderer, item->key);
+    return item;
+}
+
+/* A window's frame in NODE's box; a MIRROR draws it once more, taking no input. While
+ * a resize crossfades, the frame from before it lies under the new one, which fades in. */
 static void emit_window(struct emit *e, struct node *node, struct mat3 t, double width,
                         double height, double radius, double opacity, const struct filter *filter,
-                        const struct mat3 *inverse, const struct mat3 *parent_inverse) {
+                        const struct mat3 *inverse, const struct mat3 *parent_inverse,
+                        bool mirror) {
     struct window *window = window_for_node(e->server, node);
     if (!window) return;
     bool live = window_presentable(window);
@@ -569,64 +624,33 @@ static void emit_window(struct emit *e, struct node *node, struct mat3 t, double
     if (!live && node->state == NODE_LIVE) return;
     window_surfaces(window, e->surfaces);
     if (!e->surfaces->length || !(width > 0 && height > 0)) return;
-    struct mat3 content = content_transform(window, width, height);
+    double fade = live ? window_fade_progress(window) : 1;
+    if (fade >= 1) window_fade_finished(window);
+    int index = 0;
+    if (fade < 1) {
+        struct mat3 before = content_transform(window->fade_bounds, width, height);
+        VEC_FOR(&window->fade, struct surface_draw, draw)
+            emit_surface(e, node, window, draw, t, before, width, height, radius, opacity, filter,
+                         16, index++);
+    }
+    struct mat3 content = content_transform(window_bounds(window), width, height);
     int shown = 0;
     struct wlr_box content_bounds = {0};
-    int index = 0;
+    index = 0;
     VEC_FOR(e->surfaces, struct surface_draw, draw) {
-        double local_x, local_y;
-        mat3_apply(content, draw->x, draw->y, &local_x, &local_y);
-        double local_width = draw->width * content.a, local_height = draw->height * content.d;
-        struct box box = {local_x, local_y, local_width, local_height};
-        struct item *item =
-            emit_item(e, node->id, 6, index, mat3_box_bounds(t, box, 1), ITEM_SURFACE);
         box_union_wlr(&content_bounds,
                       &(struct wlr_box){draw->x, draw->y, draw->width, draw->height});
-        index++;
-        if (!item) continue;
-        shown++;
-        item->surface.transform = t;
-        item->surface.box = box;
-        item->surface.mask = (struct box){0, 0, width, height};
-        item->surface.radius = radius;
-        item->surface.opacity = opacity;
-        surface_uv(draw, item->surface.uv);
-        item->signature = signature_of(e, &item->surface, sizeof item->surface);
-        filter_item(e, item, node, filter);
-        item->surface.texture = draw->texture;
-        item->window = window;
-        window_ref(window);
-        if (live) item->surface_ptr = draw->surface;
-        if (opacity >= 1 && filter->keeps_opacity) {
-            struct box opaque;
-            bool has_opaque = false;
-            if (draw->opaque_whole) {
-                opaque = (struct box){draw->x, draw->y, draw->width, draw->height};
-                has_opaque = true;
-            } else if (draw->opaque_box_valid) {
-                opaque = (struct box){draw->x + draw->opaque_box.x, draw->y + draw->opaque_box.y,
-                                      draw->opaque_box.width, draw->opaque_box.height};
-                has_opaque = true;
-            }
-            if (has_opaque) {
-                double ox, oy;
-                mat3_apply(content, opaque.x, opaque.y, &ox, &oy);
-                struct box local = {ox, oy, opaque.width * content.a, opaque.height * content.d};
-                /* The rounded corners are not opaque. */
-                item->opaque_valid = opaque_rectangle(
-                    e, t, inset_box(local, (double[]){radius, radius, radius, radius}),
-                    &item->opaque);
-            }
-        }
-        /* A display may show the surface long without drawing it again. */
-        render_touch_mipmap(e->server->renderer, item->key);
+        struct item *item = emit_surface(e, node, window, draw, t, content, width, height, radius,
+                                         opacity * fade, filter, 6, index++);
+        if (item) shown++;
     }
     if (shown && live) {
         struct transform_entry *entry = vec_push(&e->display->transforms);
         entry->client = window;
         entry->transform = mat3_multiply(t, content);
+        entry->mirror = mirror;
     }
-    if (live && node_bool(node, PROP_INTERACTIVE)) {
+    if (live && !mirror && node_bool(node, PROP_INTERACTIVE)) {
         struct mat3 content_inverse;
         if (mat3_invert(content, &content_inverse)) {
             struct hit extra = {
@@ -779,7 +803,9 @@ static void emit_content(struct emit *e, struct node *node, struct mat3 t, doubl
         if (hit_target(e, node)) add_hit(e, node, inverse, pi, false, 0, 0, NULL);
         break;
     case KIND_WINDOW:
-        emit_window(e, node, t, width, height, radius, opacity, &filter, inverse, pi);
+    case KIND_MIRROR:
+        emit_window(e, node, t, width, height, radius, opacity, &filter, inverse, pi,
+                    node->kind == KIND_MIRROR);
         break;
     case KIND_TEXT: emit_text(e, node, t, width, height, opacity, &filter, inverse, pi); break;
     case KIND_IMAGE:
@@ -1244,7 +1270,7 @@ bool display_window_logical_transform(struct output *output, struct window *wind
     struct display *display = output->display;
     if (!display) return false;
     VEC_FOR(&display->transforms, struct transform_entry, entry) {
-        if (entry->client != window) continue;
+        if (entry->client != window || entry->mirror) continue;
         struct mat3 to_logical;
         if (!mat3_invert(screen_transform(output), &to_logical)) return false;
         *out = mat3_multiply(to_logical, entry->transform);

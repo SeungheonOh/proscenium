@@ -2,7 +2,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createElement as h } from "react";
-import { Background, Box, Group, Image, Rect, Shortcut, Text, Window } from "../dist/components.js";
+import { Background, Box, Group, Image, Mirror, Rect, Shortcut, Text, Window } from "../dist/components.js";
+import { Session } from "../dist/session.js";
 import { Container, createRoot, reconciler } from "../dist/host.js";
 import { normalizeProps } from "../dist/props.js";
 import { ease, spring, tween } from "../dist/motion.js";
@@ -259,4 +260,45 @@ test("decorations become standard shaders in the order they draw", () => {
   assert.equal(plane.shader, planePaint.id);
   assert.deepEqual(plane.uniforms.lines, 1);
   assert.deepEqual(background.props.exit, { shaders: { plane: { color: [0, 0, 0, 0] } } });
+});
+
+test("mirrors draw a window again with its decorations", () => {
+  const { render } = mount();
+  const ops = render(h(Mirror, { window: 7, width: 160, height: 90, dim: 0.5,
+                                 border: { width: 2, color: "#fff" } }));
+  const mirror = ops.find((op) => op.op === "create" && op.type === "mirror");
+  assert.deepEqual([mirror.props.window, mirror.props.width, mirror.props.height], [7, 160, 90]);
+  assert.deepEqual(mirror.props.shaders.map((use) => use.id), ["box", "dim"],
+                   "a mirror's border is a frame outside its box, and dim its filter");
+  assert.equal(mirror.props.shaders[0].uniforms.outset, 2);
+});
+
+test("the latest keyboard grab hears keys until it lets go, and watchers hear input", () => {
+  const session = new Session({ socket: "/nonexistent", onError: (error) => { throw error; } });
+  try {
+    const heard = [];
+    const releaseFirst = session.grabKeyboard((event) => heard.push(`first ${event.key}`));
+    const releaseSecond = session.grabKeyboard((event) => heard.push(`second ${event.key}`));
+    const stopWatching = session.watchInput((event) => heard.push(`watch ${event.kind}`));
+    const key = (name) => ({ type: "key", key: name, text: "", code: 1, pressed: true, repeat: false,
+                             modifiers: [] });
+    session.receive(key("a"));
+    releaseSecond();
+    session.receive(key("b"));
+    session.receive({ type: "input", kind: "button", button: 272 });
+    stopWatching();
+    releaseFirst();
+    session.receive(key("c"));
+    session.receive({ type: "input", kind: "wheel" });
+    assert.deepEqual(heard, ["second a", "first b", "watch button"]);
+  } finally {
+    session.stop();
+  }
+});
+
+test("a spring may start at a velocity of its own", () => {
+  assert.deepEqual(JSON.parse(JSON.stringify(spring({ stiffness: 800, damping: 56, velocity: -1200 }))),
+                   { type: "spring", stiffness: 800, damping: 56, mass: 1, velocity: -1200 });
+  const { wire } = normalizeProps("group", { x: 3, transition: spring({ velocity: 40 }) });
+  assert.equal(wire.transition.default.velocity, 40);
 });

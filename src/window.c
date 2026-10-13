@@ -31,6 +31,7 @@ struct window *window_create(struct server *server, enum window_type type) {
     window->alive = true;
     vec_init(&window->nodes, sizeof(struct node *));
     vec_init(&window->snapshot, sizeof(struct surface_draw));
+    vec_init(&window->fade, sizeof(struct surface_draw));
     strbuf_init(&window->report);
     wl_list_insert(server->windows.prev, &window->link);
     idmap_put(&server->windows_by_id, (int64_t)window->id, window);
@@ -47,6 +48,68 @@ void window_release_snapshot(struct window *window) {
     window->snapshot_commit = 0;
 }
 
+static void release_fade(struct window *window) {
+    VEC_FOR(&window->fade, struct surface_draw, draw) wlr_buffer_unlock(draw->buffer);
+    vec_clear(&window->fade);
+    if (window->fade_release) wl_event_source_remove(window->fade_release);
+    window->fade_release = NULL;
+}
+
+/* An idle source runs once and goes, so it is not removed again. */
+static void fade_done(void *data) {
+    struct window *window = data;
+    window->fade_release = NULL;
+    release_fade(window);
+}
+
+void window_fade_finished(struct window *window) {
+    if (window->fade.length && !window->fade_release)
+        window->fade_release = wl_event_loop_add_idle(window->server->loop, fade_done, window);
+}
+
+/* The first node presenting WINDOW, which configures it; NULL for none. */
+static struct node *first_node(struct window *window) {
+    return window->nodes.length ? *(struct node **)vec_at(&window->nodes, 0) : NULL;
+}
+
+double window_fade_progress(struct window *window) {
+    struct node *node = first_node(window);
+    if (!window->fade.length || !node) return 1;
+    if (!node_moving(node, PROP_WIDTH) && !node_moving(node, PROP_HEIGHT)) return 1;
+    double width, height;
+    node_size(window->server, node, &width, &height);
+    double target_width = node_target(node, PROP_WIDTH, width);
+    double target_height = node_target(node, PROP_HEIGHT, height);
+    double span_width = target_width - window->fade_from_width;
+    double span_height = target_height - window->fade_from_height;
+    /* Along the side that changes most: how much of the way from there it has come. */
+    double progress = 1;
+    if (fabs(span_width) >= fabs(span_height) && fabs(span_width) > 0.5)
+        progress = 1 - (target_width - width) / span_width;
+    else if (fabs(span_height) > 0.5) progress = 1 - (target_height - height) / span_height;
+    return CLAMP(progress, 0, 1);
+}
+
+/* A frame of a new size while the box presenting the window still moves: the kept
+ * frame stays, fading out under the new one as the box comes the rest of the way. */
+static void begin_fade(struct window *window) {
+    struct node *node = first_node(window);
+    struct wlr_box bounds = window_bounds(window);
+    if (!window->snapshot.length || !node || !window_presentable(window)) return;
+    if (bounds.width == window->snapshot_bounds.width &&
+        bounds.height == window->snapshot_bounds.height)
+        return;
+    if (!node_moving(node, PROP_WIDTH) && !node_moving(node, PROP_HEIGHT)) return;
+    release_fade(window);
+    /* The kept frame's buffers stay locked, now by the fade. */
+    VEC_FOR(&window->snapshot, struct surface_draw, draw)
+        *(struct surface_draw *)vec_push(&window->fade) = *draw;
+    window->fade_bounds = window->snapshot_bounds;
+    vec_clear(&window->snapshot);
+    window->snapshot_commit = 0;
+    node_size(window->server, node, &window->fade_from_width, &window->fade_from_height);
+}
+
 static void clear_nodes(struct window *window) {
     VEC_FOR(&window->nodes, struct node *, node) node_unref(*node);
     vec_clear(&window->nodes);
@@ -55,9 +118,11 @@ static void clear_nodes(struct window *window) {
 void window_unref(struct window *window) {
     if (--window->references > 0) return;
     window_release_snapshot(window);
+    release_fade(window);
     clear_nodes(window);
     vec_finish(&window->nodes);
     vec_finish(&window->snapshot);
+    vec_finish(&window->fade);
     strbuf_finish(&window->report);
     free(window->title);
     free(window->app_id);
@@ -205,26 +270,51 @@ static bool window_exits(struct window *window) {
     return false;
 }
 
-/* Keep the current frame while it may be needed after the client is gone; each
- * new frame is retained before the previous one is released. */
-static void update_snapshot(struct window *window, struct vec *surfaces) {
-    if (!window_exits(window)) {
+/* Keep the frame on screen now, its buffers locked, to show once the client replaces
+ * or withdraws it. A held buffer cannot be updated in place, so wlroots would upload
+ * each new frame whole: frames are held only on their way out, and let go after. */
+static void hold_frame(struct window *window) {
+    if (!window_presentable(window)) return;
+    if (window->snapshot.length && window->snapshot_commit == window->commit_count) return;
+    struct vec surfaces;
+    vec_init(&surfaces, sizeof(struct surface_draw));
+    window_surfaces(window, &surfaces);
+    if (surfaces.length) {
+        VEC_FOR(&surfaces, struct surface_draw, draw) {
+            if (draw->buffer) wlr_buffer_lock(draw->buffer);
+        }
         window_release_snapshot(window);
+        VEC_FOR(&surfaces, struct surface_draw, draw) {
+            if (!draw->buffer) continue;
+            struct surface_draw *kept = vec_push(&window->snapshot);
+            *kept = *draw;
+            kept->surface = NULL;
+        }
+        window->snapshot_commit = window->commit_count;
+        window->snapshot_bounds = window_bounds(window);
+    }
+    vec_finish(&surfaces);
+}
+
+void window_client_commit(struct window *window, struct wlr_surface *surface) {
+    if (!window_presentable(window) || !(surface->pending.committed & WLR_SURFACE_STATE_BUFFER))
+        return;
+    struct wlr_buffer *next = surface->pending.buffer;
+    if (!next) {
+        /* Withdrawn: an exit may show the last frame. */
+        if (surface == window->surface && window_exits(window)) hold_frame(window);
         return;
     }
-    if (!surfaces->length || window->snapshot_commit == window->commit_count) return;
-    VEC_FOR(surfaces, struct surface_draw, draw) {
-        if (draw->buffer) wlr_buffer_lock(draw->buffer);
-    }
-    window_release_snapshot(window);
-    VEC_FOR(surfaces, struct surface_draw, draw) {
-        if (!draw->buffer) continue;
-        struct surface_draw *kept = vec_push(&window->snapshot);
-        *kept = *draw;
-        kept->surface = NULL;
-    }
-    window->snapshot_commit = window->commit_count;
-    window->snapshot_bounds = window_bounds(window);
+    /* A new size while the box still moves: the old frame fades out under it. */
+    struct node *node = first_node(window);
+    bool resized = next->width != surface->current.buffer_width ||
+                   next->height != surface->current.buffer_height;
+    if (resized && node && (node_moving(node, PROP_WIDTH) || node_moving(node, PROP_HEIGHT)))
+        hold_frame(window);
+}
+
+void window_surface_destroying(struct window *window) {
+    if (window_exits(window)) hold_frame(window);
 }
 
 double window_scale(struct window *window) {
@@ -255,14 +345,6 @@ static void sync_membership(struct window *window, struct vec *surfaces) {
             wlr_surface_set_preferred_buffer_scale(surface, (int32_t)ceil(scale));
         }
     }
-}
-
-void window_refresh_snapshot(struct window *window) {
-    struct vec surfaces;
-    vec_init(&surfaces, sizeof(struct surface_draw));
-    window_surfaces(window, &surfaces);
-    update_snapshot(window, &surfaces);
-    vec_finish(&surfaces);
 }
 
 struct wlr_surface *window_surface_at(struct window *window, double x, double y, double *sx,
@@ -401,11 +483,6 @@ void window_set_resizing(struct window *window, bool resizing) {
     if (window->alive && initialized(window)) send_state(window, WINDOW_RESIZING, resizing);
 }
 
-/* The first node presenting WINDOW, which configures it; NULL for none. */
-static struct node *first_node(struct window *window) {
-    return window->nodes.length ? *(struct node **)vec_at(&window->nodes, 0) : NULL;
-}
-
 /* Send the primary node's declared size and states; the client sees targets, not frames. */
 void window_configure(struct window *window) {
     struct node *node = first_node(window);
@@ -485,7 +562,12 @@ void window_committed(struct window *window, struct wlr_surface *committed) {
         pixman_region32_fini(&damage);
         break;
     }
-    update_snapshot(window, &surfaces);
+    /* Subsurfaces apply their commits before the window's own surface, which settles
+     * the frame: then a held one fades out if the size changed, or is let go. */
+    if (!committed || committed == window->surface) {
+        begin_fade(window);
+        if (window_presentable(window)) window_release_snapshot(window);
+    }
     /* New subsurfaces and popups join the window's outputs. */
     sync_membership(window, &surfaces);
     vec_finish(&surfaces);
@@ -515,6 +597,10 @@ static void window_gone(struct window *window) {
 
 void window_unmapped(struct window *window) {
     struct server *server = window->server;
+    release_fade(window);
+    /* Withdrawn without a last commit, as when the client destroys the window. */
+    if (window_exits(window)) hold_frame(window);
+    else window_release_snapshot(window);
     window->mapped = false;
     windows_sync_fallback(server);
     window_gone(window);

@@ -106,3 +106,7 @@ bool capture_read(struct server *server, const struct capture_source *source,
 
 /* clipboard.c */
 void clipboard_set_text(struct server *server, const char *text, size_t length);
+/* Offer the file at PATH, which the director handed over in its runtime directory, as
+ * MIME; the compositor reads and deletes it. */
+bool clipboard_set_file(struct server *server, const char *mime, const char *path,
+                        struct protocol_error *error);

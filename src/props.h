@@ -29,6 +29,7 @@ enum node_kind {
     KIND_POINTER_BINDING,
     KIND_WHEEL_BINDING,
     KIND_GESTURE_BINDING,
+    KIND_MIRROR,
     KIND_COUNT,
 };
 

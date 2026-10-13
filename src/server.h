@@ -100,6 +100,13 @@ struct window {
     struct vec snapshot; /* struct surface_draw */
     struct wlr_box snapshot_bounds;
     uint64_t snapshot_commit;
+    /* The frame from before a resize, fading out under the new one while the box
+     * presenting the window still moves to its new size: retained buffers, the bounds
+     * they had, and the box's size when the new frame came. */
+    struct vec fade; /* struct surface_draw */
+    struct wlr_box fade_bounds;
+    double fade_from_width, fade_from_height;
+    struct wl_event_source *fade_release;
 
     /* xdg toplevels'; X11 windows listen through their xsurface. */
     struct wl_listener map, unmap, commit, destroy, request_move, request_resize, request_maximize,
@@ -160,6 +167,10 @@ struct seat_state {
     struct vec history; /* struct window *, most recent first */
     struct web_page *focused_page;
     uint32_t modifiers; /* enum modifier bits */
+    /* The director holds the keyboard: keys no shortcut takes go to it, not to clients. */
+    bool keyboard_grabbed;
+    /* The director hears of every press, scroll and gesture start, which go on as ever. */
+    bool input_watched;
 };
 
 struct server {
@@ -256,8 +267,15 @@ void window_report(struct window *window);
 void windows_sync_fallback(struct server *server);
 void window_set_outputs(struct window *window, uint32_t outputs);
 void windows_forget_output(struct server *server, struct output *output);
-void window_refresh_snapshot(struct window *window);
 void window_release_snapshot(struct window *window);
+/* A surface of WINDOW is about to apply a commit, or to go: its frame is held when the
+ * commit replaces it with one of a new size mid-resize, or withdraws it before an exit. */
+void window_client_commit(struct window *window, struct wlr_surface *surface);
+void window_surface_destroying(struct window *window);
+/* How far WINDOW's resize crossfade has come, 0..1; 1 when none runs. */
+double window_fade_progress(struct window *window);
+/* The crossfade is over: its frame goes once this frame is drawn. */
+void window_fade_finished(struct window *window);
 /* The surface at content point (X, Y) and the point within it, or NULL. */
 struct wlr_surface *window_surface_at(struct window *window, double x, double y, double *sx,
                                       double *sy);

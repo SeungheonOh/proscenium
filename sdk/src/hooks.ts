@@ -1,6 +1,6 @@
-import { useCallback, useMemo, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { currentSession } from "./session.js";
-import type { Modifier } from "./events.js";
+import type { Modifier, StageInputEvent, StageKeyEvent } from "./events.js";
 import type { CameraInfo, OutputInfo, ShareInfo, WindowInfo } from "./store.js";
 
 /** Mapped windows in creation order. */
@@ -102,4 +102,34 @@ export function usePersistentReducer<S, A>(key: string, reducer: (state: S, acti
   const dispatch = useCallback((action: A) => setState((previous) => reducer(previous, action)),
                                [setState, reducer]);
   return [state, dispatch];
+}
+
+/** HANDLER, current at every render, behind a stable function; null while there is none. */
+function useLatest<T extends (...args: never[]) => void>(handler: T | null | undefined): T | null {
+  const latest = useRef(handler);
+  latest.current = handler;
+  const stable = useCallback(((...args) => latest.current?.(...args)) as T, []);
+  return handler ? stable : null;
+}
+
+/**
+ * Hear every key and button press, wheel turn and gesture start while HANDLER
+ * is given; they still reach whatever they go to. E.g. to close an overlay at
+ * any input, as niri's hotkey overlay does.
+ */
+export function useInput(handler: ((event: StageInputEvent) => void) | null | undefined): void {
+  const listener = useLatest(handler);
+  useEffect(() => (listener ? currentSession().watchInput(listener) : undefined), [listener]);
+}
+
+/**
+ * Hold the keyboard while HANDLER is given: keys no Shortcut takes come to it
+ * (presses, repeats and releases) instead of reaching windows and pages, which
+ * lose keyboard focus meanwhile. Shortcuts still work. The latest grab holds
+ * the keyboard until it lets go: e.g. a dialog, an overview or a world-drawn
+ * text field.
+ */
+export function useKeyboardGrab(handler: ((event: StageKeyEvent) => void) | null | undefined): void {
+  const listener = useLatest(handler);
+  useEffect(() => (listener ? currentSession().grabKeyboard(listener) : undefined), [listener]);
 }

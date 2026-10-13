@@ -25,6 +25,8 @@ void input_enable_virtual_devices(struct server *server);
 struct output *input_pointer_output(struct server *server, double *x, double *y);
 void input_clamp_pointer(struct server *server);
 void input_center_pointer(struct server *server, struct output *output);
+/* Move the pointer to output-logical (X, Y) on OUTPUT, as if it had moved there. */
+void input_warp_pointer(struct server *server, struct output *output, double x, double y);
 /* After the scene moved under a still pointer on OUTPUT: enter and leave what it is
  * over now. Motion waits for the pointer to move. */
 void input_repick(struct server *server, struct output *output);
@@ -32,6 +34,8 @@ void input_repick(struct server *server, struct output *output);
 void input_install_shortcuts(struct server *server);
 /* Drop captures and gestures owned by a director that went away. */
 void input_release_director(struct server *server);
+/* While GRAB, keys no shortcut takes go to the director instead of clients and pages. */
+void input_grab_keyboard(struct server *server, bool grab);
 void input_forget_window(struct server *server, struct window *window);
 void input_forget_page(struct server *server, struct web_page *page);
 void input_node_dead(struct server *server, struct node *node);

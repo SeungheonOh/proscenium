@@ -12,8 +12,8 @@
  *   wheel STEPS        scroll by notches; negative scrolls up
  *   key NAME...        tap keys by keysym name, e.g. "key Return"
  *   chord MOD+...+NAME hold modifiers (super, ctrl, alt, shift) around a key
- *   hold MOD           press a modifier until "release MOD", e.g. around a drag
- *   release MOD
+ *   hold KEY           press a modifier or key until "release KEY", e.g. around a drag
+ *   release KEY
  *   type TEXT          tap the keys of plain ASCII TEXT
  *   spawn COMMAND      start COMMAND with /bin/sh, not waiting for it
  *   sleep MS
@@ -294,8 +294,15 @@ static bool run(char *line) {
         }
         while (count-- > 0) send_key(held[count], false);
         return ok;
-    } else if ((!strcmp(command, "hold") || !strcmp(command, "release")) && a && modifier_code(a)) {
-        send_key(modifier_code(a), !strcmp(command, "hold"));
+    } else if ((!strcmp(command, "hold") || !strcmp(command, "release")) && a) {
+        uint32_t code = modifier_code(a);
+        bool shifted;
+        if (!code &&
+            !key_for(xkb_keysym_from_name(a, XKB_KEYSYM_CASE_INSENSITIVE), &code, &shifted)) {
+            fprintf(stderr, "drive: no key %s\n", a);
+            return false;
+        }
+        send_key(code, !strcmp(command, "hold"));
     } else if (!strcmp(command, "sleep") && a) {
         sleep_ms(atoi(a));
     } else {

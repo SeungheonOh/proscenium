@@ -1,3 +1,4 @@
+import type { ComponentType } from "react";
 import { Shortcut } from "proscenium";
 import { changeBrightness } from "../lib/system/brightness.js";
 import { mediaCommand } from "../lib/system/media.js";
@@ -5,8 +6,13 @@ import { changeVolume, toggleMute } from "../lib/system/sound.js";
 import { useFlash } from "../hooks/useFlash.js";
 import { LevelIndicator, type Level } from "./LevelIndicator.js";
 
+interface MediaKeysProps {
+  /** Shows the level a key changed; null for a world that shows levels itself. */
+  indicator?: ComponentType<{ level: Level | null }> | null;
+}
+
 /** The media, volume and brightness keys; level changes show briefly. */
-export function MediaKeys() {
+export function MediaKeys({ indicator: Indicator = LevelIndicator }: MediaKeysProps) {
   const [level, showLevel] = useFlash<Level>(1300);
 
   const adjust = (kind: Level, change: () => void) => () => {
@@ -16,7 +22,7 @@ export function MediaKeys() {
 
   return (
     <>
-      <LevelIndicator level={level} />
+      {Indicator && <Indicator level={level} />}
 
       <Shortcut
         keys="XF86AudioRaiseVolume"

@@ -9,6 +9,8 @@ export interface MediaInfo {
   playing: boolean;
   title: string;
   artist: string;
+  /** The track's cover art, as the player gives it: a file:// or https:// URL, or "". */
+  art: string;
   canNext: boolean;
   canPrevious: boolean;
 }
@@ -72,6 +74,7 @@ async function readMedia(): Promise<MediaInfo | null> {
     playing: chosen.values[0] === "Playing",
     title: String(metadata["xesam:title"]?.data ?? ""),
     artist: Array.isArray(artist) ? artist.join(", ") : String(artist ?? ""),
+    art: String(metadata["mpris:artUrl"]?.data ?? ""),
     canNext: chosen.values[2] === true,
     canPrevious: chosen.values[3] === true,
   };

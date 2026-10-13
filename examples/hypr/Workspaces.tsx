@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { memo, useRef, useState } from "react";
+import { memo, useRef, useState, type ReactNode } from "react";
 import {
   GestureBinding,
   Group,
@@ -93,6 +93,7 @@ interface OutputWorkspacesProps {
   output: OutputInfo;
   /** How far a swipe in progress drags the strip, or null when none is. */
   swipeOffset: number | null;
+  background?: (output: OutputInfo) => ReactNode;
 }
 
 /**
@@ -100,7 +101,7 @@ interface OutputWorkspacesProps {
  * Workspaces no output shows stay laid out on the first output's strip, so
  * switching slides their windows in instead of popping them up.
  */
-function OutputWorkspaces({ output, swipeOffset }: OutputWorkspacesProps) {
+function OutputWorkspaces({ output, swipeOffset, background }: OutputWorkspacesProps) {
   const { state, outputs, present, workspaceOf, dispatch } = useHypr();
   const workspace = workspaceOf(output);
   const stride = output.width + stripGap;
@@ -116,7 +117,7 @@ function OutputWorkspaces({ output, swipeOffset }: OutputWorkspacesProps) {
 
   return (
     <Screen output={output.name}>
-      <Wallpaper output={output} />
+      {background ? background(output) : <Wallpaper output={output} />}
       <Group
         x={-(workspace - 1) * stride + (swipeOffset ?? 0)}
         transition={swipeOffset === null ? motion.slide : undefined}
@@ -143,8 +144,13 @@ function OutputWorkspaces({ output, swipeOffset }: OutputWorkspacesProps) {
   );
 }
 
+interface WorkspacesProps {
+  /** What each output shows behind its windows; the wallpaper by default. */
+  background?: (output: OutputInfo) => ReactNode;
+}
+
 /** Every output's workspaces; a three-finger swipe drags the focused output's strip. */
-export function Workspaces() {
+export function Workspaces({ background }: WorkspacesProps) {
   const { outputs, focusOutput, currentWorkspace, switchTo } = useHypr();
   const [swipeOffset, setSwipeOffset] = useState<number | null>(null);
   // The running total, which events delivered together would see stale in state.
@@ -157,6 +163,7 @@ export function Workspaces() {
           key={output.name}
           output={output}
           swipeOffset={output === focusOutput ? swipeOffset : null}
+          background={background}
         />
       ))}
       <GestureBinding

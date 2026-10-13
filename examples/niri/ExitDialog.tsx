@@ -1,13 +1,8 @@
 import { Box, Rect, scale, Screen, Text, useInput, useKeyboardGrab } from "proscenium";
+import { quit } from "../lib/system/session.js";
 import { motion } from "./config.js";
 import { keyCap } from "./HotkeyOverlay.js";
 import { useNiri } from "./NiriProvider.js";
-
-/** Stops the compositor the way its session manager would, which ends the session. */
-export function quit(): void {
-  const parent = Number(process.env.PROSCENIUM_PARENT) || process.ppid;
-  process.kill(parent, "SIGTERM");
-}
 
 /**
  * niri's exit confirmation: a red-bordered panel over a darkened screen that

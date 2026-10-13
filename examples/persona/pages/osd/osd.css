@@ -1,0 +1,9 @@
+.osd {
+  position: absolute; inset: 0; padding: 0 15px; display: flex; align-items: center; gap: 10px;
+  border-radius: 25px; background: #578db7; color: #fff;
+  font-family: "Montserrat", var(--nerd); font-weight: 300;
+}
+.icon { font: 25px var(--nerd); }
+.track { flex: 1; height: 10px; border-radius: 20px; background: #209fcd; overflow: hidden; }
+.level { height: 100%; border-radius: 20px; background: #fff; }
+.value { min-width: 50px; text-align: right; font-size: 20px; font-weight: bold; }

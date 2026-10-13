@@ -42,6 +42,8 @@ export interface WebProps extends ShapeProps, MotionProps, CursorProps, ShaderPr
 }
 
 const moduleSource = /\.(tsx|jsx|ts|js|mjs)$/i;
+const pageAssets = [".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg", ".woff", ".woff2", ".ttf",
+                    ".otf", ".webm", ".mp4", ".ogg", ".mp3", ".wav", ".opus"];
 const packageRoot = resolve(dirname(new URL(import.meta.url).pathname), "..");
 const page = `<!doctype html>
 <html><head><meta charset="utf-8"><link rel="stylesheet" href="app.css">
@@ -142,8 +144,9 @@ class Bundle {
       nodePaths: [join(packageRoot, "node_modules")],
       alias: { "proscenium/page": join(packageRoot, "dist", "page.js") },
       define: { "process.env.NODE_ENV": JSON.stringify(this.config.development ? "development" : "production") },
-      loader: { ".png": "dataurl", ".jpg": "dataurl", ".jpeg": "dataurl", ".svg": "dataurl",
-                ".webp": "dataurl", ".woff2": "dataurl" },
+      // Images, fonts, video and audio are copied next to the page, which loads them by URL.
+      loader: Object.fromEntries(pageAssets.map((extension) => [extension, "file"])),
+      assetNames: "assets/[name]-[hash]",
     };
     await this.build();
   }

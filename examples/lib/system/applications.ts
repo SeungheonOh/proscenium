@@ -13,6 +13,8 @@ export interface ApplicationInfo {
   name: string;
   /** Its generic name or comment. */
   detail: string;
+  /** Its icon: a theme icon name or a file path, or "". */
+  icon: string;
   path: string;
 }
 
@@ -58,6 +60,7 @@ async function scanApplications(): Promise<ApplicationInfo[]> {
         id,
         name,
         detail: entry.get("GenericName") ?? entry.get("Comment") ?? "",
+        icon: entry.get("Icon") ?? "",
         path,
       });
     }

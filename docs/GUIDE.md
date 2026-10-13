@@ -565,9 +565,10 @@ export default function Panel({ count }: { count: number }) {
 Relative `src` paths resolve against the world file; a module elsewhere names
 its page with `import panel from "./panel.tsx?url"`, which yields the page's
 absolute path, as image imports do. A module source is bundled with esbuild and
-this SDK's React DOM, then mounted
-by the page runtime, which passes the node's `props` (re-rendering in place when
-they change) and delivers `send(name, value)` to `onMessage`. Saving the module
+this SDK's React DOM; the images, fonts, video and audio it imports are copied
+next to it and import as URLs. It is then mounted by the page runtime, which
+passes the node's `props` (re-rendering in place when they change) and delivers
+`send(name, value)` to `onMessage`. Saving the module
 reloads only that page. The page is an ordinary scene node: it transforms,
 rounds, blurs what is behind it and animates like any other, and receives
 pointer and keyboard input like a window; `autoFocus` gives it the keyboard
@@ -577,6 +578,13 @@ dma-bufs, stop painting while no output shows them, and raster at the scale
 they are seen at once a zoom settles. A reload of the world hands each page to
 its replacement node, so pages keep running. Web nodes need the helper, built
 with `-Dweb=enabled` against CEF (see the [README](../README.md#build)).
+
+A page that changes every frame costs a whole Chromium frame each time: on an
+Iris Xe laptop at 2256 × 1504, a full-screen canvas that only clears takes
+about 250 ms of CPU and 700 ms of GPU time a second, and video plays from
+software decoding. Keep pages for what shows briefly or changes rarely, and
+draw what moves all the time with nodes: the compositor runs their animations
+itself and repaints only where they change.
 
 ### Hot reload
 

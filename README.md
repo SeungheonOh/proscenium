@@ -65,7 +65,8 @@ share picker.
 Examples: `hypr` (tiling workspaces), `niri` (niri's scrollable tiling),
 `deck` (windows as playing cards), `shelf` (windows as books), `cube`
 (workspaces on a turning cube), `meta` (rooms on an infinite canvas), `canvas`
-(a zoomable canvas with a minimap).
+(a zoomable canvas with a minimap), `persona` (a Persona 3 Reload shell after
+Persona-Quickshell; `scripts/fetch-persona` fetches its art first).
 
 ## Documentation
 

@@ -1,0 +1,211 @@
+.menus, .menu { position: absolute; inset: 0; overflow: hidden; }
+.backdrop { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
+
+/* Entrances */
+.transition { position: absolute; inset: 0; z-index: 100; pointer-events: none; }
+.transition .panel { position: absolute; inset: 0; transform-origin: left center; }
+.shards {
+  position: absolute; left: 0; top: calc(5vh - 10px);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.shard { width: 95vw; height: 30vh; transform-origin: 0 0; }
+.bubble { position: absolute; }
+.bubble .body { position: absolute; inset: 0; overflow: hidden; background: #0d1a3a; }
+.bubble .shine {
+  position: absolute; left: 18%; top: 16%; width: 32%; height: 32%;
+  border-radius: 50%; background: #fff; opacity: 0;
+}
+
+/* Calendar */
+.calendar { position: absolute; inset: 0; background: #0b113d; }
+.calendar > * { position: absolute; }
+.band { background: #1a4fa8; transform: rotate(20deg); transform-origin: 0 0; }
+.line { height: 5px; background: #fff; transform: rotate(-20deg); transform-origin: 0 0; }
+.heading { left: 40px; color: #fff; }
+.heading > div { position: absolute; left: 0; white-space: nowrap; line-height: 1.32; }
+.year { top: 0; font: bold 60px var(--montserrat); line-height: 1.22 !important; }
+.month { top: 53px; font: bold 30px var(--yahei); color: #b4c8ff; }
+.month-number { top: -27px; left: 200px !important; font: bold 250px var(--yahei); }
+.day { position: absolute; }
+.day > * { position: absolute; }
+.ring { border-style: solid; border-color: #6490ff; border-radius: 50%; opacity: 0.6; }
+.number { left: 0; font: bold 90px var(--yahei); line-height: 1.32; color: #fff; white-space: nowrap; }
+.number .weekday {
+  position: absolute; left: calc(100% + 6px); bottom: 50px; padding-bottom: 2px;
+  font: bold 20px var(--bahnschrift); line-height: 1.2;
+}
+.weekday.sunday { color: #ff4444; border-bottom: 1.5px solid #ff4444; }
+.weekday.saturday { color: #4488ff; border-bottom: 1.5px solid #4488ff; }
+.phase .halo { position: absolute; border: 1.5px solid #ffe700; border-radius: 50%; }
+.moon { position: absolute; border-radius: 50%; overflow: hidden; }
+.moon > div { position: absolute; top: 0; width: 50%; height: 100%; }
+.moon > .terminator { left: 0; width: 100%; border-radius: 50%; }
+
+/* Stats */
+.stats .list { position: absolute; display: flex; flex-direction: column; gap: 10px; }
+.stats .list .heading { position: static; font: 72px var(--proggy); line-height: 1; color: #f6fbff; padding-left: 12px; }
+.card {
+  position: relative; flex: none; width: 680px; height: 112px;
+  transition: height 300ms var(--out-cubic), translate 250ms var(--out-cubic);
+}
+.card.active { height: 136px; translate: 6px 0; }
+.card > * { position: absolute; }
+.card .face { inset: 0; background: #10185f; clip-path: polygon(0 0, 97% 0, 100% 100%, 3% 100%); }
+.card .edge {
+  left: 0; top: 100%; width: 690px; height: 8px; background: rgb(5 13 59 / 0.85);
+  clip-path: polygon(20.4px 0, 680px 0, 690px 8px, 30.4px 8px);
+}
+.badge {
+  left: -8px; top: 10px; width: 52px; height: 66px; rotate: -8deg;
+  display: flex; align-items: center; justify-content: center;
+  background: #0b113d; border: 3px solid #9cf7ff;
+}
+.badge span { rotate: 8deg; font: 28px var(--montserrat); color: #d2fdff; }
+.card .title { left: 62px; top: 14px; font: 48px var(--montserrat); line-height: 1.22; color: #a5f6ff; }
+.rank {
+  right: 20px; top: 10px; display: flex; gap: 8px; align-items: flex-end;
+  font-family: var(--montserrat); line-height: 1.22; color: #9ffbff;
+}
+.rank span:first-child { font-size: 22px; padding-bottom: 8px; }
+.rank .value { font-size: 60px; }
+.subtitle {
+  left: 64px; right: 14px; bottom: 12px; height: 32px; padding-left: 14px;
+  display: flex; align-items: center; white-space: nowrap;
+  font: 20px var(--montserrat); color: #041238; background: #85f4ff;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 10px) 100%, 0 100%);
+}
+.card.active .face { background: #8df6ff; }
+.card.active .edge { background: #ccc; }
+.card.active .badge { background: #000; border-color: #000; }
+.card.active .badge span { color: #fff; }
+.card.active .title, .card.active .rank { color: #000; }
+.card.active .subtitle { background: #000; color: #fff; }
+.detail { position: absolute; }
+.detail::before {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(rgb(15 28 105 / 0.96), rgb(8 16 68 / 0.97));
+  clip-path: polygon(0 0, 100% 0, calc(100% - 18px) 100%, 0 100%);
+}
+.detail .header {
+  position: relative; height: 92px; padding: 0 18px; display: flex; align-items: center; gap: 14px;
+  font: 36px var(--montserrat); color: #08153f; background: linear-gradient(to right, #8ef5ff, #d3fdff);
+  clip-path: polygon(0 0, 100% 0, calc(100% - 16px) 100%, 0 100%);
+}
+.detail .header .index { font-size: 40px; }
+.detail .rows {
+  position: absolute; left: 0; right: 0; top: 110px; bottom: 0; overflow-y: auto; scrollbar-width: none;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.row {
+  flex: none; height: 56px; padding: 0 14px; display: flex; align-items: center; gap: 29px;
+  border-radius: 2px; background: rgb(8 18 72 / 0.96); font: 24px var(--montserrat); color: #f2fcff; white-space: nowrap;
+}
+.row .status {
+  height: 34px; padding: 0 14px; display: flex; align-items: center;
+  font-size: 16px; color: #06133b; background: #8df6ff;
+  clip-path: polygon(0 0, 100% 0, calc(100% - 8px) 100%, 0 100%);
+}
+
+/* Shaders */
+.party { position: absolute; left: 0; top: 50%; translate: 0 -50%; display: flex; flex-direction: column; gap: 6px; }
+.member {
+  position: relative; flex: none; width: 45vw; height: 64px;
+  transition: height 300ms var(--out-cubic); animation: enter 550ms var(--out-cubic) both;
+}
+@keyframes enter { from { transform: translateX(calc(-100% - 20px)); } }
+.member.active { height: 90px; }
+.member .accent {
+  position: absolute; left: 50%; top: -7px; width: calc(50% + 18px); height: 100%;
+  background: #c4001a; opacity: 0; transition: opacity 200ms;
+}
+.member .bar { position: absolute; inset: 0; overflow: hidden; background: #111; }
+.member .light {
+  position: absolute; top: 0; bottom: 0; right: 0; width: 32px; background: #fff;
+  transition: width 350ms var(--out-cubic);
+}
+.member .fold {
+  position: absolute; left: 0; top: 0; bottom: 0; width: 8%; opacity: 0; transition: opacity 350ms;
+  background: linear-gradient(to right, rgb(0 0 0 / 0.15), transparent);
+}
+.member .shade {
+  position: absolute; left: 0; right: 0; bottom: 0; height: 6px; z-index: 10;
+  background: linear-gradient(transparent, rgb(0 0 0 / 0.55));
+}
+.member img {
+  position: absolute; left: 110px; top: 0; width: 160px; height: 100%; z-index: 3;
+  object-fit: cover; object-position: center top;
+}
+.member .role {
+  position: absolute; left: 20px; top: 0; width: 60px; height: 100%; z-index: 4; rotate: -30deg;
+  display: flex; align-items: center; white-space: nowrap; font: 50px var(--bebas); color: #fff;
+}
+.member .label {
+  position: absolute; left: 80px; right: 40px; top: 0; height: 100%; z-index: 4;
+  display: flex; align-items: center; justify-content: center;
+  font: 28px var(--bebas); color: rgb(255 255 255 / 0.85); transition: color 200ms;
+}
+.member.active .accent, .member.active .fold { opacity: 1; }
+.member.active .light { width: 78%; }
+.member.active .label { color: #111; }
+.reveal { position: absolute; inset: 0; pointer-events: none; }
+.reveal .dim {
+  position: absolute; inset: 0; z-index: 12; opacity: 0; transition: opacity 320ms;
+  background: rgb(40 45 54 / 0.68);
+}
+.reveal .portrait {
+  position: absolute; top: 0; bottom: 0; left: 58vw; width: 52vw; overflow: hidden; z-index: 50;
+  opacity: 0; translate: 78px 0; scale: 0.94;
+  transition: opacity 350ms, translate 500ms var(--back-2), scale 500ms var(--back-2);
+}
+.portrait img {
+  width: 100%; height: 100%; object-fit: contain; object-position: right top;
+  transform: scaleX(1.08); transform-origin: right center;
+}
+.reveal .sway {
+  position: absolute; left: 2vw; top: 52vh; width: 90vw; height: 60vh; z-index: 20;
+  opacity: 0; translate: -120px 0; transition: opacity 300ms, translate 460ms var(--back-1-5);
+}
+.reveal .stretch {
+  position: absolute; inset: 0; transform-origin: 0 100%; scale: 0.72 1; transition: scale 460ms var(--back-3);
+}
+.reveal .sheet {
+  position: absolute; inset: 0; transform-origin: 0 100%; rotate: -20deg;
+  background: linear-gradient(rgb(15 28 105 / 0.96), rgb(8 16 68 / 0.97));
+}
+.reveal.revealed .dim { opacity: 1; }
+.reveal.revealed .portrait { opacity: 0.96; translate: 0 0; scale: 1; }
+.reveal.revealed .sway { opacity: 0.92; translate: 0 0; pointer-events: auto; }
+.reveal.revealed .stretch { scale: 1 1; }
+.sheet .stripe { position: absolute; left: 0; right: 0; top: 0; height: 8px; background: #c4001a; }
+.sheet .tabs { position: absolute; top: 2%; left: 2%; right: 10%; height: 10%; display: flex; gap: 12px; }
+.sheet button { font-family: "Noto Sans", sans-serif; cursor: pointer; }
+.sheet .tabs button {
+  flex: 1; border: 1px solid rgb(255 255 255 / 0.15); background: #0a0a0a; color: rgb(255 255 255 / 0.4);
+  font-size: 14px; transition: background-color 150ms, color 150ms, scale 120ms var(--out-cubic);
+}
+.sheet .tabs button.active { background: #4a8fff; border-color: #4a8fff; color: #111; }
+.sheet .tabs button:active { scale: 0.9; }
+.sheet .upper {
+  position: absolute; left: 0; right: 0; top: 13%; height: 42%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgb(0 0 0 / 0.92); font: 300 20px var(--montserrat); color: #fff;
+}
+.sheet .toggle {
+  position: absolute; top: 59%; right: 5%; width: 60%; height: 20%; padding: 0 28px 0 22px;
+  display: flex; align-items: center; gap: 12px; text-align: left;
+  border: 1px solid rgb(255 255 255 / 0.15); background: rgb(0 0 0 / 0.92);
+  font: 300 18px var(--montserrat); color: #fff; transition: background-color 150ms, scale 120ms var(--out-cubic);
+}
+.sheet .toggle.on { background: rgb(74 143 255 / 0.6); border-color: #4a8fff; }
+.sheet .toggle:active { scale: 0.97; }
+.toggle .state { font: 16px var(--bebas); color: rgb(255 255 255 / 0.4); transition: color 150ms; }
+.toggle.on .state { color: #4a8fff; }
+
+/* Power */
+.power { transition: opacity 300ms var(--in-cubic); }
+.power.leaving { opacity: 0; }
+.choices { position: absolute; width: 800px; height: 500px; }
+.choice { position: absolute; left: 30px; width: 900px; height: 350px; transition: scale 200ms var(--out-cubic); }
+.choice.hovered { scale: 1.1; }
+.choice img { width: 100%; height: 100%; object-fit: contain; }
+.choice .target { position: absolute; left: 30%; top: 30%; width: 40%; height: 40%; cursor: pointer; }

@@ -1,0 +1,30 @@
+/*
+ * The theme's fonts. Where it names one that is not free, a font of the same
+ * kind stands in, unless the real one is installed.
+ */
+@font-face { font-family: "Montserrat"; src: url("../assets/fonts/Montserrat.ttf"); font-weight: 100 900; }
+@font-face { font-family: "Bebas Neue"; src: url("../assets/fonts/BebasNeue.ttf"); }
+@font-face { font-family: "Barlow Condensed"; src: url("../assets/fonts/BarlowCondensed-Regular.ttf"); }
+@font-face {
+  font-family: "Barlow Condensed"; src: url("../assets/fonts/BarlowCondensed-Bold.ttf"); font-weight: bold;
+}
+@font-face { font-family: "Selawik"; src: url("../assets/fonts/Selawik-Bold.ttf"); font-weight: 100 900; }
+@font-face { font-family: "Libertinus Sans"; src: url("../assets/fonts/LibertinusSans-Regular.otf"); }
+@font-face { font-family: "JetBrains Mono"; src: url("../assets/fonts/JetBrainsMono.ttf"); font-weight: 100 800; }
+@font-face { font-family: "Symbols Nerd Font Mono"; src: url("../assets/fonts/SymbolsNerdFontMono.ttf"); }
+@font-face { font-family: "ProggyClean"; src: url("../assets/fonts/ProggyClean.ttf"); }
+
+:root {
+  --yahei: "Microsoft YaHei", "Selawik", sans-serif;
+  --bahnschrift: "Bahnschrift Condensed", "Barlow Condensed", sans-serif;
+  --biolinum: "Linux Biolinum", "Libertinus Sans", sans-serif;
+  --montserrat: "Montserrat", sans-serif;
+  --bebas: "Bebas Neue", sans-serif;
+  --nerd: "JetBrainsMono Nerd Font", "JetBrains Mono", "Symbols Nerd Font Mono", monospace;
+  --proggy: "proggyfonts", "ProggyClean", monospace;
+  font-family: "Noto Sans", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+* { box-sizing: border-box; }
+body { user-select: none; }

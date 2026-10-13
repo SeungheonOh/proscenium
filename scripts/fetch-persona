@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""Fetch the art, video and fonts of the persona world into examples/persona/assets.
+
+The art is Persona-Quickshell's (github.com/Yujonpradhananga/Persona-Quickshell),
+at a pinned commit; see examples/persona/README.md for whose it is. Its videos
+are H.264, which Chromium as CEF builds it does not play, so they are converted
+to VP9 with ffmpeg, or VLC without it, at 1920 by 1080 and 30 frames a second at
+most: Chromium decodes them in software, and a menu's backdrop at 1440p60 cost a
+core. The fonts are openly licensed stand-ins for the ones the theme names; they
+are also installed into ~/.local/share/fonts/proscenium-persona, for the
+compositor's own text.
+"""
+import io
+import pathlib
+import shutil
+import subprocess
+import tarfile
+import urllib.request
+import zipfile
+
+COMMIT = '6bb02aa50f609be8047f67b8a9984274c91e2060'
+UPSTREAM = f'https://github.com/Yujonpradhananga/Persona-Quickshell/archive/{COMMIT}.tar.gz'
+GOOGLE = 'https://github.com/google/fonts/raw/main/ofl'
+NERD = 'https://github.com/ryanoasis/nerd-fonts/raw/master/patched-fonts'
+
+# Where each file of the upstream repository goes.
+ART = {
+    'p3r imgs/bg.png': 'wallpaper/bg.png',
+    'p3r imgs/fg.png': 'wallpaper/fg.png',
+    'p3r imgs/bars.png': 'wallpaper/bars.png',
+    'components/player.png': 'player/player.png',
+    **{f'img/wave{n}.png': f'clock/wave{n}.png' for n in (1, 2, 3, 4)},
+    **{f'p3r menu/png/pngseq{n:02}.png': f'power/intro{n:02}.png' for n in range(12)},
+    **{f'iconpack/{name}{hover}.png': f'power/{name}{"-hover" if hover else ""}.png'
+       for name in ('shutdown', 'restart', 'logout') for hover in ('', '1')},
+    **{f'components/char{n}.png': f'options/member{n}.png' for n in (1, 2, 3)},
+    'components/mainm.jpeg': 'options/portrait1.jpeg',
+    'components/mainm2.jpeg': 'options/portrait2.jpeg',
+    'components/mainf.jpeg': 'options/portrait3.jpeg',
+}
+VIDEO = {
+    'p3r menu/part2.mp4': 'power/opening.webm',
+    'p3r menu/part3.mp4': 'power/loop.webm',
+    'videos/Resume.mp4': 'stats/background.webm',
+    'videos/Options.mp4': 'options/background.webm',
+}
+FONTS = {
+    'Montserrat.ttf': f'{GOOGLE}/montserrat/Montserrat%5Bwght%5D.ttf',
+    'BebasNeue.ttf': f'{GOOGLE}/bebasneue/BebasNeue-Regular.ttf',
+    # Bahnschrift Condensed's stand-in.
+    'BarlowCondensed-Regular.ttf': f'{GOOGLE}/barlowcondensed/BarlowCondensed-Regular.ttf',
+    'BarlowCondensed-Bold.ttf': f'{GOOGLE}/barlowcondensed/BarlowCondensed-Bold.ttf',
+    'JetBrainsMono.ttf': f'{GOOGLE}/jetbrainsmono/JetBrainsMono%5Bwght%5D.ttf',
+    'SymbolsNerdFontMono.ttf': f'{NERD}/NerdFontsSymbolsOnly/SymbolsNerdFontMono-Regular.ttf',
+    'ProggyClean.ttf': f'{NERD}/ProggyClean/Regular/ProggyCleanNerdFont-Regular.ttf',
+}
+# Stand-ins packed in archives: Microsoft YaHei's Latin (Segoe's metrics) and Linux Biolinum.
+ARCHIVED = {
+    'Selawik-Bold.ttf': ('https://github.com/microsoft/Selawik/releases/download/1.01/Selawik_Release.zip',
+                         'selawkb.ttf'),
+    'LibertinusSans-Regular.otf': ('https://github.com/alerque/libertinus/releases/download/v7.051/'
+                                   'Libertinus-7.051.zip', 'LibertinusSans-Regular.otf'),
+}
+
+root = pathlib.Path(__file__).resolve().parent.parent / 'examples' / 'persona' / 'assets'
+done = root / '.fetched'
+# Raised when what is fetched changes, so an older fetch is done again.
+VERSION = '3'
+installed = pathlib.Path.home() / '.local' / 'share' / 'fonts' / 'proscenium-persona'
+
+
+def download(url):
+    with urllib.request.urlopen(url) as response:
+        return response.read()
+
+
+def convert(source, target):
+    """SOURCE as VP9 in WebM at TARGET, without sound."""
+    pending = target.with_suffix('.pending.webm')
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if shutil.which('ffmpeg'):
+        command = ['ffmpeg', '-loglevel', 'error', '-y', '-i', str(source), '-an', '-c:v', 'libvpx-vp9',
+                   '-vf', "scale='min(1920,iw)':'min(1080,ih)':force_original_aspect_ratio=decrease,fps='min(30,source_fps)'",
+                   '-b:v', '0', '-crf', '33', '-row-mt', '1', str(pending)]
+    elif shutil.which('cvlc'):
+        command = ['cvlc', '-q', '--no-sout-audio', str(source), '--sout',
+                   '#transcode{vcodec=VP90,vb=0,maxwidth=1920,maxheight=1080,fps=30,venc=avcodec{codec=libvpx-vp9}}'
+                   f':std{{access=file,mux=webm,dst={pending}}}', 'vlc://quit']
+    else:
+        raise SystemExit('Converting the videos needs ffmpeg or VLC (cvlc).')
+    subprocess.run(command, check=True, stdin=subprocess.DEVNULL)
+    if not pending.exists() or pending.stat().st_size == 0:
+        raise SystemExit(f'Could not convert {source.name}.')
+    pending.replace(target)
+
+
+def scale_art():
+    """Copies of the wallpaper's art 2560 wide, which smaller outputs draw from."""
+    for name in ('bg', 'fg', 'bars'):
+        source, target = root / 'wallpaper' / f'{name}.png', root / 'wallpaper' / f'{name}-2560.png'
+        if target.exists():
+            continue
+        try:
+            from PIL import Image
+            with Image.open(source) as image:
+                height = round(image.height * 2560 / image.width)
+                image.resize((2560, height), Image.LANCZOS).save(target, compress_level=1)
+        except ImportError:
+            if shutil.which('ffmpeg'):
+                subprocess.run(['ffmpeg', '-loglevel', 'error', '-y', '-i', str(source), '-vf', 'scale=2560:-1',
+                                str(target)], check=True)
+
+
+def install_fonts():
+    installed.mkdir(parents=True, exist_ok=True)
+    for font in (root / 'fonts').iterdir():
+        if not (installed / font.name).exists():
+            shutil.copyfile(font, installed / font.name)
+    if shutil.which('fc-cache'):
+        subprocess.run(['fc-cache', str(installed)], check=False)
+
+
+def main():
+    if done.exists() and done.read_text().strip() == VERSION:
+        scale_art()
+        install_fonts()
+        print(root)
+        return
+    print('Fetching Persona-Quickshell', COMMIT[:7])
+    with tarfile.open(fileobj=io.BytesIO(download(UPSTREAM))) as archive:
+        prefix = f'Persona-Quickshell-{COMMIT}/Assets/'
+        members = {member.name.removeprefix(prefix): member for member in archive.getmembers()}
+        scratch = root / '.upstream'
+        for source, target in [*ART.items(), *VIDEO.items()]:
+            path = (scratch / target).with_suffix('.mp4') if source in VIDEO else root / target
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(archive.extractfile(members[source]).read())
+    for source, target in VIDEO.items():
+        print('Converting', source)
+        convert((scratch / target).with_suffix('.mp4'), root / target)
+    shutil.rmtree(scratch)
+    fonts = root / 'fonts'
+    fonts.mkdir(exist_ok=True)
+    for name, url in FONTS.items():
+        print('Fetching', name)
+        (fonts / name).write_bytes(download(url))
+    for name, (url, member) in ARCHIVED.items():
+        print('Fetching', name)
+        with zipfile.ZipFile(io.BytesIO(download(url))) as archive:
+            entry = next(entry for entry in archive.namelist() if entry.endswith('/' + member) or entry == member)
+            (fonts / name).write_bytes(archive.read(entry))
+    done.write_text(VERSION + '\n')
+    scale_art()
+    install_fonts()
+    print(root)
+
+
+main()

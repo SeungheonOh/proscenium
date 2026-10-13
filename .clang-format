@@ -1,0 +1,14 @@
+# Formatting for src/, tests/ and web/ (clang-format 15 or newer).
+BasedOnStyle: LLVM
+IndentWidth: 4
+ColumnLimit: 100
+AllowShortIfStatementsOnASingleLine: AllIfsAndElse
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLoopsOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Empty
+AllowShortBlocksOnASingleLine: Never
+SortIncludes: Never
+ForEachMacros: [VEC_FOR, NODE_FOR_CHILDREN, wl_list_for_each, wl_list_for_each_safe,
+                wl_list_for_each_reverse, wl_array_for_each, wl_resource_for_each,
+                wl_resource_for_each_safe]
+SpaceBeforeParens: ControlStatementsExceptControlMacros

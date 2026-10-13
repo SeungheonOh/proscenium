@@ -1,0 +1,14 @@
+#!/bin/sh
+# Development headers the system lacks, unpacked under build/deps/root without
+# installing anything. Distro development packages, when installed, take precedence.
+set -eu
+root=$(cd "$(dirname "$0")/.." && pwd)/build/deps
+mkdir -p "$root"
+cd "$root"
+for package in libpango1.0-dev libcairo2-dev libgdk-pixbuf-2.0-dev libharfbuzz-dev \
+               libpipewire-0.3-dev libspa-0.2-dev; do
+    ls "${package}"_*.deb >/dev/null 2>&1 || apt-get download "$package"
+done
+rm -rf root
+for deb in *.deb; do dpkg-deb -x "$deb" root; done
+echo "$root/root"

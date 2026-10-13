@@ -1,0 +1,43 @@
+@import "../theme.css";
+
+body {
+  color: #e6e6f0;
+  font-size: 15px;
+}
+.launcher {
+  height: 100vh;
+  padding: 18px;
+  background: #181820b8;
+}
+.search {
+  width: 100%;
+  padding: 12px 14px;
+  font: inherit;
+  font-size: 18px;
+  color: inherit;
+  outline: none;
+  background: #ffffff14;
+  border: 1px solid #ffffff24;
+  border-radius: 10px;
+}
+.results {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.result {
+  padding: 9px 12px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.result.selected {
+  background: #33ccff38;
+}
+.result .name {
+  font-weight: 600;
+}
+.result .detail {
+  font-size: 12px;
+  opacity: 0.65;
+}

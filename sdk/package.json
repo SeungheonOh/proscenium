@@ -1,0 +1,46 @@
+{
+  "name": "proscenium",
+  "version": "0.1.0",
+  "description": "React renderer and runtime directing the Proscenium compositor",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./page": {
+      "types": "./dist/page.d.ts",
+      "import": "./dist/page.js"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "import": "./dist/runtime.js"
+    }
+  },
+  "bin": {
+    "proscenium": "./bin/proscenium.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p .",
+    "test": "rm -rf dist && tsc -p . && node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "esbuild": "0.28.2",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "react-reconciler": "0.34.0",
+    "yoga-layout": "3.2.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@types/react-reconciler": "0.33.1",
+    "react-devtools-core": "8.0.0",
+    "typescript": "7.0.2"
+  }
+}

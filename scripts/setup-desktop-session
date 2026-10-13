@@ -1,0 +1,23 @@
+#!/bin/sh
+# Point the desktop's activated services at a proscenium session that owns a seat:
+# the portals route ScreenCast to the compositor and everything else to GTK.
+# The compositor runs this once it listens; nested and headless runs skip it.
+set -eu
+: "${XDG_RUNTIME_DIR:?}" "${WAYLAND_DISPLAY:?}"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
+export XDG_CURRENT_DESKTOP=proscenium XDG_SESSION_TYPE=wayland
+data=$(cd "$(dirname "$0")/../data" && pwd)
+config="${XDG_CONFIG_HOME:-$HOME/.config}/xdg-desktop-portal"
+mkdir -p "$config"
+[ -e "$config/proscenium-portals.conf" ] || cp "$data/proscenium-portals.conf" "$config/"
+# The frontend reads backends from one directory: the system's plus ours.
+portals="${XDG_DATA_HOME:-$HOME/.local/share}/proscenium/portals"
+mkdir -p "$portals"
+for descriptor in /usr/share/xdg-desktop-portal/portals/*.portal; do
+    [ ! -f "$descriptor" ] || ln -sf "$descriptor" "$portals/"
+done
+cp "$data/proscenium.portal" "$portals/"
+export XDG_DESKTOP_PORTAL_DIR="$portals"
+dbus-update-activation-environment --systemd WAYLAND_DISPLAY DISPLAY XDG_CURRENT_DESKTOP XDG_SESSION_TYPE \
+    XDG_DESKTOP_PORTAL_DIR
+systemctl --user restart xdg-desktop-portal-gtk.service xdg-desktop-portal.service

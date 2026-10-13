@@ -1,0 +1,4 @@
+[portal]
+DBusName=org.freedesktop.impl.portal.desktop.proscenium
+Interfaces=org.freedesktop.impl.portal.ScreenCast;
+UseIn=proscenium;

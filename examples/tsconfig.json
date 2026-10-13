@@ -1,0 +1,44 @@
+{
+  "compilerOptions": {
+    "target": "es2023",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": [
+      "node"
+    ],
+    "lib": [
+      "es2023",
+      "dom"
+    ],
+    "typeRoots": [
+      "../sdk/node_modules/@types"
+    ],
+    "paths": {
+      "proscenium": [
+        "../sdk/src/index.ts"
+      ],
+      "proscenium/page": [
+        "../sdk/src/page.ts"
+      ],
+      "react-dom/client": [
+        "../sdk/node_modules/@types/react-dom/client"
+      ],
+      "react": [
+        "../sdk/node_modules/@types/react"
+      ],
+      "react/jsx-runtime": [
+        "../sdk/node_modules/@types/react/jsx-runtime"
+      ]
+    },
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx"
+  ]
+}

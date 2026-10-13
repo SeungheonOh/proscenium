@@ -1,0 +1,93 @@
+@import "../theme.css";
+
+.card {
+  padding: 18px 18px 16px;
+  background: linear-gradient(180deg, #ffffffef, #ffffffdc);
+}
+h1,
+h2,
+p {
+  margin: 0;
+}
+h1 {
+  font-size: 16px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.label {
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+  margin: 0 -6px;
+  padding: 0 6px;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  text-align: left;
+  transition:
+    background 0.14s,
+    border-color 0.14s,
+    transform 0.12s;
+}
+.option:hover {
+  background: #17171a0a;
+  box-shadow: none;
+}
+.option:active {
+  transform: scale(0.99);
+}
+.option.on {
+  background: #2f6fed12;
+  border-color: #2f6fed59;
+}
+.thumb {
+  width: 30px;
+  height: 22px;
+  border-radius: 5px;
+  background: #17171a14;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  color: var(--muted);
+  flex: none;
+}
+.on .thumb {
+  background: #2f6fed26;
+  color: var(--accent);
+}
+.name {
+  display: block;
+  font-weight: 600;
+}
+.detail {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+.footer {
+  margin-top: auto;
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+.footer .spacer {
+  flex: 1;
+}
+button {
+  padding: 7px 14px;
+}

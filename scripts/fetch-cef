@@ -1,0 +1,29 @@
+#!/usr/bin/env python3
+"""Fetch the pinned optional Linux x86-64 web engine, without system installation."""
+import hashlib
+import pathlib
+import platform
+import tarfile
+import urllib.request
+
+VERSION = '154.0.32+g682c378+chromium-154.0.8037.58'
+NAME = f'cef_binary_{VERSION}_linux64_minimal'
+SHA256 = '9b6a82e04506d5e1af560e031e718c89af5f96760413fd16380358784545d153'
+root = pathlib.Path(__file__).resolve().parent.parent / 'build' / 'cef'
+if platform.machine() != 'x86_64':
+    raise SystemExit('The pinned SDK is x86-64; supply CEF_ROOT for another architecture.')
+root.mkdir(parents=True, exist_ok=True)
+archive = root / (NAME + '.tar.bz2')
+if not archive.exists():
+    pending = archive.with_suffix('.pending')
+    urllib.request.urlretrieve('https://cef-builds.spotifycdn.com/' + archive.name, pending)
+    if hashlib.file_digest(pending.open('rb'), 'sha256').hexdigest() != SHA256:
+        pending.unlink()
+        raise SystemExit('CEF archive checksum mismatch')
+    pending.replace(archive)
+if hashlib.file_digest(archive.open('rb'), 'sha256').hexdigest() != SHA256:
+    raise SystemExit('CEF archive checksum mismatch')
+if not (root / NAME / 'include' / 'cef_app.h').exists():
+    with tarfile.open(archive) as stream:
+        stream.extractall(root, filter='data')
+print(root / NAME)

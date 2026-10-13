@@ -1,0 +1,37 @@
+# hypr: two terminals typed into, a floating window moved and resized with Super
+# and the pointer, a workspace round trip, the launcher page, a screenshot.
+chord super+Return
+sleep 1200
+chord super+Return
+sleep 1200
+move 300 300
+click left
+type echo hello from proscenium
+key Return
+glide 900 300 300
+click left
+type ls
+key Return
+chord super+v
+sleep 500
+hold super
+down left
+glide 700 400 400
+up left
+down right
+glide 800 500 400
+up right
+release super
+sleep 500
+chord super+2
+sleep 600
+chord super+1
+sleep 600
+chord super+d
+sleep 2000
+type foot
+sleep 500
+key Print
+sleep 1200
+key Escape
+sleep 500

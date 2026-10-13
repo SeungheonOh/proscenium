@@ -1,0 +1,96 @@
+/* Shared by every page: light frosted cards in the bar's palette. */
+:root {
+  --ink: #17171a;
+  --muted: #17171a8c;
+  --accent: #2f6fed;
+  --line: #17171a12;
+}
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  color: var(--ink);
+  font:
+    13px "Noto Sans",
+    system-ui,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+}
+
+.card {
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: linear-gradient(180deg, #ffffffeb, #ffffffd6);
+}
+/* Rows rise in one after another; --stagger is the row's place in the entrance. */
+.rise {
+  animation: rise 0.38s cubic-bezier(0.2, 0.9, 0.25, 1.05) both;
+  animation-delay: calc(var(--stagger, 0) * 32ms);
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.muted {
+  color: var(--muted);
+}
+.title {
+  font-weight: 650;
+  letter-spacing: -0.005em;
+}
+.ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid #17171a17;
+  background: #ffffffb3;
+  border-radius: 9px;
+  padding: 6px 12px;
+  transition:
+    background 0.16s,
+    border-color 0.16s,
+    color 0.16s,
+    transform 0.12s,
+    box-shadow 0.16s,
+    opacity 0.16s;
+}
+button:hover {
+  background: #fff;
+  box-shadow: 0 1px 3px #0000001a;
+}
+button:active {
+  transform: scale(0.96);
+}
+button:disabled {
+  opacity: 0.4;
+  box-shadow: none;
+  cursor: default;
+  transform: none;
+}
+.primary {
+  border: none;
+  color: #fff;
+  background: linear-gradient(180deg, #4a82ff, var(--accent));
+  box-shadow: 0 3px 10px #2f6fed59;
+}
+.primary:hover {
+  background: linear-gradient(180deg, #5a8eff, #3a78f2);
+  box-shadow: 0 4px 14px #2f6fed73;
+}

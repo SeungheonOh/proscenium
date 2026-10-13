@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Install a per-executable Ubuntu AppArmor allowance for Chromium's own sandbox.
+Use --print to review without changing the host. Never changes global restrictions.
+"""
+import argparse
+import os
+import pathlib
+import subprocess
+import tempfile
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--helper',type=pathlib.Path,default=pathlib.Path(__file__).resolve().parent.parent/'build/meson/web/proscenium-web-helper')
+parser.add_argument('--print',action='store_true',dest='print_only')
+args=parser.parse_args()
+helper=args.helper.resolve(strict=True)
+if any(ch in str(helper) for ch in '\n\r"*?[]{}\\'):
+    raise SystemExit('Unsupported AppArmor executable path')
+profile=f'''# Proscenium's CEF helper needs user namespaces to sandbox its renderers.
+# Like the distribution Chrome profile, this names an otherwise unconfined app.
+abi <abi/4.0>,
+include <tunables/global>
+profile proscenium-web-helper "{helper}" flags=(unconfined) {{
+  userns,
+}}
+'''
+if args.print_only:
+    print(profile,end='')
+    raise SystemExit(0)
+if os.geteuid()!=0:
+    raise SystemExit('Run this setup step with sudo, or use --print to review the policy.')
+destination=pathlib.Path('/etc/apparmor.d/proscenium-web-helper')
+with tempfile.NamedTemporaryFile(mode='w',dir=destination.parent,prefix='.proscenium-web-',delete=False) as stream:
+    stream.write(profile)
+    pending=pathlib.Path(stream.name)
+try:
+    subprocess.run(['/usr/sbin/apparmor_parser','-Q',str(pending)],check=True)
+    pending.chmod(0o644)
+    pending.replace(destination)
+    subprocess.run(['/usr/sbin/apparmor_parser','-r',str(destination)],check=True)
+finally:
+    pending.unlink(missing_ok=True)
+print(f'Installed {destination} for {helper}')

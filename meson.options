@@ -1,0 +1,1 @@
+option('web', type: 'feature', value: 'auto', description: 'Build the Chromium helper for web nodes (needs CEF; see web/CMakeLists.txt)')

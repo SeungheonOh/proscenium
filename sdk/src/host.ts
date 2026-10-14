@@ -244,10 +244,17 @@ export class Container {
     const name = message.name;
     const event = toStageEvent(message) as unknown as Record<string, unknown>;
     let stopped = false;
-    event.target = target;
-    event.stopPropagation = () => {
-      stopped = true;
-    };
+    // As on a DOM event, the nodes and stopPropagation are not enumerable: an event kept whole
+    // or spread into state, which may be saved as JSON, holds only its own values.
+    Object.defineProperties(event, {
+      target: { value: target },
+      currentTarget: { value: null, writable: true },
+      stopPropagation: {
+        value: () => {
+          stopped = true;
+        },
+      },
+    });
     const call = (node: Instance) => {
       const handler = node.handlers.get(name);
       if (!handler) return;
@@ -261,7 +268,7 @@ export class Container {
       const other = this.instances.get(Number(event[name === "pointerenter" ? "from" : "to"]));
       delete event.from;
       delete event.to;
-      event.relatedTarget = other ?? null;
+      Object.defineProperty(event, "relatedTarget", { value: other ?? null });
       const kept = new Set(ancestry(other));
       const changed = ancestry(target).filter((node) => !kept.has(node));
       for (const node of name === "pointerenter" ? changed.reverse() : changed) call(node);

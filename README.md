@@ -75,6 +75,7 @@ minimap), `persona` (a Persona 3 Reload shell after Persona-Quickshell;
   input, web pages, rendering and energy.
 - [docs/PROTOCOL.md](docs/PROTOCOL.md): the director protocol.
 - [docs/SHADERS.md](docs/SHADERS.md): shaders as the only decoration (design under review).
+- [docs/MOTION.md](docs/MOTION.md): every motion as two response curves (proposed, not implemented).
 - [docs/DESIGN.md](docs/DESIGN.md): threads, modules, style and performance rules.
 
 ## Testing

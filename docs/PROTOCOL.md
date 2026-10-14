@@ -433,7 +433,7 @@ declare targets for cameras the compositor owns.
 | `data` | string (JSON text given to a page as its props) | — | |
 | `revision` | number (a change reloads a page) | — | |
 | `autoFocus` | boolean | false | |
-| `frameTag` | number (a page frame marked with one of the node's last four numbers shows where the node was with that number, for up to a second) | — | |
+| `frameTag` | number (a page frame marked with one of the node's last four numbers shows where the node was with that number) | — | |
 | `pan` | boolean | false | |
 | `output` | string | every output | |
 | `zoom` | number (> 0) | 1 | yes (log) |

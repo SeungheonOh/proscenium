@@ -5,10 +5,10 @@
  * Out (Super+P), an Excalidraw page lies on the canvas under the windows, over
  * the view and a wide margin around it, and the compositor moves it with the
  * camera, so pans and zooms neither redraw it nor leave it behind. Only once the
- * view nears the edge of what it covers, or the zoom changes by an eighth, is it
- * placed again where the view is; the compositor keeps showing it at the old
- * place until the page has drawn at the new one (`frameTag`), so the move shows
- * as one frame. See docs/DESIGN.md, "Pages that draw the canvas".
+ * view nears the edge of what it covers, or the zoom strays from the page's by
+ * `rezoom`, is it placed again where the view is; the compositor shows each of
+ * the page's frames where it was drawn for (`frameTag`), so the move shows as
+ * one frame. See docs/DESIGN.md, "Pages that draw the canvas".
  * Put away, the paper is pictures only: a PNG of each element, placed where the
  * element is, so pans and zooms cost the drawings nothing and no browser runs.
  * The pictures stand in while the page loads, and the page hands over every
@@ -54,11 +54,12 @@ const pageMargin = 0.4;
 /** The page is placed again once the view comes within this share of itself of the page's edge. */
 const nearEdge = 0.1;
 /**
- * A zoom changed by this ratio has the page drawn again at the new one: an eighth, short of
- * the 15% by which the compositor would raster the page again at the scale it is seen at,
- * which redraws the whole page too, at times showing a frame at the old scale.
+ * A zoom this far from the page's has the page drawn again at the new one. Within an eighth
+ * the page stays inside the 15% by which the compositor would raster it again at the scale
+ * it is seen at, a whole redraw that can show one frame at the old size; wider lays it again
+ * less often.
  */
-const rezoom = 1.125;
+const rezoom = 1.3;
 
 /** Placements are numbered 1 to 4095, from anywhere, so a world started again repeats none at once. */
 let tags = Math.floor(Math.random() * 4095);
@@ -173,9 +174,12 @@ export function PaperLayer() {
   // Until the page has handed over everything asked for, and the pictures are ready to stand in for it.
   const owed = !impatient && (flushed !== flush || !picturesLoaded);
 
-  /** Places the page where CAMERA looks, unless the page has yet to draw where it was last placed. */
+  /**
+   * Places the page where CAMERA looks, while the paper is out, unless the page has yet to draw
+   * where it was last placed.
+   */
   function follow(camera = output && getCamera(output.name)) {
-    if (!camera || !output) return;
+    if (!out || !camera || !output) return;
     if (placement && (placed !== placement.tag || covers(placement, camera, output, size))) return;
     setPlacement(placementFor(camera, size));
   }

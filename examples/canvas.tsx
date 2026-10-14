@@ -15,7 +15,7 @@
  * The paper is an Excalidraw drawing that lies on the canvas under the windows.
  * While it is out, empty canvas draws, a toolbar along the bottom picks tools
  * and colors, and Excalidraw's keys work; the wheel, pinches and swipes still
- * move the canvas, and the drawing follows the camera. Put away, the drawing
+ * move the canvas, and the drawing moves with it. Put away, the drawing
  * stays, as pictures that cost nothing to pan and zoom over (see
  * canvas/paper/Paper.tsx).
  *

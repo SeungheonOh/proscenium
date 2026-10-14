@@ -53,6 +53,15 @@ bool WebGpu::initialize() {
     }
     glGenTextures(1, &source);
     glGenFramebuffers(1, &read_fbo);
+    auto query = (PFNEGLQUERYDMABUFMODIFIERSEXTPROC)eglGetProcAddress("eglQueryDmaBufModifiersEXT");
+    EGLint count = 0;
+    if (query && query(display, DRM_FORMAT_ABGR8888, 0, nullptr, nullptr, &count) && count > 0) {
+        std::vector<EGLuint64KHR> all(count);
+        std::vector<EGLBoolean> external(count);
+        query(display, DRM_FORMAT_ABGR8888, count, all.data(), external.data(), &count);
+        for (EGLint i = 0; i < count; i++)
+            if (!external[i]) modifiers.push_back(all[i]);
+    }
     return true;
 }
 void WebGpu::clear(std::vector<WebGpuSlot> &pool) {
@@ -112,7 +121,12 @@ WebGpuSlot *WebGpu::take(std::vector<WebGpuSlot> &pool, int width, int height, i
         web_destroy_image(display, s.image);
         if (s.bo) gbm_bo_destroy(s.bo);
         s = {};
-        s.bo = gbm_bo_create(gbm, width, height, DRM_FORMAT_ABGR8888, GBM_BO_USE_RENDERING);
+        if (!modifiers.empty())
+            s.bo = gbm_bo_create_with_modifiers2(gbm, width, height, DRM_FORMAT_ABGR8888,
+                                                 modifiers.data(), modifiers.size(),
+                                                 GBM_BO_USE_RENDERING);
+        if (!s.bo)
+            s.bo = gbm_bo_create(gbm, width, height, DRM_FORMAT_ABGR8888, GBM_BO_USE_RENDERING);
         if (!s.bo) {
             error = "Cannot allocate browser DMA-BUF";
             return nullptr;

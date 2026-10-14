@@ -21,6 +21,9 @@ class WebGpu {
     EGLDisplay display = EGL_NO_DISPLAY;
     EGLContext context = EGL_NO_CONTEXT;
     GLuint source = 0, read_fbo = 0;
+    /* The layouts this display draws into and samples page frames in, for the driver to
+     * pick from: compressed ones cost far less to copy and draw a mostly clear page with. */
+    std::vector<uint64_t> modifiers;
 
   public:
     std::string error;

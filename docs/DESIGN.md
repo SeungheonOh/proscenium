@@ -106,12 +106,15 @@ What stands: the page lies on the canvas over the view and a margin, at rest. Th
 compositor moves it with the canvas as it does a window, so a pan draws nothing in
 the page and the drawing cannot drift: a line drawn beside a window kept the same
 42–43 px through a pan, a fling and the page being laid again. It is laid again
-only when the view nears its edge or the zoom has changed by an eighth: short of
-the 15% at which the compositor would raster the page again at the scale it is
-seen at, which draws the whole page again and can bring one frame laid out at the
-new scale but the old size, the drawing briefly a fifth too small or large. That
-move is where it could jump, since the node would move at once and the page draw
-for the new place a frame or two later. So the move waits for the frame:
+only when the view nears its edge or the zoom strays from the page's by `rezoom`
+(Paper.tsx). Within an eighth, the page never strays the 15% from its raster
+scale at which the compositor rasters a page again, a whole redraw that can bring
+one frame laid out at the new scale but the old size; a wider ratio lays it again
+less often, and a zoom that stops past 15% rasters it once.
+
+A move is where the drawing could jump, since the node would move at once and the
+page draw for the new place a frame or two later. So each frame shows where it was
+drawn for:
 
 - The node's `frameTag` names the frame it is placed for.
 - The page, once it draws for the new place, marks its frames with that number
@@ -119,13 +122,17 @@ for the new place a frame or two later. So the move waits for the frame:
 - The helper reads the cells as it copies a frame, blanks them and hands the
   number on with the frame.
 - The compositor remembers where the node was for each of its last four numbers,
-  within the canvas so it still pans, and shows each frame where it was drawn for:
-  until a frame with the node's latest number comes, the node stays where the frame
-  shown belongs, then the frame and the place change together. Moves that overlap,
-  as in a fast zoom, place the page again before its last frame reached the screen;
-  with only the last good place kept, such a frame showed for a few frames at the
-  place before it. A frame with a number it does not remember, or one waited for
-  over a second, shows where the node is.
+  within the canvas so it still pans, and shows each frame there; a frame with a
+  number it does not remember shows where the node is. One place is not enough:
+  in a fast zoom the world lays the page again as soon as it has drawn, before
+  that frame reaches the screen, so the frame shown can be a move behind the node
+  for as long as the zoom goes on. Pans never need more than one: counting frames
+  that only an older place showed right, fast flings, a steady pan and a fast
+  pinch at a 1.3 `rezoom` had none; a fast pinch at an eighth, with the page
+  slowed to 150 ms a move, had 68. The 200 ms a page's scale must hold before it
+  rasters again is no help here: it decides the page's resolution, not where its
+  frames show. A time limit on the wait, tried first, put such frames at the
+  newest place once a fast zoom kept the page a move behind for over a second.
 
 Panning with the paper out costs what it does with the paper put away: 77–82 ms of
 CPU and 172 ms of GPU a second, against 67–78 and 150.

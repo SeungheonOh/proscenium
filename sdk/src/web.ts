@@ -36,9 +36,9 @@ export interface WebProps extends ShapeProps, MotionProps, CursorProps, ShaderPr
   autoFocus?: boolean;
   /**
    * For a page whose drawing depends on where its node is, such as one drawing
-   * the canvas it lies on: while the page's frames are not yet marked with this
-   * number (tagFrames from proscenium/page, 1 to 4095), the node keeps showing
-   * the last such frame where it was. A move and the page's redraw for it then
+   * the canvas it lies on: each frame the page marks with a number (tagFrames
+   * from proscenium/page, 1 to 4095) shows where the node was while this was
+   * that number, for its last few. A move and the page's redraw for it then
    * show up together, in one frame.
    */
   frameTag?: number;

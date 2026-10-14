@@ -71,7 +71,7 @@ export interface Loaded {
   rendered: Record<string, number>;
 }
 
-/** An element drawn on its own, as a PNG of `box` at `scale`; no `png` when it draws nothing. */
+/** An element drawn on its own: a PNG of the canvas box x, y, width, height; no `png` when it draws nothing. */
 export interface Render {
   id: string;
   version: number;
@@ -113,7 +113,7 @@ export type PaperMessage =
   | { name: "flushed"; value: number };
 
 /** Chunks a page sends ahead of the world's confirmation; the queue holds 32 messages. */
-export const chunkWindow = 16;
+const chunkWindow = 16;
 /** Bytes of a chunk's escaped data, leaving room in the 8 KB message for the rest. */
 const chunkBytes = 7000;
 /** Characters of a document part, which is base64 and so needs no escaping. */
@@ -123,7 +123,7 @@ const encoder = new TextEncoder();
 const bytes = (text: string) => encoder.encode(JSON.stringify(text)).length;
 
 /** TEXT in pieces whose escaped UTF-8 fits a message, never parting a surrogate pair. */
-export function slices(text: string): string[] {
+function slices(text: string): string[] {
   const pieces: string[] = [];
   for (let at = 0; at < text.length; ) {
     let end = Math.min(text.length, at + chunkBytes);

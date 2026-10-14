@@ -91,7 +91,7 @@ export default function Page(props: Partial<PaperProps>) {
   return props.session ? <Paper {...(props as PaperProps)} /> : null;
 }
 
-/** Excalidraw's view showing CAMERA's world point at the middle of the page. */
+/** Excalidraw's view with PLACEMENT's corner at the page's top left, at its zoom. */
 function viewOf(placement: Placement) {
   return { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as never } };
 }

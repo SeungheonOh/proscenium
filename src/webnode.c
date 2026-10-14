@@ -12,8 +12,6 @@
 #include "stage.h"
 #include "web.h"
 
-/* How long a node waits for its page's numbered frame before it moves without it. */
-#define HOLD_LIMIT 1.0
 /* How many of a node's last frame numbers it remembers its place for. */
 #define PLACES 4
 /* How long the scale a page is seen at holds still before the page rasters at it: a zoom
@@ -47,12 +45,10 @@ struct stage_page {
     /* What displays were built with: whether it had a frame, and its size. */
     bool framed;
     double width, height;
-    /* The number on the frame shown; the node's places for its last numbers, newest first;
-     * and since when the frame shown has had another number than the node. */
+    /* The number on the frame shown, and the node's places for its last numbers, newest
+     * first. */
     int shown_tag;
     struct place places[PLACES];
-    bool holding;
-    double holding_since;
 };
 
 struct web_page *web_node_page(struct node *node) {
@@ -256,16 +252,9 @@ void web_node_hold(struct node *node, const struct mat4 *space, const struct mat
     if (places[0].tag != tag) memmove(&places[1], &places[0], (PLACES - 1) * sizeof *places);
     places[0] = (struct place){tag, mat4_multiply(space_inverse, chain), *width, *height};
     int shown = web_page_frame_tag(stage_page->page);
-    if (shown == tag) {
-        stage_page->holding = false;
-        return;
-    }
-    double now = now_seconds();
-    if (!stage_page->holding) stage_page->holding_since = now;
-    stage_page->holding = true;
-    if (now - stage_page->holding_since > HOLD_LIMIT) return;
+    if (!shown || shown == tag) return;
     for (int i = 1; i < PLACES; i++) {
-        if (!shown || places[i].tag != shown) continue;
+        if (places[i].tag != shown) continue;
         *chain = mat4_multiply(space, &places[i].chain);
         *width = places[i].width;
         *height = places[i].height;
@@ -345,9 +334,9 @@ void web_prepare(struct server *server, struct output *output) {
         if (stage_page->outputs && !(stage_page->outputs & (1u << output->index))) continue;
         struct box damage;
         if (!web_page_prepare(stage_page->page, &damage)) continue;
-        /* A node waiting for a numbered frame moves when it comes. */
+        /* A frame with another number shows where its node was with that number. */
         int tag = web_page_frame_tag(stage_page->page);
-        if (tag != stage_page->shown_tag || stage_page->holding) invalidate_displays(server);
+        if (tag != stage_page->shown_tag) invalidate_displays(server);
         stage_page->shown_tag = tag;
         /* Items fetch the page's textures as they draw; displays change only when it gets
          * its first frame or another size, which its hits map onto. */

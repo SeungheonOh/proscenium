@@ -50,7 +50,6 @@ export class PaperDocument {
   /** Elements that draw nothing, at the version that was found to. */
   private readonly blank = new Map<string, number>();
   private drawings: readonly Drawing[] = [];
-  private fresh = true;
   private timer: ReturnType<typeof setTimeout> | null = null;
   private saving: Promise<void> = Promise.resolve();
   private closed = false;
@@ -83,9 +82,6 @@ export class PaperDocument {
 
   /** Every element's render, bottom first. */
   getDrawings = (): readonly Drawing[] => this.drawings;
-
-  /** Whether every element's render shows it as it is now, so the renders can stand in for the page. */
-  isFresh = (): boolean => this.fresh;
 
   /** The document for a page, in base64 parts small enough for its props. */
   parts(): string[] {
@@ -165,8 +161,6 @@ export class PaperDocument {
     if (this.closed) return;
     const order = [...this.elements.values()].sort(byIndex);
     this.drawings = order.flatMap((element) => this.renders.get(element.id) ?? []);
-    this.fresh = order.every(({ id, version }) =>
-      this.renders.get(id)?.version === version || this.blank.get(id) === version);
     for (const listener of this.listeners) listener();
     this.timer ??= setTimeout(() => this.save(), saveDelay);
   }

@@ -37,11 +37,11 @@ void web_refresh_nodes(struct server *server, struct vec *nodes);
 void web_node_dead(struct server *server, struct node *node);
 /*
  * A node with a frameTag moves with its page's frames: while the page shows a frame
- * marked with an earlier number of the node's, CHAIN, WIDTH and HEIGHT become the
+ * marked with one of the node's last few numbers, CHAIN, WIDTH and HEIGHT become the
  * transform and size the node had with that number, kept within SPACE (the camera's, for
  * the canvas), so each frame shows where it was drawn for as the camera moves, and the
  * node moves the moment the frame drawn for its new place comes. A frame with a number
- * it does not remember, or after a second, shows where the node is.
+ * it does not remember shows where the node is.
  */
 void web_node_hold(struct node *node, const struct mat4 *space, const struct mat4 *space_inverse,
                    struct mat4 *chain, double *width, double *height);

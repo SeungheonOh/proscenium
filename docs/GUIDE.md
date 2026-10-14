@@ -587,7 +587,8 @@ change together (see
 Chromium helper process serves every page, starting
 with the first and stopping after the last. Pages hand their frames over as
 dma-bufs, of which the helper copies and the compositor redraws only the area
-Chromium reports changed; they stop painting while no output shows them, and
+Chromium reports changed, in a compressed layout where the GPU has one (a mostly
+clear page then costs little to copy and draw); they stop painting while no output shows them, and
 raster at the scale they are seen at once a zoom has held still for 200 ms. A reload of the world hands each page to
 its replacement node, so pages keep running. Web nodes need the helper, built
 with `-Dweb=enabled` against CEF (see the [README](../README.md#build)).

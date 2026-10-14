@@ -12,6 +12,8 @@ struct WebGpuSlot {
     web_buffer buffer = {};
     bool leased = false;
     int fence = -1;
+    /* The frame it holds, as its view counts them; 0 for none known. */
+    uint64_t frame = 0;
 };
 class WebGpu {
     int device = -1, next_token = 0;
@@ -25,8 +27,9 @@ class WebGpu {
     bool initialize();
     bool current();
     ~WebGpu();
-    WebGpuSlot *copy(const web_buffer &, const int *, std::vector<WebGpuSlot> &, int, int,
-                     double = 1);
+    WebGpuSlot *take(std::vector<WebGpuSlot> &, int, int, int, int);
+    bool blit(const web_buffer &, const int *, WebGpuSlot &, const int[4], double = 1, double = 0,
+              int * = nullptr);
     bool send(WebGpuSlot &, int);
     void release(std::vector<WebGpuSlot> &, int, int);
     void clear(std::vector<WebGpuSlot> &);

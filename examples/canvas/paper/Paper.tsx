@@ -2,15 +2,17 @@
  * Paper on the canvas: drawings, made with Excalidraw, that lie on the canvas
  * under the windows and move with it.
  *
+ * Out (Super+P), an Excalidraw page lies on the canvas under the windows, over
+ * the view and a wide margin around it, and the compositor moves it with the
+ * camera, so pans and zooms neither redraw it nor leave it behind. Only once the
+ * view nears the edge of what it covers, or the zoom changes by an eighth, is it
+ * placed again where the view is; the compositor keeps showing it at the old
+ * place until the page has drawn at the new one (`frameTag`), so the move shows
+ * as one frame. See docs/DESIGN.md, "Pages that draw the canvas".
  * Put away, the paper is pictures only: a PNG of each element, placed where the
  * element is, so pans and zooms cost the drawings nothing and no browser runs.
- * Out (Super+P), an Excalidraw page lies on the canvas under the windows, over
- * the view and a small margin around it. While the camera moves, the page is
- * parked off the screen, where Chromium does not draw it, and the pictures show
- * every element, so a pan costs what it costs with the paper away; a picture
- * not yet up to date keeps the page out for that pan instead. Once the view
- * settles past the margin, or at another zoom, the page is laid again where the
- * view is, and the pictures stand in for it until it has drawn there.
+ * The pictures stand in while the page loads, and the page hands over every
+ * picture it owes before it goes.
  */
 
 import {
@@ -38,34 +40,28 @@ import {
   Web,
   type CameraInfo,
   type OutputInfo,
-  type Rectangle,
 } from "proscenium";
 import { PaperDocument, type Drawing } from "./document.js";
 import paperPage from "./page/index.tsx?url";
 import { Inbox, type PaperMessage, type PaperProps, type Placement, type Style, type Tool } from "./wire.js";
 
-/**
- * The page's margin around the view, a share of it on each side. Each frame the
- * page makes while the user draws costs Chromium its whole area; pans show the
- * pictures, and laying the page again costs one frame, so the margin need only
- * spare the smallest nudges that.
- */
-const pageMargin = 0.05;
-/** The page's pixels a side, at most; the browser helper's frames go to 4096. */
-const pageSide = 4000;
-/** Far enough off any view that the compositor neither draws the page nor sends it input. */
-const parking = 1e7;
-/** How long the camera stays put before the page is laid again. */
-const settleDelay = 150;
-/** The zoom change, as a ratio, that has the page drawn again at the new one. */
-const rezoom = 1.15;
-/** Excalidraw zooms no further out; the page covers more canvas instead. */
-const pageMinZoom = 0.1;
 /** How long the page has to hand over, and the pictures to load, before the paper goes ahead anyway. */
 const handOverPatience = 2000;
+/** The page's pixels a side, at most; the browser helper's frames go to 4096. */
+const pageSide = 4000;
+/** The page's margin around the view, a share of it on each side, as far as its pixels allow. */
+const pageMargin = 0.4;
+/** The page is placed again once the view comes within this share of itself of the page's edge. */
+const nearEdge = 0.1;
+/**
+ * A zoom changed by this ratio has the page drawn again at the new one: an eighth, short of
+ * the 15% by which the compositor would raster the page again at the scale it is seen at,
+ * which redraws the whole page too, at times showing a frame at the old scale.
+ */
+const rezoom = 1.125;
 
-/** Placements count on from the time, so a world started again never repeats one. */
-let frames = Date.now();
+/** Placements are numbered 1 to 4095, from anywhere, so a world started again repeats none at once. */
+let tags = Math.floor(Math.random() * 4095);
 
 interface PaperContextValue {
   output: OutputInfo | undefined;
@@ -126,133 +122,107 @@ function pageSize(output: OutputInfo): { width: number; height: number } {
   return { width: Math.round(output.width * (1 + 2 * margin)), height: Math.round(output.height * (1 + 2 * margin)) };
 }
 
-/** Where the page lies for CAMERA: centered on it, at its zoom. */
+/** Where the page lies for CAMERA: centered on it, at its zoom, with a new number. */
 function placementFor(camera: CameraInfo, size: { width: number; height: number }): Placement {
-  const zoom = Math.max(camera.zoom, pageMinZoom);
+  tags = (tags % 4095) + 1;
   return {
-    x: camera.x - size.width / 2 / zoom,
-    y: camera.y - size.height / 2 / zoom,
-    zoom,
-    frame: ++frames,
+    x: camera.x - size.width / 2 / camera.zoom,
+    y: camera.y - size.height / 2 / camera.zoom,
+    zoom: camera.zoom,
+    tag: tags,
   };
 }
 
-/** The canvas the page covers. */
-function coverage(placement: Placement, size: { width: number; height: number }): Rectangle {
-  return { x: placement.x, y: placement.y, width: size.width / placement.zoom, height: size.height / placement.zoom };
+/** Whether PLACEMENT still does for CAMERA: the view, and a little around it, within the page, near its zoom. */
+function covers(placement: Placement, camera: CameraInfo, output: OutputInfo, size: { width: number; height: number }) {
+  const width = (output.width / camera.zoom) * (1 + 2 * nearEdge);
+  const height = (output.height / camera.zoom) * (1 + 2 * nearEdge);
+  const left = camera.x - width / 2, top = camera.y - height / 2;
+  const ratio = camera.zoom / placement.zoom;
+  return left >= placement.x && top >= placement.y &&
+    left + width <= placement.x + size.width / placement.zoom &&
+    top + height <= placement.y + size.height / placement.zoom &&
+    ratio < rezoom && ratio > 1 / rezoom;
 }
 
-const within = (inner: Rectangle, outer: Rectangle) =>
-  inner.x >= outer.x && inner.y >= outer.y &&
-  inner.x + inner.width <= outer.x + outer.width && inner.y + inner.height <= outer.y + outer.height;
-
-/** Whether LAID still does for CAMERA: the view within what the page covers, near the zoom it was laid at. */
-function covers(laid: Laid, camera: CameraInfo, output: OutputInfo, size: { width: number; height: number }) {
-  const view = {
-    x: camera.x - output.width / 2 / camera.zoom,
-    y: camera.y - output.height / 2 / camera.zoom,
-    width: output.width / camera.zoom,
-    height: output.height / camera.zoom,
-  };
-  const ratio = camera.zoom / laid.cameraZoom;
-  return within(view, coverage(laid.placement, size)) && ratio < rezoom && ratio > 1 / rezoom;
-}
-
-/** A placement, and the camera zoom it was laid for. */
-interface Laid {
-  placement: Placement;
-  cameraZoom: number;
-}
-
-/** The paper's pictures, and the page while the paper is out, on the canvas under the windows. */
+/** The paper's pictures, and the page while the paper is out, under the windows. */
 export function PaperLayer() {
   const { output, document, out, setOut, tool, style, toolChanged } = usePaper();
   const drawings = useSyncExternalStore(document.subscribe, document.getDrawings);
-  const fresh = useSyncExternalStore(document.subscribe, document.isFresh);
   const [session] = useState(() => Math.random().toString(36).slice(2));
-  const [laid, setLaid] = useState<Laid | null>(null);
-  const [framed, setFramed] = useState(-1);
+  // Where the page lies while the paper is out, and after, until it has handed everything over.
+  const [placement, setPlacement] = useState<Placement | null>(null);
+  // The placement the page last drew at; it is placed again only once it has drawn the last.
+  const [placed, setPlaced] = useState(0);
+  // The page shows the document where it lies, so the pictures step aside.
+  const [ready, setReady] = useState(false);
   const [load, setLoad] = useState<PaperProps["load"]>(null);
   const [received, setReceived] = useState(0);
   const [flush, setFlush] = useState(0);
   const [flushed, setFlushed] = useState(0);
-  // What waits for the page to hand over what it shows: laying it again, or taking it away.
-  const [awaiting, setAwaiting] = useState<"relay" | "away" | null>(null);
+  const [handing, setHanding] = useState(false);
   // The pictures the compositor has loaded; a count renders again as more come.
   const loadedPictures = useRef(new Set<string>()).current;
   const [, pictureCame] = useReducer((count: number) => count + 1, 0);
   const [impatient, setImpatient] = useState(false);
-  const [gliding, setGliding] = useState(false);
   const inbox = useRef(new Inbox()).current;
   const parts = useRef<string[]>([]);
 
   const size = output ? pageSize(output) : { width: 0, height: 0 };
-  // The page is there while it is laid, which lasts, after the paper is put away, until it has handed everything over.
-  const shown = laid !== null && framed === laid.placement.frame;
   const picturesLoaded = drawings.every((drawing) => loadedPictures.has(drawing.src));
-  const parked = gliding && shown && fresh && picturesLoaded && awaiting === null;
-  const covered = useMemo(
-    () => (shown && !parked ? coverage(laid.placement, size) : null),
-    [shown, parked, laid, size.width, size.height],
-  );
   // Until the page has handed over everything asked for, and the pictures are ready to stand in for it.
   const owed = !impatient && (flushed !== flush || !picturesLoaded);
 
-  function lay() {
-    const now = output && getCamera(output.name);
-    if (now) setLaid({ placement: placementFor(now, size), cameraZoom: now.zoom });
+  /** Places the page where CAMERA looks, unless the page has yet to draw where it was last placed. */
+  function follow(camera = output && getCamera(output.name)) {
+    if (!camera || !output) return;
+    if (placement && (placed !== placement.tag || covers(placement, camera, output, size))) return;
+    setPlacement(placementFor(camera, size));
   }
 
   function takeAway() {
-    setLaid(null);
-    setFramed(-1);
+    setPlacement(null);
+    setReady(false);
     setLoad(null);
+    setHanding(false);
   }
 
-  /** Asks the page for everything it owes, so that the pictures can stand in for it, then does NEXT. */
-  function handOver(next: "relay" | "away") {
-    setImpatient(false);
-    setFlush((count) => count + 1);
-    setAwaiting(next);
-  }
-
-  // Out: lay the page where the view is. Put away: once it has handed everything over, take it off.
+  // Out: the page comes. Put away: once it has handed everything over, it goes.
   useEffect(() => {
     if (out) {
-      if (!laid) lay();
-      else if (awaiting === "away") setAwaiting(null);
-    } else if (laid) {
-      if (framed === -1) takeAway();
-      else handOver("away");
+      if (!placement) follow();
+      setHanding(false);
+    } else if (placement) {
+      if (!ready) {
+        takeAway();
+        return;
+      }
+      setImpatient(false);
+      setFlush((count) => count + 1);
+      setHanding(true);
     }
   }, [out]);
 
-  /** The camera settled: lay the page again if the view has left it. */
-  function settled(camera: CameraInfo) {
-    setGliding(false);
-    if (!out || !laid || !output || covers(laid, camera, output, size)) return;
-    if (shown) handOver("relay");
-    else lay();
-  }
+  // Once the page has drawn where it lies, the camera may have gone on past it.
+  useEffect(() => follow(), [placed]);
 
-  // What waits, once the page owes nothing.
   useEffect(() => {
-    if (!awaiting) return;
+    if (!handing) return;
     if (owed) {
-      // A page that never answers, or a picture that never loads, does not hold the paper up for long.
+      // A page that stops answering, or a picture that never loads, does not hold the paper up
+      // for long; one still sending its renders is waited for.
       const timer = setTimeout(() => setImpatient(true), handOverPatience);
       return () => clearTimeout(timer);
     }
-    setAwaiting(null);
-    if (awaiting === "away") takeAway();
-    else lay();
-  }, [owed, awaiting]);
+    takeAway();
+  }, [owed, handing, received]);
 
   function handle(message: PaperMessage) {
     switch (message.name) {
       case "hello":
         inbox.reset();
         setReceived(0);
+        setReady(false);
         parts.current = document.parts();
         setLoad({ part: 0, parts: parts.current.length, data: parts.current[0]! });
         break;
@@ -262,8 +232,11 @@ export function PaperLayer() {
         setLoad(next < total ? { part: next, parts: total, data: parts.current[next]! } : null);
         break;
       }
-      case "framed":
-        setFramed(message.value);
+      case "ready":
+        setReady(true);
+        break;
+      case "placed":
+        setPlaced(message.value);
         break;
       case "chunk": {
         const packet = inbox.take(message.value);
@@ -272,14 +245,10 @@ export function PaperLayer() {
         break;
       }
       case "wheel":
-        if (output && laid) wheel(output, laid, message.value);
+        if (output) wheel(output, message.value);
         break;
       case "look":
-        // Excalidraw's zoom is the page's; the camera's differs where the page stops zooming out.
-        if (output && laid) {
-          const { x, y, zoom } = message.value;
-          moveCamera({ x, y, zoom: zoom * (laid.cameraZoom / laid.placement.zoom) }, { output: output.name });
-        }
+        if (output) moveCamera(message.value, { output: output.name });
         break;
       case "tool":
         toolChanged(message.value);
@@ -296,85 +265,58 @@ export function PaperLayer() {
   }, []);
   const pictureFailed = useCallback((drawing: Drawing) => document.lose(drawing.id, drawing.version), [document]);
 
-  const props: PaperProps | null = laid && {
-    session,
-    placement: laid.placement,
-    load,
-    received,
-    tool,
-    style,
-    flush,
-  };
-
   return (
     <>
-      {out && laid && output && (
-        <Settling output={output.name} onMoved={() => setGliding(true)} onSettled={settled} />
-      )}
-      <Pictures
-        drawings={drawings}
-        covered={covered}
-        onLoad={pictureLoaded}
-        onError={pictureFailed}
-      />
-      {props && (
-        <Group
-          x={props.placement.x}
-          y={props.placement.y + (parked ? parking : 0)}
-          originX={0}
-          originY={0}
-          transform={scale(1 / props.placement.zoom)}
-          transition={instant}
-        >
-          <Web
-            src={paperPage}
-            props={props}
-            width={size.width}
-            height={size.height}
-            // Until it shows its placement, the page is all but transparent rather than hidden,
-            // as a hidden page stops drawing; the pictures stand in for it meanwhile.
-            opacity={shown ? 1 : 0.001}
+      <Pictures drawings={drawings} hidden={ready} onLoad={pictureLoaded} onError={pictureFailed} />
+      {placement && output && (
+        <>
+          {out && <Watching output={output.name} onCamera={follow} />}
+          <Group
+            x={placement.x}
+            y={placement.y}
+            originX={0}
+            originY={0}
+            transform={scale(1 / placement.zoom)}
             transition={instant}
-            autoFocus
-            onMessage={(name, value) => handle({ name, value } as PaperMessage)}
-            onError={({ message }) => {
-              console.error(`paper: ${message}`);
-              setOut(false);
-            }}
-          />
-        </Group>
+          >
+            <Web
+              src={paperPage}
+              props={{ session, placement, load, received, tool, style, flush } satisfies PaperProps}
+              frameTag={placement.tag}
+              width={size.width}
+              height={size.height}
+              // Until it is ready the page is all but transparent rather than hidden, as a
+              // hidden page stops drawing; the pictures stand in for it meanwhile.
+              opacity={ready ? 1 : 0.001}
+              transition={instant}
+              autoFocus
+              onMessage={(name, value) => handle({ name, value } as PaperMessage)}
+              onError={({ message }) => {
+                console.error(`paper: ${message}`);
+                setOut(false);
+              }}
+            />
+          </Group>
+        </>
       )}
     </>
   );
 }
 
-interface SettlingProps {
-  output: string;
-  /** The camera started moving. */
-  onMoved: () => void;
-  /** It has stayed put for a moment, here. */
-  onSettled: (camera: CameraInfo) => void;
-}
-
-/** Follows OUTPUT's camera; it alone does, so a pan renders nothing else in the world. */
-function Settling({ output, onMoved, onSettled }: SettlingProps) {
+/** Hears where OUTPUT's camera is headed each time that changes; it alone renders that often. */
+function Watching({ output, onCamera }: { output: string; onCamera: (camera: CameraInfo) => void }) {
   const camera = useCamera(output);
-  const latest = useRef({ onMoved, onSettled });
-  latest.current = { onMoved, onSettled };
-  const first = useRef(true);
+  const latest = useRef(onCamera);
+  latest.current = onCamera;
   useEffect(() => {
-    if (!camera) return;
-    if (!first.current) latest.current.onMoved();
-    first.current = false;
-    const timer = setTimeout(() => latest.current.onSettled(camera), settleDelay);
-    return () => clearTimeout(timer);
-  }, [camera?.x, camera?.y, camera?.zoom]);
+    if (camera) latest.current(camera);
+  }, [camera]);
   return null;
 }
 
-/** The wheel over the page: a pan by screen pixels, or a zoom about the pointer. */
-function wheel(output: OutputInfo, laid: Laid, { dx, dy, factor, x, y }: { dx: number; dy: number; factor: number;
-                                                                           x: number; y: number }) {
+/** The wheel over the page: a pan by screen pixels, or a zoom about the canvas point (x, y). */
+function wheel(output: OutputInfo, { dx, dy, factor, x, y }: { dx: number; dy: number; factor: number;
+                                                               x: number; y: number }) {
   const camera = getCamera(output.name);
   if (!camera) return;
   const move = { output: output.name, transition: instant };
@@ -383,7 +325,7 @@ function wheel(output: OutputInfo, laid: Laid, { dx, dy, factor, x, y }: { dx: n
     return;
   }
   // The canvas point under the pointer stays under it.
-  const point = { x: laid.placement.x + x / laid.placement.zoom, y: laid.placement.y + y / laid.placement.zoom };
+  const point = { x, y };
   const zoom = camera.zoom * factor;
   const keep = camera.zoom / zoom;
   moveCamera({ x: point.x - (point.x - camera.x) * keep, y: point.y - (point.y - camera.y) * keep, zoom }, move);
@@ -391,16 +333,16 @@ function wheel(output: OutputInfo, laid: Laid, { dx, dy, factor, x, y }: { dx: n
 
 interface PicturesProps {
   drawings: readonly Drawing[];
-  /** The canvas the page shows while it is out: the pictures there step aside. */
-  covered: Rectangle | null;
+  /** While the page shows the drawing, the pictures step aside. */
+  hidden: boolean;
   onLoad: (src: string) => void;
   onError: (drawing: Drawing) => void;
 }
 
 /** Each element's picture, bottom first. The pointer passes through them to the canvas. */
-const Pictures = memo(function Pictures({ drawings, covered, onLoad, onError }: PicturesProps) {
+const Pictures = memo(function Pictures({ drawings, hidden, onLoad, onError }: PicturesProps) {
   return (
-    <Group interactive={false}>
+    <Group interactive={false} opacity={hidden ? 0 : 1} transition={instant}>
       {drawings.map((drawing) => (
         <Image
           key={drawing.id}
@@ -409,7 +351,6 @@ const Pictures = memo(function Pictures({ drawings, covered, onLoad, onError }: 
           y={drawing.y}
           width={drawing.width}
           height={drawing.height}
-          opacity={covered && within(drawing, covered) ? 0 : 1}
           interactive={false}
           onLoad={() => onLoad(drawing.src)}
           onError={() => onError(drawing)}

@@ -51,9 +51,19 @@ static const char page_html[] =
     "addEventListener('proscenium-message', (event) => {\n"
     "  if (event.detail.name !== 'props') return;\n"
     "  document.body.style.background = event.detail.value.color;\n"
+    "  if (event.detail.value.tag) mark(event.detail.value.tag);\n"
     "  send('props', {...event.detail.value, ratio: devicePixelRatio, width: innerWidth});\n"
     "});\n"
     "addEventListener('mousedown', (e) => send('click', [e.clientX, e.clientY, e.button]));\n"
+    "function mark(tag) {\n"
+    "  const digits = [(tag >> 8) & 15, (tag >> 4) & 15, tag & 15];\n"
+    "  [digits, digits.map((d) => 15 - d)].forEach((values, i) => {\n"
+    "    const cell = document.getElementById('cell' + i) || document.body.appendChild(\n"
+    "      Object.assign(document.createElement('div'), {id: 'cell' + i}));\n"
+    "    cell.style.cssText = `position:fixed;left:${2 * i}px;top:0;width:2px;height:2px;` +\n"
+    "      `background:rgb(${values.map((d) => d * 16 + 8).join(',')})`;\n"
+    "  });\n"
+    "}\n"
     "addEventListener('keydown', (e) => send('key', e.key));\n"
     "field.addEventListener('input', () => send('input', field.value));\n"
     "send('ready', null);\n"
@@ -199,6 +209,19 @@ static bool read_page(struct test *t) {
     return complete;
 }
 
+/* The alpha of the newest frame's pixel at (X, Y), from its top left; -1 before a frame. */
+static int alpha_at(struct test *t, int x, int y) {
+    struct web_surface surfaces[2];
+    if (web_page_surfaces(t->page, surfaces) < 1) return -1;
+    glBindFramebuffer(GL_FRAMEBUFFER, t->gpu->framebuffer);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, surfaces[0].texture,
+                           0);
+    uint8_t pixel[4] = {0};
+    glReadPixels(x, y, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return pixel[3];
+}
+
 static bool shows(struct test *t, uint8_t r, uint8_t g, uint8_t b) {
     return read_page(t) && abs(t->pixel[0] - r) <= 2 && abs(t->pixel[1] - g) <= 2 &&
            abs(t->pixel[2] - b) <= 2 && t->pixel[3] == 255;
@@ -284,6 +307,33 @@ static void run(struct gpu *gpu, const char *helper, const char *display, const 
     web_page_key(t.page, KEY_A, &keysym, 1, false, 0);
     CHECK(WAIT(&t, said(&t, "{\"name\":\"key\",\"value\":\"a\"}"), 10), "key a reached the page");
     CHECK(WAIT(&t, said(&t, "{\"name\":\"input\",\"value\":\"a\"}"), 10), "and typed a");
+
+    /* Another letter changes only the field in the corner, so only it is damaged. */
+    WAIT(&t, (read_page(&t), false), 0.5);
+    t.damaged = false;
+    keysym = XKB_KEY_b;
+    web_page_key(t.page, KEY_B, &keysym, 1, true, 0);
+    web_page_key(t.page, KEY_B, &keysym, 1, false, 0);
+    CHECK(WAIT(&t, said(&t, "{\"name\":\"input\",\"value\":\"ab\"}") && read_page(&t) && t.damaged,
+               10),
+          "typed b");
+    CHECK(t.damage.x + t.damage.width <= 16 && t.damage.y + t.damage.height <= 16,
+          "damage covers the field, not the page: %g %g %g %g", t.damage.x, t.damage.y,
+          t.damage.width, t.damage.height);
+
+    /* A page that marks its frames with a number: the helper reads it and blanks the mark. */
+    if (display) {
+        web_page_set_tagged(t.page, true);
+        web_page_set_props(t.page, "{\"color\":\"#0000ff\",\"tag\":291}");
+        CHECK(WAIT(&t, read_page(&t) && web_page_frame_tag(t.page) == 291, 10),
+              "frames carry the page's number: %d", web_page_frame_tag(t.page));
+        CHECK(alpha_at(&t, 2, 2) == 0 && alpha_at(&t, 6, 2) == 0 && alpha_at(&t, 10, 10) == 255,
+              "the mark is blanked, the page around it kept: %d %d %d", alpha_at(&t, 2, 2),
+              alpha_at(&t, 6, 2), alpha_at(&t, 10, 10));
+        web_page_set_props(t.page, "{\"color\":\"#0000ff\",\"tag\":4000}");
+        CHECK(WAIT(&t, read_page(&t) && web_page_frame_tag(t.page) == 4000, 10),
+              "and the next number: %d", web_page_frame_tag(t.page));
+    }
 
     web_page_set_raster_scale(t.page, 1.9);
     CHECK(web_page_raster_scale(t.page) == 2, "small scale changes keep the raster");

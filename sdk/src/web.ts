@@ -34,6 +34,14 @@ export interface WebProps extends ShapeProps, MotionProps, CursorProps, ShaderPr
    * and give it back when hidden: a launcher can stay mounted and just fade in.
    */
   autoFocus?: boolean;
+  /**
+   * For a page whose drawing depends on where its node is, such as one drawing
+   * the canvas it lies on: while the page's frames are not yet marked with this
+   * number (tagFrames from proscenium/page, 1 to 4095), the node keeps showing
+   * the last such frame where it was. A move and the page's redraw for it then
+   * show up together, in one frame.
+   */
+  frameTag?: number;
   interactive?: boolean;
   /** A message the page sent with send(name, value). */
   onMessage?: (name: string, value: unknown) => void;

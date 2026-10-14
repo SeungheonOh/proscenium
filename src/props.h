@@ -83,6 +83,7 @@ enum prop_key {
     PROP_DATA,
     PROP_REVISION,
     PROP_AUTO_FOCUS,
+    PROP_FRAME_TAG,
     PROP_TOP,
     PROP_RIGHT,
     PROP_BOTTOM,

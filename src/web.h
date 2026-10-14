@@ -113,6 +113,11 @@ void web_page_close(struct web_page *page);
 void web_page_set_listener_data(struct web_page *page, void *data);
 /* Whether the helper hands this page's frames over as dma-bufs rather than bitmaps. */
 bool web_page_dmabuf(const struct web_page *page);
+/* Have the helper read the number the page marks its frames with (tagFrames in
+ * proscenium/page); the page's frame shown carries it from then on. */
+void web_page_set_tagged(struct web_page *page, bool tagged);
+/* The number the frame shown was marked with; 0 for none. */
+int web_page_frame_tag(const struct web_page *page);
 
 /* Lay the page out at WIDTH x HEIGHT CSS pixels (held to 1..8192), keeping its raster scale. */
 void web_page_resize(struct web_page *page, double width, double height);

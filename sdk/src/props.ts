@@ -584,7 +584,7 @@ const fields: Record<HostType, Record<string, Writer>> = {
   web: {
     ...box, src: text("src"), data: text("data"), revision: number("revision"),
     focusable: flag("focusable"), interactive: flag("interactive"), autoFocus: flag("autoFocus"),
-    cursor,
+    frameTag: number("frameTag"), cursor,
   },
   window: {
     ...box, window: number("window"),

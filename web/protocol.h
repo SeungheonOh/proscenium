@@ -52,6 +52,8 @@ enum web_op {
     WEB_STOP,
     WEB_MODIFIERS,
     WEB_RELEASE,
+    /* Read the number the page marks its frames with (A: whether to). */
+    WEB_TAGGED,
 };
 
 /* Only the used prefix of TEXT travels. */

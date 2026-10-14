@@ -578,22 +578,30 @@ passes the node's `props` (re-rendering in place when they change) and delivers
 reloads only that page. The page is an ordinary scene node: it transforms,
 rounds, blurs what is behind it and animates like any other, and receives
 pointer and keyboard input like a window; `autoFocus` gives it the keyboard
-whenever it appears. One Chromium helper process serves every page, starting
+whenever it appears. A page whose drawing must match its place, such as one
+drawing a stretch of the canvas, is given a `frameTag` with each place, and
+calls `tagFrames(tag)` once it has drawn for it: the compositor shows each frame
+where the node was while it had that frame's number, so the frame and the place
+change together (see
+[DESIGN.md](DESIGN.md#pages-that-draw-the-canvas-lie-on-it-and-move-with-their-frames)). One
+Chromium helper process serves every page, starting
 with the first and stopping after the last. Pages hand their frames over as
-dma-bufs, stop painting while no output shows them, and raster at the scale
-they are seen at once a zoom settles. A reload of the world hands each page to
+dma-bufs, of which the helper copies and the compositor redraws only the area
+Chromium reports changed; they stop painting while no output shows them, and
+raster at the scale they are seen at once a zoom has held still for 200 ms. A reload of the world hands each page to
 its replacement node, so pages keep running. Web nodes need the helper, built
 with `-Dweb=enabled` against CEF (see the [README](../README.md#build)).
 
 A page that changes every frame costs a whole Chromium frame each time: on an
 Iris Xe laptop at 2256 × 1504, a full-screen canvas that only clears takes
 about 250 ms of CPU and 700 ms of GPU time a second, and video plays from
-software decoding. Keep pages for what shows briefly or changes rarely, and
+software decoding. A small change, such as a spinner on a big page, costs the
+helper and the compositor only its own area, but a canvas cleared every frame,
+as Excalidraw's is while the user draws, changes all of it. Keep pages for what shows briefly or changes rarely, and
 draw what moves all the time with nodes: the compositor runs their animations
 itself and repaints only where they change. The canvas world's paper does both:
-its Excalidraw page is out only while the user draws, and is parked off the
-screen, where Chromium does not draw it, while the camera moves; the rest of
-the time each drawing is an `Image` of the PNG the page exported for it.
+its Excalidraw page is out only while the user draws, and the rest of the time
+each drawing is an `Image` of the PNG the page exported for it.
 
 ### Hot reload
 

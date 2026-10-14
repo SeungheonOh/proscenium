@@ -27,6 +27,9 @@
       "react-dom/client": [
         "../sdk/node_modules/@types/react-dom/client"
       ],
+      "react-dom": [
+        "../sdk/node_modules/@types/react-dom"
+      ],
       "react": [
         "../sdk/node_modules/@types/react"
       ],

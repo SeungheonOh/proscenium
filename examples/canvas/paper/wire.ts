@@ -15,15 +15,6 @@ export interface SceneElement {
   [key: string]: unknown;
 }
 
-/** Where the page lies on the canvas: its top-left corner, and the zoom it draws at. */
-export interface Placement {
-  x: number;
-  y: number;
-  zoom: number;
-  /** Numbers placements, so the page can say which one it has drawn. */
-  frame: number;
-}
-
 export const tools = [
   "selection",
   "freedraw",
@@ -43,10 +34,22 @@ export interface Style {
   width: number;
 }
 
+/**
+ * Where the page lies on the canvas: its top-left corner, and the zoom it draws
+ * at. `tag` numbers the place (1 to 4095); the page marks the frames it draws
+ * there with it, and its node waits for them before it moves.
+ */
+export interface Placement {
+  x: number;
+  y: number;
+  zoom: number;
+  tag: number;
+}
+
 export interface PaperProps {
+  placement: Placement;
   /** New each time the world starts; the page says hello to each, as a new world knows nothing yet. */
   session: string;
-  placement: Placement;
   /**
    * The document as the world has it, one part at a time after each hello: a
    * page that has none takes it, and one that has its own sends what differs.
@@ -95,10 +98,12 @@ export type PaperMessage =
   | { name: "hello"; value: { fresh: boolean } }
   /** Part `value` of the document arrived. */
   | { name: "loaded"; value: number }
-  /** The page shows placement `value`, with the document in it. */
-  | { name: "framed"; value: number }
+  /** The page shows the document where it is placed. */
+  | { name: "ready" }
+  /** The page drew at placement `value` and marks its frames with it. */
+  | { name: "placed"; value: number }
   | { name: "chunk"; value: Chunk }
-  /** The wheel turned over the page: pan by screen pixels, or zoom by `factor` about (x, y) on the page. */
+  /** The wheel turned over the page: pan by screen pixels, or zoom by `factor` about the canvas point (x, y). */
   | { name: "wheel"; value: { dx: number; dy: number; factor: number; x: number; y: number } }
   /** Excalidraw wanted to look elsewhere, e.g. zooming to fit: the canvas point to center, at `zoom`. */
   | { name: "look"; value: { x: number; y: number; zoom: number } }

@@ -1,13 +1,16 @@
 /**
- * The canvas's paper, drawn with Excalidraw. While the paper is out, the world
- * lays this page on the canvas under the windows, over the part of the canvas
- * its placement covers, and the page draws that part at the placement's zoom.
- * Moving the view is the world's: wheel turns, and the zooms of Excalidraw's
- * own keys, go to the canvas camera, and the page keeps to its placement.
+ * The canvas's paper, drawn with Excalidraw. While the paper is out, this page
+ * lies on the canvas under the windows, over the view and a margin around it,
+ * and draws the part of the canvas its placement covers; the compositor moves
+ * it with the camera. When the world places it elsewhere, it draws there and
+ * marks that frame with the placement's number, which its node waits for, so the
+ * move and the drawing for it show together. Moving the view is the camera's
+ * alone: wheel turns over the page, and the zooms of Excalidraw's own keys, go
+ * to it.
  *
- * Changes go to the world, which keeps the document. Each element is also
- * drawn on its own, a little after it last changed, for the world to show while
- * the paper is put away or moving.
+ * Changes go to the world, which keeps the document. When the paper is put
+ * away, each element changed since is drawn on its own, for the world to show
+ * as a picture; nothing is drawn so while the user draws.
  */
 
 import "./fonts.js";
@@ -23,8 +26,9 @@ import {
   restoreElements,
 } from "@excalidraw/excalidraw";
 import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
-import { send } from "proscenium/page";
+import { send, tagFrames } from "proscenium/page";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { flushSync } from "react-dom";
 import {
   bytesToBase64,
   fromBase64,
@@ -33,14 +37,15 @@ import {
   type Loaded,
   type PaperMessage,
   type PaperProps,
+  type Placement,
   type SceneElement,
   type Tool,
 } from "../wire.js";
 
 /** How long after the last change the page sends what changed. */
 const settleChanges = 160;
-/** Pixels per canvas unit in an element's render: sharp at twice the size. */
-const renderScale = 2;
+/** Pixels per canvas unit in an element's render: twice the screen's, sharp to 200%. */
+const renderScale = () => Math.max(2, 2 * devicePixelRatio);
 /** The largest render, in pixels a side and in all; the compositor decodes up to 4096 a side. */
 const renderSide = 4096;
 const renderPixels = 8e6;
@@ -65,14 +70,6 @@ function tell(message: PaperMessage): void {
   send(message.name, "value" in message ? message.value : null);
 }
 
-/** A moment Chromium has nothing else to do, so that a render never holds up a stroke. */
-const idle = () => new Promise<void>((resolve) => requestIdleCallback(() => resolve(), { timeout: 1000 }));
-
-/** Whether the user is in the middle of drawing or typing something, which renders wait for. */
-function busy(state: AppState): boolean {
-  return state.cursorButton === "down" || state.editingTextElement !== null || state.newElement !== null;
-}
-
 /**
  * Excalidraw's laser trails look for collaborators' pointers on every animation
  * frame for as long as it is mounted, which keeps Chromium making frames with
@@ -91,7 +88,12 @@ function stopCollaboratorTrails(root: Element | null): void {
 
 /** The page renders once before its first props arrive. */
 export default function Page(props: Partial<PaperProps>) {
-  return props.placement ? <Paper {...(props as PaperProps)} /> : null;
+  return props.session ? <Paper {...(props as PaperProps)} /> : null;
+}
+
+/** Excalidraw's view showing CAMERA's world point at the middle of the page. */
+function viewOf(placement: Placement) {
+  return { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as never } };
 }
 
 function Paper({ session, placement, load, received, tool, style, flush }: PaperProps) {
@@ -106,13 +108,15 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
     /** The version of each element the world has, and of each render. */
     known: new Map<string, number>(),
     rendered: new Map<string, number>(),
+    /** Where the page last drew. */
     placement,
+    /** Whether the page has said it is ready; before, view changes are Excalidraw settling in. */
+    ready: false,
     tool: null as Tool | null,
     timer: null as ReturnType<typeof setTimeout> | null,
     rendering: null as Promise<void> | null,
   }).current;
   const [outbox] = useState(() => new Outbox((chunk) => tell({ name: "chunk", value: chunk })));
-  live.placement = placement;
 
   // Each new world starts the conversation over.
   useEffect(() => {
@@ -140,7 +144,7 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
     if (api) stopCollaboratorTrails(document.querySelector(".excalidraw-container"));
   }, [api]);
 
-  /** Sends the elements that differ from what the world has, then renders what is owed. */
+  /** Sends the elements that differ from what the world has. */
   function sync(api: ExcalidrawImperativeAPI): void {
     if (live.timer) clearTimeout(live.timer);
     live.timer = null;
@@ -161,19 +165,17 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
       live.rendered.delete(id);
     }
     if (put.length || drop.length) outbox.push({ type: "elements", put, drop });
-    void renderOwed(api, false);
   }
 
-  /** Renders every element whose render the world lacks, unless FORCE is off and the user is busy. */
-  function renderOwed(api: ExcalidrawImperativeAPI, force: boolean): Promise<void> {
-    if (live.rendering) return live.rendering.then(() => renderOwed(api, force));
+  /**
+   * Renders every element whose render the world lacks. A render holds up the
+   * page for some 50 ms, so this waits for the paper to be put away rather than
+   * coming between strokes.
+   */
+  function renderOwed(api: ExcalidrawImperativeAPI): Promise<void> {
+    if (live.rendering) return live.rendering.then(() => renderOwed(api));
     live.rendering = (async () => {
       for (;;) {
-        if (!force) await idle();
-        if (!force && busy(api.getAppState())) {
-          live.timer ??= setTimeout(() => sync(api), settleChanges);
-          return;
-        }
         const element = api.getSceneElements().find((each) => live.rendered.get(each.id) !== each.version);
         if (!element) return;
         try {
@@ -205,20 +207,42 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
     sync(api);
   }, [api, loaded]);
 
-  // The placement: draw what it covers, then say so once it shows.
+  // The page draws where it is placed, once the document is in and at each new place, in one
+  // frame with the place's number, so its node moves the moment that frame comes. Not in the
+  // middle of a stroke or a word: the old place stays until the user lets go.
+  const [placed, setPlaced] = useState(false);
   useEffect(() => {
     if (!api || !loaded) return;
-    api.updateScene({
-      appState: { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as never } },
-      captureUpdate: CaptureUpdateAction.NEVER,
+    // Outside React's own work, so that flushSync can draw at once.
+    let timer = setTimeout(function place() {
+      const state = api.getAppState();
+      if (state.cursorButton === "down" || state.editingTextElement || state.newElement) {
+        timer = setTimeout(place, 100);
+        return;
+      }
+      live.placement = placement;
+      // Excalidraw draws the new view before the number goes on, both in this one task.
+      flushSync(() => api.updateScene({ appState: viewOf(placement), captureUpdate: CaptureUpdateAction.NEVER }));
+      tagFrames(placement.tag);
+      tell({ name: "placed", value: placement.tag });
+      setPlaced(true);
     });
+    return () => clearTimeout(timer);
+  }, [api, loaded, placement.tag, placement.x, placement.y, placement.zoom]);
+
+  // Once the document is in and drawn where the page is placed, the page can show.
+  useEffect(() => {
+    if (!api || !loaded || !placed) return;
     let frames = 3;
     let request = requestAnimationFrame(function wait() {
       if (--frames > 0) request = requestAnimationFrame(wait);
-      else tell({ name: "framed", value: placement.frame });
+      else {
+        live.ready = true;
+        tell({ name: "ready" });
+      }
     });
     return () => cancelAnimationFrame(request);
-  }, [api, loaded, placement.frame]);
+  }, [api, loaded, placed]);
 
   // Excalidraw settles its tool once the scene is in, so the first pick waits for that.
   useEffect(() => {
@@ -255,7 +279,7 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
   useEffect(() => {
     if (!api || !loaded || flush === 0) return;
     sync(api);
-    void renderOwed(api, true)
+    void renderOwed(api)
       .then(() => outbox.drained())
       .then(() => tell({ name: "flushed", value: flush }));
   }, [api, !loaded, flush]);
@@ -282,11 +306,12 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
       let dy = event.deltaY * unit;
       if (event.shiftKey && dx === 0) [dx, dy] = [dy, 0];
       const zoom = event.ctrlKey || event.metaKey;
+      // The pointer on the canvas, as the page draws it now.
+      const { x, y, zoom: scale } = live.placement;
+      const point = { x: x + event.clientX / scale, y: y + event.clientY / scale };
       tell({
         name: "wheel",
-        value: zoom
-          ? { dx: 0, dy: 0, factor: Math.exp(-dy / 300), x: event.clientX, y: event.clientY }
-          : { dx, dy, factor: 1, x: event.clientX, y: event.clientY },
+        value: zoom ? { dx: 0, dy: 0, factor: Math.exp(-dy / 300), ...point } : { dx, dy, factor: 1, ...point },
       });
     }
     addEventListener("wheel", wheel, { capture: true, passive: false });
@@ -307,28 +332,30 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
 
   /** Excalidraw moved its view by itself: the camera goes there, and the page stays put. */
   function scrolled(scrollX: number, scrollY: number, zoom: { value: number }) {
-    const { x, y, zoom: placed } = live.placement;
-    if (!api || (Math.abs(scrollX + x) < 0.5 && Math.abs(scrollY + y) < 0.5 && Math.abs(zoom.value - placed) < 1e-4)) {
+    if (!api) return;
+    const view = viewOf(live.placement);
+    if (Math.abs(scrollX - view.scrollX) < 0.5 && Math.abs(scrollY - view.scrollY) < 0.5 &&
+        Math.abs(zoom.value - live.placement.zoom) < 1e-4) {
+      return;
+    }
+    // Excalidraw sets its view as it starts, after the page placed it: the placement stands.
+    if (!live.ready) {
+      api.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
       return;
     }
     tell({
       name: "look",
-      value: { x: -scrollX + innerWidth / 2 / zoom.value, y: -scrollY + innerHeight / 2 / zoom.value, zoom: zoom.value },
+      value: { x: innerWidth / 2 / zoom.value - scrollX, y: innerHeight / 2 / zoom.value - scrollY, zoom: zoom.value },
     });
-    api.updateScene({
-      appState: { scrollX: -x, scrollY: -y, zoom: { value: placed as never } },
-      captureUpdate: CaptureUpdateAction.NEVER,
-    });
+    api.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
   }
 
   // Excalidraw renders all of itself again whenever a prop is new, so its props stay the same
   // objects while the world's props come and go.
   const [initialData] = useState(() => ({
     appState: {
+      ...viewOf(placement),
       viewBackgroundColor: "transparent",
-      scrollX: -placement.x,
-      scrollY: -placement.y,
-      zoom: { value: placement.zoom as never },
       currentItemStrokeColor: style.stroke,
       currentItemBackgroundColor: style.background,
       currentItemStrokeWidth: style.width,
@@ -366,7 +393,7 @@ async function draw(element: ExcalidrawElement, api: ExcalidrawImperativeAPI) {
   const padding = 6 + 2 * element.strokeWidth;
   const width = maxX - minX + 2 * padding;
   const height = maxY - minY + 2 * padding;
-  const scale = Math.min(renderScale, renderSide / Math.max(width, height), Math.sqrt(renderPixels / (width * height)));
+  const scale = Math.min(renderScale(), renderSide / Math.max(width, height), Math.sqrt(renderPixels / (width * height)));
   const blob = await exportToBlob({
     elements: [element],
     appState: { exportBackground: false, exportScale: scale, viewBackgroundColor: "transparent" },

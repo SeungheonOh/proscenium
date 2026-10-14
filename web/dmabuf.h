@@ -17,9 +17,15 @@
 /*
  * A frame of page ID's LAYER (0 the page, 1 its popup). TOKEN names the helper's
  * buffer, so the compositor can keep its import while the helper reuses it.
+ * DAMAGE is where the frame differs from the one the helper sent before it: x,
+ * y, width and height in buffer pixels from the top left, empty for none. TAG is
+ * the number the page marked the frame with (tagFrames in proscenium/page), for a
+ * page whose node waits for it; 0 for none.
  */
 struct web_buffer {
     int id, layer, token, width, height, planes;
+    int damage[4];
+    int tag;
     uint32_t format, stride[WEB_PLANES], offset[WEB_PLANES];
     uint64_t modifier;
 };

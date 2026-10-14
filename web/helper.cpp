@@ -27,12 +27,77 @@
 #include <cmath>
 #include <chrono>
 #include <cstddef>
+#include <deque>
 #include <string>
 namespace fs = std::filesystem;
 static int wake_fd = -1, command_fd = -1;
 static bool stopping = false;
 static WebGpu gpu;
 static bool accelerated = false;
+
+static CefRect unite(const CefRect &a, const CefRect &b) {
+    if (a.IsEmpty()) return b;
+    if (b.IsEmpty()) return a;
+    int x = std::min(a.x, b.x), y = std::min(a.y, b.y);
+    return CefRect(x, y, std::max(a.x + a.width, b.x + b.width) - x,
+                   std::max(a.y + a.height, b.y + b.height) - y);
+}
+static CefRect clip(const CefRect &a, const CefRect &to) {
+    int x = std::max(a.x, to.x), y = std::max(a.y, to.y);
+    int right = std::min(a.x + a.width, to.x + to.width);
+    int bottom = std::min(a.y + a.height, to.y + to.height);
+    return right > x && bottom > y ? CefRect(x, y, right - x, bottom - y) : CefRect();
+}
+
+/*
+ * What a layer's recent frames changed, by Chromium's update rectangles, so that
+ * copying a frame into a buffer that holds an older one takes only what changed
+ * since, and the compositor redraws only what changed since the frame it has.
+ * Frames are counted from 1; whatever is not known counts as all of the frame.
+ */
+class Changes {
+    static constexpr size_t kept = 8;
+    std::deque<std::pair<uint64_t, CefRect>> recent;
+    uint64_t counter = 0;
+    bool counted = false;
+    int width = 0, height = 0;
+
+  public:
+    uint64_t frame = 0;
+    /* The last frame that reached the compositor. */
+    uint64_t sent = 0;
+
+    CefRect whole() const {
+        return CefRect(0, 0, width, height);
+    }
+    /* Count a frame of W x H that INFO describes. */
+    void note(int w, int h, const CefAcceleratedPaintInfo &info) {
+        const auto &extra = info.extra;
+        if (w != width || h != height) {
+            width = w;
+            height = h;
+            recent.clear();
+        }
+        // An update rectangle is relative to the frame counted just before it; after
+        // a frame that never came here, or with no count, everything changed.
+        bool follows = counted && extra.has_capture_counter && extra.capture_counter == counter + 1;
+        CefRect area = follows && extra.has_capture_update_rect && !recent.empty()
+                           ? clip(CefRect(extra.capture_update_rect), whole())
+                           : whole();
+        counted = extra.has_capture_counter;
+        counter = extra.capture_counter;
+        recent.emplace_back(++frame, area);
+        if (recent.size() > kept) recent.pop_front();
+    }
+    /* What changed after frame SINCE, up to the latest. */
+    CefRect after(uint64_t since) const {
+        if (since == 0 || recent.empty() || recent.front().first > since + 1) return whole();
+        CefRect area;
+        for (auto &[number, changed] : recent)
+            if (number > since) area = unite(area, changed);
+        return area;
+    }
+};
 static bool want_acceleration() {
     auto p = getenv("PROSCENIUM_WEB_TRANSPORT");
     return (!p || strcmp(p, "bitmap")) && getenv("WAYLAND_DISPLAY");
@@ -173,7 +238,11 @@ class View final : public CefClient,
     int pixel_width = 0, pixel_height = 0, popup_width = 0, popup_height = 0;
     std::vector<Command> pending;
     std::vector<WebGpuSlot> pools[2];
+    Changes changes[2];
     bool refresh[2] = {false, false};
+    /* Whether the page marks its frames with a number, and the number last read. */
+    bool tagged = false;
+    int tag = 0;
     void release(int layer, int token, int fence) {
         if (layer < 0 || layer > 1) {
             if (fence >= 0) close(fence);
@@ -207,7 +276,24 @@ class View final : public CefClient,
             input.stride[p] = info.planes[p].stride;
             input.offset[p] = info.planes[p].offset;
         }
-        auto slot = gpu.copy(input, fds, pools[layer], id, layer, layer ? scale : 1);
+        auto &changed = changes[layer];
+        changed.note(input.width, input.height, info);
+        // The popup is copied whole, scaled to the page's pixels; the page only where it
+        // changed since the frame the buffer last held, or wholly into a new buffer.
+        double ratio = layer ? scale : 1;
+        auto slot = gpu.take(pools[layer], (int)std::ceil(input.width * ratio),
+                             (int)std::ceil(input.height * ratio), id, layer);
+        CefRect copy = slot && !layer ? changed.after(slot->frame) : changed.whole();
+        int area[4] = {copy.x, copy.y, copy.width, copy.height};
+        // The page's number is read where it changed, and kept where it did not.
+        CefRect cells(0, 0, (int)std::ceil(4 * scale), (int)std::ceil(2 * scale));
+        int read = -1;
+        bool reading = tagged && !layer && !clip(copy, cells).IsEmpty();
+        if (slot && !gpu.blit(input, fds, *slot, area, ratio, reading ? scale : 0,
+                              reading ? &read : nullptr)) {
+            slot->frame = 0;
+            slot = nullptr;
+        }
         if (!slot) {
             if (!gpu.error.empty()) {
                 auto v = CefValue::Create();
@@ -216,8 +302,18 @@ class View final : public CefClient,
             } else refresh[layer] = true;
             return;
         }
+        slot->frame = changed.frame;
+        if (read >= 0) tag = read;
+        slot->buffer.tag = tagged && !layer ? tag : 0;
+        CefRect damage = layer ? CefRect(0, 0, slot->buffer.width, slot->buffer.height)
+                               : changed.after(changed.sent);
+        slot->buffer.damage[0] = damage.x;
+        slot->buffer.damage[1] = damage.y;
+        slot->buffer.damage[2] = damage.width;
+        slot->buffer.damage[3] = damage.height;
         // The frame wakes the compositor through the socket it travels on.
-        if (!gpu.send(*slot, command_fd)) refresh[layer] = true;
+        if (gpu.send(*slot, command_fd)) changed.sent = changed.frame;
+        else refresh[layer] = true;
     }
     View(int number, web_shared *memory, int w, int h, double ratio)
         : id(number), width(w), height(h), scale(ratio), shared(memory) {}
@@ -460,6 +556,10 @@ class View final : public CefClient,
         return true;
     }
     void command(const Command &c) {
+        if (c.op == WEB_TAGGED) {
+            tagged = c.a;
+            return;
+        }
         if (c.op == WEB_CLOSE) {
             closing = true;
             if (browser) browser->GetHost()->CloseBrowser(true);

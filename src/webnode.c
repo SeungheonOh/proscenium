@@ -2,6 +2,7 @@
 
 #include <GLES2/gl2.h>
 #include <math.h>
+#include <string.h>
 #include <wlr/types/wlr_output.h>
 
 #include "display.h"
@@ -10,6 +11,22 @@
 #include "render.h"
 #include "stage.h"
 #include "web.h"
+
+/* How long a node waits for its page's numbered frame before it moves without it. */
+#define HOLD_LIMIT 1.0
+/* How many of a node's last frame numbers it remembers its place for. */
+#define PLACES 4
+/* How long the scale a page is seen at holds still before the page rasters at it: a zoom
+ * pauses for a frame now and then, and each new raster draws the whole page again. */
+#define RASTER_SETTLE_MS 200
+
+/* Where a node was while it had a frame number: its transform within its space (the
+ * canvas, or a screen) and its size. */
+struct place {
+    int tag;
+    struct mat4 chain;
+    double width, height;
+};
 
 struct stage_page {
     struct wl_list link; /* server.pages */
@@ -23,9 +40,19 @@ struct stage_page {
     /* Outputs whose last frame showed it, and the settled scale wanted on each. */
     uint32_t outputs;
     double wanted[32];
+    /* When the scale it is seen at last changed on each output, and the timer that looks
+     * again once that has held still. */
+    double scale_changed[32];
+    struct wl_event_source *settle_timer;
     /* What displays were built with: whether it had a frame, and its size. */
     bool framed;
     double width, height;
+    /* The number on the frame shown; the node's places for its last numbers, newest first;
+     * and since when the frame shown has had another number than the node. */
+    int shown_tag;
+    struct place places[PLACES];
+    bool holding;
+    double holding_since;
 };
 
 struct web_page *web_node_page(struct node *node) {
@@ -153,6 +180,7 @@ static void destroy_page(struct server *server, struct stage_page *stage_page) {
     wl_list_for_each(output, &server->outputs, link)
         display_forget_client(output, stage_page->page);
     web_page_close(stage_page->page);
+    if (stage_page->settle_timer) wl_event_source_remove(stage_page->settle_timer);
     free(stage_page->src);
     free(stage_page);
 }
@@ -166,6 +194,7 @@ static void sync_page(struct stage_page *stage_page) {
     if (node_given(node, PROP_REVISION))
         web_page_set_revision(stage_page->page, node->props[PROP_REVISION].number);
     web_page_set_props(stage_page->page, node_string(node, PROP_DATA));
+    web_page_set_tagged(stage_page->page, node_given(node, PROP_FRAME_TAG));
 }
 
 /* An autoFocus page takes the keyboard each time it appears and gives it back when
@@ -218,6 +247,32 @@ void web_refresh_nodes(struct server *server, struct vec *nodes) {
     }
 }
 
+void web_node_hold(struct node *node, const struct mat4 *space, const struct mat4 *space_inverse,
+                   struct mat4 *chain, double *width, double *height) {
+    struct stage_page *stage_page = node->web_page;
+    if (!stage_page || !node_given(node, PROP_FRAME_TAG)) return;
+    struct place *places = stage_page->places;
+    int tag = (int)node->props[PROP_FRAME_TAG].number;
+    if (places[0].tag != tag) memmove(&places[1], &places[0], (PLACES - 1) * sizeof *places);
+    places[0] = (struct place){tag, mat4_multiply(space_inverse, chain), *width, *height};
+    int shown = web_page_frame_tag(stage_page->page);
+    if (shown == tag) {
+        stage_page->holding = false;
+        return;
+    }
+    double now = now_seconds();
+    if (!stage_page->holding) stage_page->holding_since = now;
+    stage_page->holding = true;
+    if (now - stage_page->holding_since > HOLD_LIMIT) return;
+    for (int i = 1; i < PLACES; i++) {
+        if (!shown || places[i].tag != shown) continue;
+        *chain = mat4_multiply(space, &places[i].chain);
+        *width = places[i].width;
+        *height = places[i].height;
+        return;
+    }
+}
+
 void web_node_dead(struct server *server, struct node *node) {
     if (node->kind != KIND_WEB) return;
     free(node->web_failed);
@@ -229,15 +284,31 @@ void web_node_dead(struct server *server, struct node *node) {
     }
 }
 
+/* The scale a page is seen at has held still: the next frame takes it. */
+static int settle_due(void *data) {
+    struct stage_page *stage_page = data;
+    scene_changed(stage_page->server);
+    return 0;
+}
+
 void web_node_presented(struct node *node, struct output *output, double scale, bool settled,
                         double width) {
     struct stage_page *stage_page = node->web_page;
     if (!stage_page || output->index >= 32) return;
-    if (settled) {
-        double page_width, page_height;
-        web_page_size(stage_page->page, &page_width, &page_height);
-        stage_page->wanted[output->index] = scale * width / fmax(1, page_width);
+    double now = now_seconds();
+    if (!settled) {
+        stage_page->scale_changed[output->index] = now;
+        if (!stage_page->settle_timer)
+            stage_page->settle_timer =
+                wl_event_loop_add_timer(stage_page->server->loop, settle_due, stage_page);
+        if (stage_page->settle_timer)
+            wl_event_source_timer_update(stage_page->settle_timer, RASTER_SETTLE_MS);
+        return;
     }
+    if (now - stage_page->scale_changed[output->index] < RASTER_SETTLE_MS / 1000.0) return;
+    double page_width, page_height;
+    web_page_size(stage_page->page, &page_width, &page_height);
+    stage_page->wanted[output->index] = scale * width / fmax(1, page_width);
 }
 
 void web_node_draw(struct server *server, struct node *node, struct mat3 transform, double width,
@@ -274,6 +345,10 @@ void web_prepare(struct server *server, struct output *output) {
         if (stage_page->outputs && !(stage_page->outputs & (1u << output->index))) continue;
         struct box damage;
         if (!web_page_prepare(stage_page->page, &damage)) continue;
+        /* A node waiting for a numbered frame moves when it comes. */
+        int tag = web_page_frame_tag(stage_page->page);
+        if (tag != stage_page->shown_tag || stage_page->holding) invalidate_displays(server);
+        stage_page->shown_tag = tag;
         /* Items fetch the page's textures as they draw; displays change only when it gets
          * its first frame or another size, which its hits map onto. */
         double width, height;

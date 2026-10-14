@@ -80,3 +80,52 @@ renders it with GLES and routes input.
 - Screen shares capture only while a consumer streams and the source changed.
 - Children the director starts stop with it: a director exiting unmounts its
   world first, so effects clean up.
+
+## Decisions
+
+### Pages that draw the canvas lie on it and move with their frames
+
+The canvas world's paper is an Excalidraw page under the windows that has to show
+the canvas where the camera looks, so its drawing stays with the windows as the
+canvas moves. Ways tried first:
+
+- **The page laid on the canvas, with pictures between**: laid again once the view
+  settled elsewhere, a PNG of each drawing standing in while the camera moved or
+  the page was laid again. The drawing drifted from the windows, flashed and
+  dropped to the pictures' lower resolution.
+- **A screen-fixed page told the camera**, by `useCamera` (where it is headed: a
+  fling's coast, a Super+wheel glide and a spring flight report their destination
+  as they start), by `followCamera` on the web node (the compositor posting the
+  camera into the page each frame) or by a live camera report through the
+  director. Each draws the page again in every frame of a pan, about 450 ms of CPU
+  and 700 ms of GPU a second at 2256 × 1504, and the drawing trailed the windows
+  and the grid by 12–23 px at 400 px/s, two to three frames, since Chromium draws
+  on its own 60 Hz clock.
+
+What stands: the page lies on the canvas over the view and a margin, at rest. The
+compositor moves it with the canvas as it does a window, so a pan draws nothing in
+the page and the drawing cannot drift: a line drawn beside a window kept the same
+42–43 px through a pan, a fling and the page being laid again. It is laid again
+only when the view nears its edge or the zoom has changed by an eighth: short of
+the 15% at which the compositor would raster the page again at the scale it is
+seen at, which draws the whole page again and can bring one frame laid out at the
+new scale but the old size, the drawing briefly a fifth too small or large. That
+move is where it could jump, since the node would move at once and the page draw
+for the new place a frame or two later. So the move waits for the frame:
+
+- The node's `frameTag` names the frame it is placed for.
+- The page, once it draws for the new place, marks its frames with that number
+  (`tagFrames` in the page runtime: two 2 × 2 px cells at its top left).
+- The helper reads the cells as it copies a frame, blanks them and hands the
+  number on with the frame.
+- The compositor remembers where the node was for each of its last four numbers,
+  within the canvas so it still pans, and shows each frame where it was drawn for:
+  until a frame with the node's latest number comes, the node stays where the frame
+  shown belongs, then the frame and the place change together. Moves that overlap,
+  as in a fast zoom, place the page again before its last frame reached the screen;
+  with only the last good place kept, such a frame showed for a few frames at the
+  place before it. A frame with a number it does not remember, or one waited for
+  over a second, shows where the node is.
+
+Panning with the paper out costs what it does with the paper put away: 77–82 ms of
+CPU and 172 ms of GPU a second, against 67–78 and 150.

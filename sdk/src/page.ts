@@ -27,6 +27,32 @@ function subscribe(listener: () => void) {
   return () => listeners.delete(listener);
 }
 
+let tagCells: HTMLElement[] | null = null;
+
+/**
+ * Mark the frames this page shows from now on with TAG (1 to 4095), which a
+ * `<Web frameTag={TAG}>` node waits for before it moves. Call it in the same
+ * task that draws for the node's new place, after the drawing, so that the
+ * frame with the number is the frame with the drawing. The mark is two cells of
+ * 2 x 2 CSS pixels at the page's top left, which the compositor reads and never
+ * shows.
+ */
+export function tagFrames(tag: number): void {
+  if (!tagCells) {
+    tagCells = [0, 2].map((left) => {
+      const cell = document.createElement("div");
+      cell.style.cssText = `position:fixed;left:${left}px;top:0;width:2px;height:2px;`
+        + "z-index:2147483647;pointer-events:none";
+      document.body.append(cell);
+      return cell;
+    });
+  }
+  const digits = [(tag >> 8) & 15, (tag >> 4) & 15, tag & 15];
+  const color = (values: number[]) => `rgb(${values.map((digit) => digit * 16 + 8).join(",")})`;
+  tagCells[0]!.style.background = color(digits);
+  tagCells[1]!.style.background = color(digits.map((digit) => 15 - digit));
+}
+
 /** Deliver NAME and VALUE to the <Web> node's onMessage in the world. */
 export function send(name: string, value: unknown = null): void {
   (globalThis as { proscenium?: Bridge }).proscenium?.postMessage("stage", { name, value });

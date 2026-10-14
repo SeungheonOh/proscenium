@@ -270,7 +270,7 @@ other. The SDK's `<Rect>` and `<Box>` are sent as `group`.
 | `group` | transform, box, `clip`, `draggable`, `interactive`, `cursor` |
 | `text` | transform, `width`, `text`, `markup`, `font`, `fontSize`, `fontWeight`, `italic`, `color`, `align`, `lineHeight`, `maxLines`, `draggable`, `interactive`, `cursor` |
 | `image` | transform, box, `src`, `fit`, `draggable`, `interactive`, `cursor` |
-| `web` | transform, box, `src`, `data`, `revision`, `focusable`, `interactive`, `autoFocus`, `cursor` |
+| `web` | transform, box, `src`, `data`, `revision`, `focusable`, `interactive`, `autoFocus`, `frameTag`, `cursor` |
 | `window` | transform, box, `window`, `fullscreen`, `maximized`, `tiled`, `focusable`, `interactive`, `movable`, `resizable` |
 | `mirror` | transform, box, `window` |
 | `background` | `x`, `y`, `transform`, `opacity`, `visible`, `backface`, `pan`, `cursor` |
@@ -433,6 +433,7 @@ declare targets for cameras the compositor owns.
 | `data` | string (JSON text given to a page as its props) | — | |
 | `revision` | number (a change reloads a page) | — | |
 | `autoFocus` | boolean | false | |
+| `frameTag` | number (a page frame marked with one of the node's last four numbers shows where the node was with that number, for up to a second) | — | |
 | `pan` | boolean | false | |
 | `output` | string | every output | |
 | `zoom` | number (> 0) | 1 | yes (log) |

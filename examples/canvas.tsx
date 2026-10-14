@@ -15,8 +15,9 @@
  * The paper is an Excalidraw drawing that lies on the canvas under the windows.
  * While it is out, empty canvas draws, a toolbar along the bottom picks tools
  * and colors, and Excalidraw's keys work; the wheel, pinches and swipes still
- * move the canvas. Put away, the drawing stays, as pictures that cost nothing
- * to pan and zoom over (see canvas/paper/Paper.tsx).
+ * move the canvas, and the drawing follows the camera. Put away, the drawing
+ * stays, as pictures that cost nothing to pan and zoom over (see
+ * canvas/paper/Paper.tsx).
  *
  * Pans, zooms, moves and resizes run inside the compositor in the same frame as
  * the input; this file only stores where things ended up. Edit it while it runs:
@@ -83,7 +84,8 @@ export default function Canvas() {
   return (
     <ScreenEffects>
       <PaperProvider output={output}>
-        <Camera minZoom={0.08} maxZoom={4} transition={cameraMotion} />
+        {/* Excalidraw, which draws the paper, zooms out no further than 10%. */}
+        <Camera minZoom={0.1} maxZoom={4} transition={cameraMotion} />
         <Background
           fill={colors.paper}
           grid={{ kind: "dots", color: "#00000033", spacing: 28, size: 1.1 }}

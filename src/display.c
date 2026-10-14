@@ -175,6 +175,9 @@ struct emit {
     bool in_effect;
     struct box effect_area;
     struct vec *surfaces; /* the display's scratch */
+    /* Where the nodes being emitted start from: the camera on the canvas, output pixels on a
+     * screen; and back. */
+    struct mat4 space, space_inverse;
 };
 
 /* A node's filter as its content items draw it. */
@@ -913,6 +916,7 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     default: break;
     }
     struct mat4 identity = MAT4_IDENTITY;
+    struct mat4 space = e->space, space_inverse = e->space_inverse;
     if (node->kind == KIND_SCREEN) {
         const char *name = node_string(node, PROP_OUTPUT);
         if (name && strcmp(name, output_name(e->output))) return;
@@ -924,6 +928,8 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     node_size(e->server, node, &width, &height);
     struct mat4 local = node_matrix(node, width, height);
     struct mat4 chain = mat4_multiply(base, &local);
+    if (node->kind == KIND_WEB)
+        web_node_hold(node, &e->space, &e->space_inverse, &chain, &width, &height);
     /* The node draws on its z = 0 plane, and its hits map back onto it. */
     struct mat3 plane = mat4_plane(&chain);
     struct mat3 t = mat3_multiply(e->screen, plane);
@@ -938,6 +944,7 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     e->moving = moving || node->active;
     const struct shading *effect = node_stage_shading(node, STAGE_EFFECT);
     float values[SHADER_COMPONENTS_MAX];
+    if (node->kind == KIND_SCREEN) e->space = e->space_inverse = identity;
     /* An effect showing nothing by its gate leaves the node drawn as it is. */
     if (effect && shading_values(node, effect, values)) {
         emit_effect(e, node, effect, values, t, width, height, &chain, opacity, inverse,
@@ -946,6 +953,8 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
         emit_content(e, node, t, width, height, opacity, inverse, base_inverse);
         emit_subtree(e, node, t, width, height, &chain, inverse, opacity);
     }
+    e->space = space;
+    e->space_inverse = space_inverse;
     e->moving = moving;
 }
 
@@ -1076,10 +1085,13 @@ static void build(struct output *output, struct emit *e) {
     if (!mat3_invert(camera, &camera_inverse)) camera_inverse = MAT3_IDENTITY;
     struct mat4 camera_matrix = mat4_from_mat3(camera);
     e->tag = 1;
+    e->space = camera_matrix;
+    e->space_inverse = mat4_from_mat3(camera_inverse);
     emit_children(e, &server->scene.root, &camera_matrix, &camera_inverse, 1);
     if (output == output_first(server)) {
         e->tag = 2;
         struct mat4 identity = MAT4_IDENTITY;
+        e->space = e->space_inverse = identity;
         emit_children(e, &server->fallback.root, &identity, &MAT3_IDENTITY, 1);
     }
     /* Hits are recorded bottom first; picking wants the topmost first. */

@@ -77,9 +77,7 @@ WebGpu::~WebGpu() {
     if (gbm) gbm_device_destroy(gbm);
     if (device >= 0) close(device);
 }
-WebGpuSlot *WebGpu::copy(const web_buffer &input, const int *fds, std::vector<WebGpuSlot> &pool,
-                         int id, int layer, double scale) {
-    int width = (int)std::ceil(input.width * scale), height = (int)std::ceil(input.height * scale);
+WebGpuSlot *WebGpu::take(std::vector<WebGpuSlot> &pool, int width, int height, int id, int layer) {
     if (width < 1 || height < 1 || width > WEB_MAX_SIDE || height > WEB_MAX_SIDE) {
         error = "Scaled popup exceeds DMA-BUF limits";
         return nullptr;
@@ -151,10 +149,32 @@ WebGpuSlot *WebGpu::copy(const web_buffer &input, const int *fds, std::vector<We
             return nullptr;
         }
     }
+    return &s;
+}
+/*
+ * The number a page marks its frames with: two cells of 2 x 2 CSS pixels at its top left,
+ * the first coloring the number's three hex digits n as n * 16 + 8 in red, green and blue,
+ * the second their complements, so a page's own pixels there read as no number. -1 when
+ * they do not.
+ */
+static int decode_tag(const unsigned char first[4], const unsigned char second[4]) {
+    int tag = 0;
+    for (int channel = 0; channel < 3; channel++) {
+        int digit = first[channel] / 16;
+        if (digit + second[channel] / 16 != 15) return -1;
+        tag = tag * 16 + digit;
+    }
+    return tag;
+}
+
+bool WebGpu::blit(const web_buffer &input, const int *fds, WebGpuSlot &s, const int area[4],
+                  double scale, double tag_scale, int *tag) {
+    // Nothing changed since the frame the slot holds: it is that frame already.
+    if (area[2] < 1 || area[3] < 1) return true;
     auto image = web_import(display, &input, fds);
     if (!image) {
         error = "Cannot import CEF DMA-BUF";
-        return nullptr;
+        return false;
     }
     glBindTexture(GL_TEXTURE_2D, source);
     web_bind_image(image);
@@ -163,19 +183,36 @@ WebGpuSlot *WebGpu::copy(const web_buffer &input, const int *fds, std::vector<We
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, s.fbo);
     bool valid = glCheckFramebufferStatus(GL_READ_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
     if (valid) {
-        glBlitFramebuffer(0, 0, input.width, input.height, 0, 0, width, height, GL_COLOR_BUFFER_BIT,
+        // Both buffers keep rows top first, so frame rectangles need no flip.
+        int left = area[0], top = area[1], right = area[0] + area[2], bottom = area[1] + area[3];
+        glBlitFramebuffer(left, top, right, bottom, (int)std::lround(left * scale),
+                          (int)std::lround(top * scale), (int)std::lround(right * scale),
+                          (int)std::lround(bottom * scale), GL_COLOR_BUFFER_BIT,
                           scale == 1 ? GL_NEAREST : GL_LINEAR);
+        valid = glGetError() == GL_NO_ERROR;
+    }
+    if (valid && tag) {
+        // The cells' middles, in the frame's pixels at TAG_SCALE pixels per CSS pixel.
+        unsigned char cells[2][4] = {};
+        int middle = (int)tag_scale;
+        glReadPixels(middle, middle, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, cells[0]);
+        glReadPixels((int)(3 * tag_scale), middle, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, cells[1]);
+        *tag = decode_tag(cells[0], cells[1]);
+        // The cells are the helper's to read, not the page's to show.
+        glEnable(GL_SCISSOR_TEST);
+        glScissor(0, 0, (int)std::ceil(4 * tag_scale * scale),
+                  (int)std::ceil(2 * tag_scale * scale));
+        glClearColor(0, 0, 0, 0);
+        glClear(GL_COLOR_BUFFER_BIT);
+        glDisable(GL_SCISSOR_TEST);
         valid = glGetError() == GL_NO_ERROR;
     }
     // CEF reuses its source as soon as OnAcceleratedPaint returns. Complete the
     // copy in the isolated helper; the compositor never waits for this work.
     glFinish();
     web_destroy_image(display, image);
-    if (!valid) {
-        error = "CEF DMA-BUF copy failed";
-        return nullptr;
-    }
-    return &s;
+    if (!valid) error = "CEF DMA-BUF copy failed";
+    return valid;
 }
 bool WebGpu::send(WebGpuSlot &s, int socket) {
     int fds[WEB_PLANES];

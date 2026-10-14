@@ -95,6 +95,8 @@ struct web_page {
     char *src;
     double width, height, scale, revision;
     bool visible, loaded, failed, closed;
+    /* The helper reads the number the page marks its frames with. */
+    bool tagged;
     /* The props declared, and the props the page last received. */
     char *props, *posted;
     const struct web_page_listener *listener;
@@ -365,6 +367,33 @@ static struct web_page *engine_page(struct engine *engine, int id) {
     return NULL;
 }
 
+/* A frame's damage within its buffer; damage the buffer cannot hold covers all of it. */
+static void clip_damage(struct web_buffer *b) {
+    int *d = b->damage;
+    if (d[2] < 0 || d[3] < 0 || d[0] < 0 || d[1] < 0 || d[0] + d[2] > b->width ||
+        d[1] + d[3] > b->height) {
+        d[0] = d[1] = 0;
+        d[2] = b->width;
+        d[3] = b->height;
+    }
+}
+
+/* INTO grows to cover OTHER as well. */
+static void unite_damage(int into[4], const int other[4]) {
+    if (other[2] < 1 || other[3] < 1) return;
+    if (into[2] < 1 || into[3] < 1) {
+        memcpy(into, other, 4 * sizeof *into);
+        return;
+    }
+    int left = MIN(into[0], other[0]), top = MIN(into[1], other[1]);
+    int right = MAX(into[0] + into[2], other[0] + other[2]);
+    int bottom = MAX(into[1] + into[3], other[1] + other[3]);
+    into[0] = left;
+    into[1] = top;
+    into[2] = right - left;
+    into[3] = bottom - top;
+}
+
 /* Take every frame the helper sent; they wait as pending until drawn. -1 when the link broke. */
 static int receive_frames(struct engine *engine) {
     if (engine->failed) return -1;
@@ -414,6 +443,13 @@ static int receive_frames(struct engine *engine) {
             continue;
         }
         struct layer *layer = &page->layers[b->layer];
+        clip_damage(b);
+        /* A frame never drawn leaves its changes to the one replacing it. */
+        struct web_buffer *skipped = &layer->pending.buffer;
+        if (layer->pending.valid && skipped->width == b->width && skipped->height == b->height)
+            unite_damage(b->damage, skipped->damage);
+        else if (layer->pending.valid)
+            memcpy(b->damage, (int[4]){0, 0, b->width, b->height}, sizeof b->damage);
         if (!release_frame(page, &layer->pending, false)) {
             frame_drop(&frame);
             return -1;
@@ -805,16 +841,29 @@ static bool import_frame(struct web_page *page, struct frame *frame, GLint *bind
     return true;
 }
 
-/* GL. 1 with RECT, in texture pixels, when the page's frames changed; 0 when not; -1 on failure. */
+/*
+ * GL. 1 with RECT, in texture pixels, when the page's frames changed; 0 when not; -1 on
+ * failure. RECT is where the page's new frame differs from the one it replaces, as the
+ * helper reports it; a first frame, a new size, a popup and an import made again change it
+ * all.
+ */
 static int prepare_dmabuf(struct web_page *page, int rect[4]) {
     if (page->engine && page->engine->failed) return -1;
     bool changed = page_dirty(page);
     if (!changed && page->layers[0].front.texture) return 0;
     GLint binding;
     glGetIntegerv(GL_TEXTURE_BINDING_2D, &binding);
+    int area[4] = {0};
+    bool all = !page->layers[0].pending.valid;
     for (int p = 0; p < 2; p++) {
         struct layer *layer = &page->layers[p];
-        if (layer->pending.valid) {
+        bool arrived = layer->pending.valid;
+        if (arrived) {
+            struct web_buffer *old = &layer->front.buffer, *new = &layer->pending.buffer;
+            if (p > 0 || !layer->front.valid || old->width != new->width ||
+                old->height != new->height)
+                all = true;
+            else unite_damage(area, new->damage);
             if (!release_frame(page, &layer->front, true)) {
                 glBindTexture(GL_TEXTURE_2D, binding);
                 return -1;
@@ -828,6 +877,8 @@ static int prepare_dmabuf(struct web_page *page, int rect[4]) {
                 return -1;
             }
             changed = true;
+            /* A frame shown before, imported again, may differ anywhere from what was drawn. */
+            if (!arrived) all = true;
         }
     }
     glBindTexture(GL_TEXTURE_2D, binding);
@@ -835,10 +886,13 @@ static int prepare_dmabuf(struct web_page *page, int rect[4]) {
     page->texture_width = front->buffer.width;
     page->texture_height = front->buffer.height;
     __atomic_store_n(&page->shared->dirty, 0, __ATOMIC_RELEASE);
-    rect[0] = rect[1] = 0;
-    rect[2] = page->texture_width;
-    rect[3] = page->texture_height;
-    return changed && front->valid;
+    if (all) {
+        area[0] = area[1] = 0;
+        area[2] = page->texture_width;
+        area[3] = page->texture_height;
+    }
+    memcpy(rect, area, sizeof area);
+    return changed && front->valid && area[2] > 0 && area[3] > 0;
 }
 
 static bool gles3(void) {
@@ -1183,6 +1237,17 @@ void web_page_set_raster_scale(struct web_page *page, double scale) {
 
 double web_page_raster_scale(const struct web_page *page) {
     return page->scale;
+}
+
+void web_page_set_tagged(struct web_page *page, bool tagged) {
+    if (!page->engine || page->tagged == tagged) return;
+    send_command(page, WEB_TAGGED, tagged, 0, 0, 0, 0, NULL);
+    page->tagged = tagged;
+}
+
+int web_page_frame_tag(const struct web_page *page) {
+    const struct frame *front = &page->layers[0].front;
+    return front->valid ? front->buffer.tag : 0;
 }
 
 void web_page_set_visible(struct web_page *page, bool visible) {

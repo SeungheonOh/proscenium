@@ -3,17 +3,17 @@ import { RollingText } from "../components/bar/BarText.js";
 import { Pills } from "../components/bar/Pills.js";
 import { useMeta } from "./MetaProvider.js";
 
-/** "Canvas · 34%" on the canvas, else the room's number; clicking it leaves to the canvas. */
+/** "Canvas · 34%" on the canvas, else the room's number and kind; clicking it leaves to the canvas. */
 function Place({ output, room }: { output: OutputInfo; room: number | null }) {
   const camera = useCamera(output.name);
-  const { state, enter } = useMeta();
+  const { state, enter, worldOf } = useMeta();
   const number =
     room === null ? 0 : state.rooms.findIndex((candidate) => candidate.id === room) + 1;
   const zoom = Math.round((camera?.zoom ?? 1) * 100);
   return (
     <Box cursor="pointer" onPointerDown={() => enter(null, output)}>
       <RollingText identity={number}>
-        {room === null ? `Canvas · ${zoom}%` : `Room ${number}`}
+        {room === null ? `Canvas · ${zoom}%` : `Room ${number} · ${worldOf(room).kind}`}
       </RollingText>
     </Box>
   );

@@ -15,6 +15,8 @@ import type { Drag, NiriContextValue } from "./NiriProvider.js";
 import { locate, type InsertTarget } from "./state.js";
 
 export type Niri = () => NiriContextValue;
+/** What swipes between workspaces and along their columns read and change. */
+export type GestureHost = Pick<NiriContextValue, "state" | "envRef" | "act" | "overview" | "views" | "stacks">;
 
 /** Shows DRAG for WINDOW, to its own tile and to whatever draws the drag under the pointer. */
 function putDrag(niri: NiriContextValue, window: number, drag: Drag | undefined): void {
@@ -47,11 +49,12 @@ const touchpadWorkspaceTravel = 300;
 export class ViewGesture {
   private readonly tracker = new SwipeTracker();
 
-  private constructor(private readonly niri: Niri, readonly output: string, readonly workspace: number,
-                      private readonly start: number, private readonly norm: number) {}
+  private constructor(private readonly niri: () => GestureHost, readonly output: string,
+                      readonly workspace: number, private readonly start: number, private readonly norm: number) {}
 
   /** On OUTPUT's shown workspace, or the one with id WORKSPACE; none without columns. */
-  static begin(niri: Niri, output: string, touchpad: boolean, workspace?: number): ViewGesture | null {
+  static begin(niri: () => GestureHost, output: string, touchpad: boolean,
+               workspace?: number): ViewGesture | null {
     const { state, envRef, views, overview } = niri();
     const monitor = state.monitors[output];
     const target = workspace === undefined
@@ -92,12 +95,12 @@ export class ViewGesture {
 export class WorkspaceGesture {
   private readonly tracker = new SwipeTracker();
 
-  private constructor(private readonly niri: Niri, readonly output: string, private readonly start: number,
-                      private readonly total: number, private readonly scale: number,
-                      private readonly min: number, private readonly max: number,
-                      private readonly zoom: number) {}
+  private constructor(private readonly niri: () => GestureHost, readonly output: string,
+                      private readonly start: number, private readonly total: number,
+                      private readonly scale: number, private readonly min: number,
+                      private readonly max: number, private readonly zoom: number) {}
 
-  static begin(niri: Niri, output: string, touchpad: boolean): WorkspaceGesture | null {
+  static begin(niri: () => GestureHost, output: string, touchpad: boolean): WorkspaceGesture | null {
     const { state, envRef, stacks, overview } = niri();
     const monitor = state.monitors[output];
     const height = outputOf(envRef.current, output)?.height;
@@ -176,7 +179,8 @@ export interface PointerAt {
 }
 
 /** Where on OUTPUT's stack the point (X, Y) falls: a workspace row, or a gap before workspace NEWAT. */
-export function workspaceAt(niri: NiriContextValue, output: OutputEnv, x: number, y: number):
+export function workspaceAt(niri: Pick<NiriContextValue, "state" | "overview">, output: OutputEnv,
+                            x: number, y: number):
   { workspace: Workspace; index: number; localX: number; localY: number } | { newAt: number } | null {
   const monitor = niri.state.monitors[output.name];
   if (!monitor) return null;

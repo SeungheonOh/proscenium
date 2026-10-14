@@ -73,6 +73,11 @@ export function tableBox(area: Rectangle, handHeight: number): Rectangle {
   };
 }
 
+/** The table on work area AREA, leaving the hand its strip. */
+export function deckTable(area: Rectangle): Rectangle {
+  return tableBox(area, Math.min(170, area.height * 0.2));
+}
+
 export function playPose(table: Rectangle): Pose {
   return {
     x: table.x + table.width / 2,

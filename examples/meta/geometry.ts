@@ -95,3 +95,11 @@ export function overviewCamera(rooms: readonly Room[], size: Size, output: Outpu
   );
   return { x: all.x + all.width / 2, y: all.y + all.height / 2, zoom: Math.min(fit, 1) };
 }
+
+/** A drag shorter than this, in canvas pixels, is a click. */
+const clickDistance = 6;
+
+/** Whether a drag from FROM to TO went far enough to be one, not a click. */
+export function moved(from: { x: number; y: number }, to: { x: number; y: number }): boolean {
+  return Math.hypot(to.x - from.x, to.y - from.y) >= clickDistance;
+}

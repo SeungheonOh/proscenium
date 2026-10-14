@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
@@ -14,38 +15,74 @@ import {
   useFocusedWindow,
   useOutputs,
   usePersistentReducer,
-  useWindowIds,
+  useWindows,
   type OutputInfo,
   type Rectangle,
+  type WindowInfo,
 } from "proscenium";
+import { cardOf } from "../deck/DeckProvider.js";
+import { deckTable } from "../deck/layout.js";
 import type { Direction } from "../lib/geometry.js";
+import type { WindowEnv } from "../niri/model.js";
 import { roomRect, roomSize, type Size } from "./geometry.js";
-import { initialMetaState, metaReducer, type MetaAction, type MetaState } from "./state.js";
-import { placeWindows, roomWindows, tilingArea } from "./tiling.js";
+import {
+  initialMetaState,
+  metaReducer,
+  normalizeMeta,
+  windowsIn,
+  worldOf,
+  type EnvMetaAction,
+  type MetaAction,
+  type MetaState,
+} from "./state.js";
+import {
+  roomInfo,
+  worldBoxes,
+  worldFocus,
+  type Kind,
+  type RoomEnv,
+  type World,
+  type WorldAction,
+} from "./worlds.js";
 
 export interface MetaContextValue {
   state: MetaState;
   dispatch: (action: MetaAction) => void;
   /** Every room's size: the main output's. */
   size: Size;
+  /** Where windows go in a room: all of it but what the main output reserves, e.g. for the bar. */
+  area: Rectangle;
+  /** A deck room's table. */
+  table: Rectangle;
+  /** A room as its world sees it, with the windows' size limits. */
+  env: RoomEnv;
   outputs: readonly OutputInfo[];
   focused: number | null;
   /** Mapped windows. */
   present: ReadonlySet<number>;
-  /** Where every window goes, in its room's coordinates. */
+  windows: ReadonlyMap<number, WindowInfo>;
+  /** Where every window shows, in its room's coordinates. */
   boxes: ReadonlyMap<number, Rectangle>;
   /** A room's box on the canvas. */
   rectOf: (room: number) => Rectangle;
+  /** A room's world. */
+  worldOf: (room: number) => World;
+  /** The mapped windows in a room, oldest first. */
+  windowsOf: (room: number) => number[];
+  /** Sends an action to a room's world. */
+  act: (room: number, action: WorldAction) => void;
   /** The room an output shows, or null while it shows the canvas. */
   enteredRoom: (output: OutputInfo) => number | null;
   /** The output keyboard actions apply to: the focused window's, else the one last worked on. */
   focusOutput: OutputInfo | undefined;
   /** The room `focusOutput` shows, or null on the canvas. */
   activeRoom: number | null;
+  /** The room whose world has the keyboard: the active one, or on the canvas the focused window's. */
+  keyRoom: number | null;
   /** Shows `room` on `output` (the focused one by default), or the canvas with null. */
   enter: (room: number | null, output?: OutputInfo) => void;
   /** Makes a room near a canvas point, clear of the others, and returns its id. */
-  addRoom: (x: number, y: number) => number;
+  addRoom: (x: number, y: number, kind?: Kind) => number;
   /** Shows a window's room and focuses it, e.g. when its client asks to be activated. */
   reveal: (window: number) => void;
   /** The window last pushed against an edge, and how many pushes there have been. */
@@ -78,19 +115,63 @@ export function useRoomDrag(): RoomDrag | null {
   return useContext(RoomDragContext);
 }
 
+function windowEnv(window: WindowInfo): WindowEnv {
+  return {
+    width: window.width,
+    height: window.height,
+    minWidth: window.minWidth,
+    minHeight: window.minHeight,
+    maxWidth: window.maxWidth,
+    maxHeight: window.maxHeight,
+    parent: window.parent,
+    appId: window.appId,
+    title: window.title,
+  };
+}
+
 /** Owns the meta world's state and shares it, with its actions, through `useMeta`. */
 export function MetaProvider({ children }: { children: ReactNode }) {
-  const windows = useWindowIds();
+  const list = useWindows();
   const outputs = useOutputs();
   const focused = useFocusedWindow();
   const instance = useCompositorInstance();
-  const [state, dispatch] = usePersistentReducer("metaworld", metaReducer, initialMetaState);
+  const [saved, send] = usePersistentReducer("metaworld", metaReducer, initialMetaState);
+  const state = useMemo(() => normalizeMeta(saved), [saved]);
 
   const main = outputs[0];
   const size = useMemo(() => roomSize(main), [main?.width, main?.height]);
-  const area = useMemo(() => tilingArea(size, main), [size, main?.workArea]);
-  const present = useMemo(() => new Set(windows), [windows]);
-  const boxes = useMemo(() => placeWindows(state, present, area), [state, present, area]);
+  const area = useMemo(() => main?.workArea ?? { x: 0, y: 0, ...size }, [size, main?.workArea]);
+  const table = useMemo(() => deckTable(area), [area]);
+  const ids = list.map((window) => window.id);
+  const idsKey = ids.join();
+  const present = useMemo(() => new Set(ids), [idsKey]);
+  const windows = useMemo(() => new Map(list.map((window) => [window.id, window])), [list]);
+
+  // Rooms are laid out only by size limits; anything else changing must not lay them out again.
+  const limitsKey = list
+    .map((window) =>
+      [window.id, window.minWidth, window.minHeight, window.maxWidth, window.maxHeight, window.parent].join(":"),
+    )
+    .join();
+  const room = roomInfo(size, area);
+  const current: RoomEnv = {
+    room,
+    outputs: [room],
+    windows: Object.fromEntries(list.map((window) => [window.id, windowEnv(window)])),
+  };
+  // Actions take the environment current when they are sent; rendering, the one laid out by.
+  const envRef = useRef(current);
+  envRef.current = current;
+  const env = useMemo(() => current, [limitsKey, size, area]);
+
+  const dispatch = useCallback(
+    (action: MetaAction) => send({ ...action, env: envRef.current } as EnvMetaAction),
+    [send],
+  );
+  const act = useCallback(
+    (room: number, action: WorldAction) => dispatch({ type: "world", room, action }),
+    [dispatch],
+  );
 
   const rooms = useMemo(() => new Map(state.rooms.map((room) => [room.id, room])), [state.rooms]);
   const rectOf = useCallback(
@@ -104,6 +185,21 @@ export function MetaProvider({ children }: { children: ReactNode }) {
     },
     [state.entered, rooms],
   );
+  const worldOfRoom = useCallback((room: number) => worldOf(state, room), [state]);
+  const windowsOf = useCallback(
+    (room: number) => windowsIn(state, room).filter((id) => present.has(id)),
+    [state, present],
+  );
+
+  const boxes = useMemo(() => {
+    const all = new Map<number, Rectangle>();
+    for (const { id } of state.rooms) {
+      for (const [window, box] of worldBoxes(worldOf(state, id), env, present, table)) {
+        if (state.roomOf[window] === id) all.set(window, box);
+      }
+    }
+    return all;
+  }, [state, env, present, table]);
 
   // A window that just mapped has focus before it has a room; the active output decides for it.
   const windowOutput =
@@ -113,6 +209,7 @@ export function MetaProvider({ children }: { children: ReactNode }) {
   const focusOutput =
     windowOutput ?? outputs.find((output) => output.name === state.active) ?? outputs[0];
   const activeRoom = focusOutput ? enteredRoom(focusOutput) : null;
+  const keyRoom = activeRoom ?? (focused !== null ? (state.roomOf[focused] ?? null) : null);
 
   useEffect(() => {
     if (windowOutput && windowOutput.name !== state.active) {
@@ -123,8 +220,8 @@ export function MetaProvider({ children }: { children: ReactNode }) {
   // Until the compositor says hello there is nothing to prune against.
   useEffect(() => {
     if (instance !== null)
-      dispatch({ type: "sync", windows, room: activeRoom ?? state.current, instance });
-  }, [windows, instance]);
+      dispatch({ type: "sync", windows: ids, room: activeRoom ?? state.current, instance });
+  }, [idsKey, instance]);
 
   const enter = useCallback(
     (room: number | null, output = focusOutput) => {
@@ -134,14 +231,14 @@ export function MetaProvider({ children }: { children: ReactNode }) {
       const from = camera ? { x: camera.x, y: camera.y, zoom: camera.zoom } : undefined;
       dispatch({ type: "enter", output: output.name, room, from });
       if (room === null || (focused !== null && state.roomOf[focused] === room)) return;
-      focus(roomWindows(state, room, present)[0] ?? null);
+      focus(worldFocus(worldOf(state, room), windowsOf(room), env));
     },
-    [focusOutput, enteredRoom, focused, state, present],
+    [focusOutput, enteredRoom, focused, state, windowsOf, env],
   );
 
   const addRoom = useCallback(
-    (x: number, y: number) => {
-      dispatch({ type: "addRoom", x, y, size });
+    (x: number, y: number, kind?: Kind) => {
+      dispatch({ type: "addRoom", x, y, size, kind });
       return state.nextRoom;
     },
     [size, state.nextRoom],
@@ -150,11 +247,17 @@ export function MetaProvider({ children }: { children: ReactNode }) {
   const reveal = useCallback(
     (window: number) => {
       const room = state.roomOf[window];
-      const isShown = outputs.some((output) => enteredRoom(output) === room);
-      if (room !== undefined && !isShown) enter(room);
+      if (room === undefined) return;
+      if (!outputs.some((output) => enteredRoom(output) === room)) enter(room);
+      // Its world brings it forward: niri's view goes to it, the deck plays its card.
+      const world = worldOf(state, room);
+      if (world.kind === "niri") act(room, { kind: "niri", action: { type: "activate", window } });
+      if (world.kind === "deck") {
+        act(room, { kind: "deck", action: { type: "play", window: cardOf(windows, window) } });
+      }
       focus(window);
     },
-    [state, outputs, enteredRoom, enter],
+    [state, outputs, enteredRoom, enter, act, windows],
   );
 
   const [roomDrag, setRoomDrag] = useState<RoomDrag | null>(null);
@@ -168,14 +271,22 @@ export function MetaProvider({ children }: { children: ReactNode }) {
       state,
       dispatch,
       size,
+      area,
+      table,
+      env,
       outputs,
       focused,
       present,
+      windows,
       boxes,
       rectOf,
+      worldOf: worldOfRoom,
+      windowsOf,
+      act,
       enteredRoom,
       focusOutput,
       activeRoom,
+      keyRoom,
       enter,
       addRoom,
       reveal,
@@ -187,14 +298,22 @@ export function MetaProvider({ children }: { children: ReactNode }) {
       state,
       dispatch,
       size,
+      area,
+      table,
+      env,
       outputs,
       focused,
       present,
+      windows,
       boxes,
       rectOf,
+      worldOfRoom,
+      windowsOf,
+      act,
       enteredRoom,
       focusOutput,
       activeRoom,
+      keyRoom,
       enter,
       addRoom,
       reveal,

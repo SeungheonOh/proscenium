@@ -1,10 +1,21 @@
+import type { StageDragEvent } from "proscenium";
 import { Card } from "./Card.js";
-import { useDeck } from "./DeckProvider.js";
+import { useDeck, type DeckContextValue } from "./DeckProvider.js";
 import { Dialog } from "./Dialog.js";
-import { handPose, playPose, poseFor, sheetSize, spreadPose, type Pose } from "./layout.js";
+import { handPose, playPose, poseFor, sheetSize, spreadPose, type Pose, type Size } from "./layout.js";
 
 /** Seconds between cards as they are dealt. */
 const dealStep = 0.04;
+
+/** The cards of the deck <DeckProvider> deals. */
+export function Cards() {
+  return <Hand {...useDeck()} />;
+}
+
+export type HandProps = Omit<DeckContextValue, "output"> & {
+  /** Super+drag carries a card: where its window, of SIZE, was let go, in the table's coordinates. */
+  onCarry?: (window: number, event: StageDragEvent, size: Size) => void;
+};
 
 /**
  * Every window as a card: the one in play fills the table, the others lie in a
@@ -12,23 +23,23 @@ const dealStep = 0.04;
  * middle, most recently played first, and the chosen one stands up. Dialogs
  * ride on their window's card, and a window gone fullscreen leaves the table.
  */
-export function Cards() {
-  const {
-    state,
-    dispatch,
-    area,
-    table,
-    windows,
-    dialogs,
-    fullscreen,
-    setFullscreen,
-    show,
-    spread,
-    hover,
-    setHover,
-    pops,
-    dealing,
-  } = useDeck();
+export function Hand({
+  state,
+  dispatch,
+  area,
+  table,
+  windows,
+  dialogs,
+  fullscreen,
+  setFullscreen,
+  show,
+  spread,
+  hover,
+  setHover,
+  pops,
+  dealing,
+  onCarry,
+}: HandProps) {
   const hoverOn = (id: number) => (hover?.window === id ? hover : null);
 
   const poses = new Map<number, Pose>();
@@ -95,6 +106,7 @@ export function Cards() {
         onPick={() => pick(id)}
         onActivate={() => show(id)}
         onFullscreen={(value) => setFullscreen(id, value)}
+        onDrop={onCarry && ((event) => onCarry(id, event, size))}
       >
         {riding.map((dialog) => (
           <Dialog

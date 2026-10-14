@@ -16,32 +16,20 @@ function installed(command: string): boolean {
 /** niri opens alacritty; without it, the desktop's own terminal. */
 export const terminal = installed("alacritty") ? "alacritty" : fallbackTerminal;
 
-type Bind = [keys: string, run: () => void, repeat?: boolean];
+export type Bind = [keys: string, run: () => void, repeat?: boolean];
 
 /** Both spellings of KEYS with Mod: the arrow and its Vim letter. */
 function both(arrow: string, letter: string, prefix: string, run: () => void): Bind[] {
   return [[`${prefix}${arrow}`, run], [`${prefix}${letter}`, run]];
 }
 
-/** niri's default bindings, Mod being Super. Every bind repeats while held unless marked otherwise. */
-export function Keybindings() {
-  const { act, focused, overview, setOverview, overlays, setOverlay, state, envRef } = useNiri();
-  const run = (action: NiriAction) => () => act(action);
-  // Focus moving to another output by keyboard brings the pointer to its middle, as in niri.
-  const toMonitor = (action: Extract<NiriAction, { direction: -1 | 1 }>) => () => {
-    const outputs = envRef.current.outputs;
-    const target = outputs[outputs.findIndex((output) => output.name === state.activeOutput) + action.direction];
-    act(action);
-    if (target) warpPointer(target.name, target.width / 2, target.height / 2);
-  };
-  const closeFocused = () => focused !== null && close(focused);
-
-  const binds: Bind[] = [
-    ["Super+Shift+question", () => !overlays.hotkeys && setOverlay("hotkeys", true), false],
-    ["Super+O", () => setOverview((open) => !open), false],
-    ["Super+Q", closeFocused, false],
-    ["Alt+F4", closeFocused, false],
-
+/**
+ * niri's default bindings that arrange the focused workspace: focus and move
+ * columns and windows, consume and expel, size, float and tab. RUN makes each
+ * action's handler.
+ */
+export function layoutBinds(run: (action: NiriAction) => () => void): Bind[] {
+  return [
     ...both("Left", "H", "Super+", run({ type: "focusColumn", to: "left" })),
     ...both("Right", "L", "Super+", run({ type: "focusColumn", to: "right" })),
     ...both("Down", "J", "Super+", run({ type: "focusWindow", direction: 1 })),
@@ -54,23 +42,6 @@ export function Keybindings() {
     ["Super+End", run({ type: "focusColumn", to: "last" })],
     ["Super+Ctrl+Home", run({ type: "moveColumn", to: "first" })],
     ["Super+Ctrl+End", run({ type: "moveColumn", to: "last" })],
-
-    // Outputs form one row, so up and down have no neighbour.
-    ...both("Left", "H", "Super+Shift+", toMonitor({ type: "focusMonitor", direction: -1 })),
-    ...both("Right", "L", "Super+Shift+", toMonitor({ type: "focusMonitor", direction: 1 })),
-    ...both("Left", "H", "Super+Shift+Ctrl+", toMonitor({ type: "moveColumnToMonitor", direction: -1 })),
-    ...both("Right", "L", "Super+Shift+Ctrl+", toMonitor({ type: "moveColumnToMonitor", direction: 1 })),
-
-    ...both("Next", "U", "Super+", run({ type: "focusWorkspaceRelative", direction: 1 })),
-    ...both("Prior", "I", "Super+", run({ type: "focusWorkspaceRelative", direction: -1 })),
-    ...both("Next", "U", "Super+Ctrl+", run({ type: "moveColumnToWorkspace", direction: 1 })),
-    ...both("Prior", "I", "Super+Ctrl+", run({ type: "moveColumnToWorkspace", direction: -1 })),
-    ...both("Next", "U", "Super+Shift+", run({ type: "moveWorkspace", direction: 1 })),
-    ...both("Prior", "I", "Super+Shift+", run({ type: "moveWorkspace", direction: -1 })),
-    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((number): Bind[] => [
-      [`Super+${number}`, run({ type: "focusWorkspace", index: number - 1 })],
-      [`Super+Ctrl+${number}`, run({ type: "moveColumnToWorkspace", index: number - 1 })],
-    ]),
 
     ["Super+bracketleft", run({ type: "consumeOrExpel", direction: -1 })],
     ["Super+bracketright", run({ type: "consumeOrExpel", direction: 1 })],
@@ -95,6 +66,53 @@ export function Keybindings() {
     ["Super+V", run({ type: "toggleFloating" })],
     ["Super+Shift+V", run({ type: "switchFocusFloating" })],
     ["Super+W", run({ type: "toggleTabbed" })],
+  ];
+}
+
+/** niri's default bindings that go up and down the workspaces, taking the column or the workspace along. */
+export function workspaceBinds(run: (action: NiriAction) => () => void): Bind[] {
+  return [
+    ...both("Next", "U", "Super+", run({ type: "focusWorkspaceRelative", direction: 1 })),
+    ...both("Prior", "I", "Super+", run({ type: "focusWorkspaceRelative", direction: -1 })),
+    ...both("Next", "U", "Super+Ctrl+", run({ type: "moveColumnToWorkspace", direction: 1 })),
+    ...both("Prior", "I", "Super+Ctrl+", run({ type: "moveColumnToWorkspace", direction: -1 })),
+    ...both("Next", "U", "Super+Shift+", run({ type: "moveWorkspace", direction: 1 })),
+    ...both("Prior", "I", "Super+Shift+", run({ type: "moveWorkspace", direction: -1 })),
+  ];
+}
+
+/** niri's default bindings, Mod being Super. Every bind repeats while held unless marked otherwise. */
+export function Keybindings() {
+  const { act, focused, overview, setOverview, overlays, setOverlay, state, envRef } = useNiri();
+  const run = (action: NiriAction) => () => act(action);
+  // Focus moving to another output by keyboard brings the pointer to its middle, as in niri.
+  const toMonitor = (action: Extract<NiriAction, { direction: -1 | 1 }>) => () => {
+    const outputs = envRef.current.outputs;
+    const target = outputs[outputs.findIndex((output) => output.name === state.activeOutput) + action.direction];
+    act(action);
+    if (target) warpPointer(target.name, target.width / 2, target.height / 2);
+  };
+  const closeFocused = () => focused !== null && close(focused);
+
+  const binds: Bind[] = [
+    ["Super+Shift+question", () => !overlays.hotkeys && setOverlay("hotkeys", true), false],
+    ["Super+O", () => setOverview((open) => !open), false],
+    ["Super+Q", closeFocused, false],
+    ["Alt+F4", closeFocused, false],
+
+    ...layoutBinds(run),
+
+    // Outputs form one row, so up and down have no neighbour.
+    ...both("Left", "H", "Super+Shift+", toMonitor({ type: "focusMonitor", direction: -1 })),
+    ...both("Right", "L", "Super+Shift+", toMonitor({ type: "focusMonitor", direction: 1 })),
+    ...both("Left", "H", "Super+Shift+Ctrl+", toMonitor({ type: "moveColumnToMonitor", direction: -1 })),
+    ...both("Right", "L", "Super+Shift+Ctrl+", toMonitor({ type: "moveColumnToMonitor", direction: 1 })),
+
+    ...workspaceBinds(run),
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].flatMap((number): Bind[] => [
+      [`Super+${number}`, run({ type: "focusWorkspace", index: number - 1 })],
+      [`Super+Ctrl+${number}`, run({ type: "moveColumnToWorkspace", index: number - 1 })],
+    ]),
 
     ["Print", () => setOverlay("screenshot", true), false],
     ["Ctrl+Print", () => state.activeOutput && captureNow({ output: state.activeOutput }), false],

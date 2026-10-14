@@ -76,7 +76,11 @@ apps:
   springs and bindings. Its state is one reducer
   ([`niri/state.ts`](../examples/niri/state.ts)) mirroring niri's layout code.
 - [`meta.tsx`](../examples/meta.tsx): Metaworld, an infinite
-  canvas of screen-sized rooms placed anywhere, each a Hyprland-style tiler.
+  canvas of screen-sized rooms placed anywhere, each running another world's
+  window management: hypr's tiling, niri's scrolling columns or the deck's hand
+  of cards (Super+Shift+T changes it). A room runs that world's own reducer and
+  layout code on itself as if it were an output, and takes that world's keys
+  ([`meta/worlds.ts`](../examples/meta/worlds.ts)).
   The canvas pans and zooms freely, and windows on it take input in place.
   Double-click empty canvas to make a room, click a room's title to fly in at
   100%, drag the title to put the room anywhere (it follows the pointer in the
@@ -84,7 +88,7 @@ apps:
   gets a room of its own). Inside, keyboard focus and moves carry on into the
   nearest room past an edge, three-finger swipes slide between rooms, and
   pinching out returns to where the canvas was left. Its state is one reducer
-  ([`meta/state.ts`](../examples/meta/state.ts)).
+  ([`meta/state.ts`](../examples/meta/state.ts)), holding each room's world's.
 - [`deck.tsx`](../examples/deck.tsx): windows as a hand of cards, after
   Balatro. The window in play fills the table; the others fan out along the
   bottom, and the card under the pointer rises, pops and leans toward it in 3D

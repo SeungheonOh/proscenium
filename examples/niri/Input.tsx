@@ -10,7 +10,8 @@ import {
   type StageWheelEvent,
 } from "proscenium";
 import {
-  edgesAt, OverviewGesture, shownBox, ViewGesture, workspaceAt, WorkspaceGesture, type PointerAt,
+  edgesAt, OverviewGesture, shownBox, ViewGesture, workspaceAt, WorkspaceGesture, type GestureHost,
+  type PointerAt,
 } from "./interaction.js";
 import { useNiri, type NiriContextValue } from "./NiriProvider.js";
 import type { NiriAction } from "./state.js";
@@ -45,28 +46,12 @@ function useNotches(cooldown = 0) {
 export function Input({ fullscreen }: { fullscreen: ReadonlySet<string> }) {
   const niri = useNiri();
   const { act, pointer, overview, overlays, outputs } = niri;
-  const workspaces = useNotches(150);
-  const moves = useNotches(150);
-  const columns = useNotches();
-  const columnMoves = useNotches();
-  const shiftColumns = useNotches();
-  const shiftMoves = useNotches();
   const overviewWorkspaces = useNotches(50);
   const overviewColumns = useNotches(50);
   const overviewHorizontal = useNotches();
   const scroll = useTouchpadScroll(niri);
-  const swipe = useSwipe(niri);
   const fourFinger = useRef<OverviewGesture | null>(null);
-
-  const both = (vertical: (direction: 1 | -1) => void, horizontal: (direction: 1 | -1) => void,
-                verticalNotches: ReturnType<typeof useNotches>, horizontalNotches: ReturnType<typeof useNotches>) =>
-    (event: StageWheelEvent) => {
-      if (event.orientation === "vertical") verticalNotches(event, vertical);
-      else horizontalNotches(event, horizontal);
-    };
-  const run = (make: (direction: 1 | -1) => NiriAction) => (direction: 1 | -1) => act(make(direction));
   const column = (direction: 1 | -1) => act({ type: "focusColumn", to: direction > 0 ? "right" : "left" });
-  const moveColumn = (direction: 1 | -1) => act({ type: "moveColumn", to: direction > 0 ? "right" : "left" });
 
   // The screenshot UI and the exit dialog have the pointer to themselves.
   if (overlays.screenshot || overlays.exit) return null;
@@ -107,12 +92,7 @@ export function Input({ fullscreen }: { fullscreen: ReadonlySet<string> }) {
         onUp={() => pointer.release()}
       />
 
-      <WheelBinding modifiers="super" onWheel={both(
-        run((direction) => ({ type: "focusWorkspaceRelative", direction })), column, workspaces, columns)} />
-      <WheelBinding modifiers={["super", "ctrl"]} onWheel={both(
-        run((direction) => ({ type: "moveColumnToWorkspace", direction })), moveColumn, moves, columnMoves)} />
-      <WheelBinding modifiers={["super", "shift"]} onWheel={both(column, column, shiftColumns, columns)} />
-      <WheelBinding modifiers={["super", "ctrl", "shift"]} onWheel={both(moveColumn, moveColumn, shiftMoves, columnMoves)} />
+      <WheelBinds act={act} />
       {overview && (
         <>
           <WheelBinding onWheel={(event) => {
@@ -131,9 +111,7 @@ export function Input({ fullscreen }: { fullscreen: ReadonlySet<string> }) {
         </>
       )}
 
-      <GestureBinding gesture="swipe" fingers={3} onBegin={(event) => {
-          swipe.begin(event);
-      }} onUpdate={swipe.update} onEnd={swipe.end} />
+      <SwipeBinding niri={niri.handle} />
       <GestureBinding
         gesture="swipe"
         fingers={4}
@@ -156,47 +134,86 @@ export function Input({ fullscreen }: { fullscreen: ReadonlySet<string> }) {
 }
 
 /**
+ * niri's Mod+wheel bindings: up and down switch workspaces and sideways focuses
+ * columns; with Ctrl they take the column along, and Shift turns up and down
+ * sideways.
+ */
+export function WheelBinds({ act }: { act: (action: NiriAction) => void }) {
+  const workspaces = useNotches(150);
+  const moves = useNotches(150);
+  const columns = useNotches();
+  const columnMoves = useNotches();
+  const shiftColumns = useNotches();
+  const shiftMoves = useNotches();
+
+  const both = (vertical: (direction: 1 | -1) => void, horizontal: (direction: 1 | -1) => void,
+                verticalNotches: ReturnType<typeof useNotches>, horizontalNotches: ReturnType<typeof useNotches>) =>
+    (event: StageWheelEvent) => {
+      if (event.orientation === "vertical") verticalNotches(event, vertical);
+      else horizontalNotches(event, horizontal);
+    };
+  const run = (make: (direction: 1 | -1) => NiriAction) => (direction: 1 | -1) => act(make(direction));
+  const column = (direction: 1 | -1) => act({ type: "focusColumn", to: direction > 0 ? "right" : "left" });
+  const moveColumn = (direction: 1 | -1) => act({ type: "moveColumn", to: direction > 0 ? "right" : "left" });
+
+  return (
+    <>
+      <WheelBinding modifiers="super" onWheel={both(
+        run((direction) => ({ type: "focusWorkspaceRelative", direction })), column, workspaces, columns)} />
+      <WheelBinding modifiers={["super", "ctrl"]} onWheel={both(
+        run((direction) => ({ type: "moveColumnToWorkspace", direction })), moveColumn, moves, columnMoves)} />
+      <WheelBinding modifiers={["super", "shift"]} onWheel={both(column, column, shiftColumns, columns)} />
+      <WheelBinding modifiers={["super", "ctrl", "shift"]} onWheel={both(moveColumn, moveColumn, shiftMoves, columnMoves)} />
+    </>
+  );
+}
+
+/**
  * Three-finger swipes: sideways scrolls the columns, up and down switches
  * workspaces, decided once the fingers have moved 16 pixels. Content follows
- * the fingers.
+ * the fingers. They act on the output they are on, or on OUTPUT when given.
  */
-function useSwipe(niri: NiriContextValue) {
+export function SwipeBinding({ niri, output }: { niri: () => GestureHost; output?: string }) {
   const state = useRef<{ x: number; y: number; output: string;
                          gesture: ViewGesture | WorkspaceGesture | null } | null>(null);
-  return {
-    begin(event: StageGestureEvent) {
-      state.current = { x: 0, y: 0, output: event.output ?? niri.state.activeOutput ?? "", gesture: null };
-    },
-    update(event: StageGestureEvent) {
-      const swipe = state.current;
-      if (!swipe) return;
-      if (!swipe.gesture) {
-        swipe.x += event.dx;
-        swipe.y += event.dy;
-        if (swipe.x ** 2 + swipe.y ** 2 < 16 ** 2) return;
-        const handle = niri.handle;
-        if (Math.abs(swipe.x) > Math.abs(swipe.y)) {
-          let workspace: number | undefined;
-          const output = niri.envRef.current.outputs.find((candidate) => candidate.name === swipe.output);
-          if (handle().overview && output && event.screenX !== undefined && event.screenY !== undefined) {
-            const under = workspaceAt(handle(), output, event.screenX, event.screenY);
-            if (under && "workspace" in under) workspace = under.workspace.id;
-          }
-          swipe.gesture = ViewGesture.begin(handle, swipe.output, true, workspace);
-        } else {
-          swipe.gesture = WorkspaceGesture.begin(handle, swipe.output, true);
+
+  function begin(event: StageGestureEvent) {
+    const on = output ?? event.output ?? niri().state.activeOutput ?? "";
+    state.current = { x: 0, y: 0, output: on, gesture: null };
+  }
+
+  function update(event: StageGestureEvent) {
+    const swipe = state.current;
+    if (!swipe) return;
+    if (!swipe.gesture) {
+      swipe.x += event.dx;
+      swipe.y += event.dy;
+      if (swipe.x ** 2 + swipe.y ** 2 < 16 ** 2) return;
+      if (Math.abs(swipe.x) > Math.abs(swipe.y)) {
+        let workspace: number | undefined;
+        const host = niri();
+        const shown = host.envRef.current.outputs.find((candidate) => candidate.name === swipe.output);
+        if (host.overview && shown && event.screenX !== undefined && event.screenY !== undefined) {
+          const under = workspaceAt(host, shown, event.screenX, event.screenY);
+          if (under && "workspace" in under) workspace = under.workspace.id;
         }
-        // The distance that decided the direction is not applied.
-        return;
+        swipe.gesture = ViewGesture.begin(niri, swipe.output, true, workspace);
+      } else {
+        swipe.gesture = WorkspaceGesture.begin(niri, swipe.output, true);
       }
-      if (swipe.gesture instanceof ViewGesture) swipe.gesture.update(-event.dx);
-      else swipe.gesture.update(-event.dy);
-    },
-    end() {
-      state.current?.gesture?.end();
-      state.current = null;
-    },
-  };
+      // The distance that decided the direction is not applied.
+      return;
+    }
+    if (swipe.gesture instanceof ViewGesture) swipe.gesture.update(-event.dx);
+    else swipe.gesture.update(-event.dy);
+  }
+
+  function end() {
+    state.current?.gesture?.end();
+    state.current = null;
+  }
+
+  return <GestureBinding gesture="swipe" fingers={3} onBegin={begin} onUpdate={update} onEnd={end} />;
 }
 
 /**

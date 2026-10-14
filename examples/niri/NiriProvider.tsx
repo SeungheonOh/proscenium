@@ -103,6 +103,19 @@ function outputEnv(output: OutputInfo): OutputEnv {
            workArea: output.workArea };
 }
 
+/** Removes the workspaces a switch left empty, once the switch away from them has played. */
+export function useWorkspaceCleanup(state: NiriState, act: (action: NiriAction) => void): void {
+  const shownKey = Object.entries(state.monitors)
+    .map(([name, monitor]) => `${name}:${monitor.workspaces[monitor.active]?.id}:${monitor.workspaces.length}`)
+    .join();
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      for (const name of Object.keys(state.monitors)) act({ type: "cleanWorkspaces", output: name });
+    }, switchSettle);
+    return () => clearTimeout(timer);
+  }, [shownKey]);
+}
+
 /** Owns the niri world's state and shares it, with its actions, through `useNiri`. */
 export function NiriProvider({ children }: { children: ReactNode }) {
   const windows = useWindows();
@@ -171,16 +184,7 @@ export function NiriProvider({ children }: { children: ReactNode }) {
     else push();
   }, [compositorFocus, desired, placed, present]);
 
-  // Emptied workspaces stay until the switch away from them has played.
-  const shownKey = Object.entries(state.monitors)
-    .map(([name, monitor]) => `${name}:${monitor.workspaces[monitor.active]?.id}:${monitor.workspaces.length}`)
-    .join();
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      for (const name of Object.keys(state.monitors)) act({ type: "cleanWorkspaces", output: name });
-    }, switchSettle);
-    return () => clearTimeout(timer);
-  }, [shownKey]);
+  useWorkspaceCleanup(state, act);
 
   // niri shows its important hotkeys once each time it starts.
   useEffect(() => {

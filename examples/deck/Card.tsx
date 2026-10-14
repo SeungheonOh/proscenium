@@ -9,6 +9,7 @@ import {
   Window,
   type Animation,
   type Rectangle,
+  type StageDragEvent,
   type StagePointerEvent,
 } from "proscenium";
 import { font } from "../lib/theme.js";
@@ -77,6 +78,8 @@ interface CardProps {
   /** The client asked to be shown, or to fill the screen. */
   onActivate: () => void;
   onFullscreen: (value: boolean) => void;
+  /** Given, Super+drag moves the card: where its window was let go. */
+  onDrop?: (event: StageDragEvent) => void;
   /** Dialogs riding on the card, drawn over its window. */
   children?: ReactNode;
 }
@@ -104,6 +107,7 @@ export function Card({
   onPick,
   onActivate,
   onFullscreen,
+  onDrop,
   children,
 }: CardProps) {
   // Sizes in the window's own units, which the card's scale shrinks.
@@ -126,6 +130,7 @@ export function Card({
       height={size.height}
       tiled
       focusable={played}
+      movable={Boolean(onDrop)}
       dim={shaded ? 0.4 : 0}
       radius={played ? 14 : 9 * unit}
       border={{ width: played ? 2 : 5 * unit, color: stock }}
@@ -145,6 +150,7 @@ export function Card({
       animate={animations}
       onActivateRequest={onActivate}
       onFullscreenRequest={({ value }) => onFullscreen(Boolean(value))}
+      onDragEnd={onDrop}
     >
       {!played && (
         <Rect

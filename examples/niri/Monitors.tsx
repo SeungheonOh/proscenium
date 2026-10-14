@@ -48,7 +48,7 @@ const unmoving = instant;
  * too small for the output. niri fills the ring in behind the window; drawn as
  * an outline it cannot tint the window while it fades in or out.
  */
-function frame(color: string | null, fullscreen: boolean): Shading {
+export function frame(color: string | null, fullscreen: boolean): Shading {
   const transparent = "#00000000";
   const ring = color ?? transparent;
   return {
@@ -266,7 +266,7 @@ function useOpening(window: number): boolean {
 }
 
 const opened = { opacity: 0, transform: [scale(0.5)] };
-const closed = {
+export const closed = {
   opacity: 0, transform: [scale(0.8)],
   shaders: { frame: { borderColor: "#00000000", borderColorEnd: "#00000000" } },
 };
@@ -403,7 +403,7 @@ interface TabIndicatorProps {
 }
 
 /** niri's tab indicator: a bar left of a tabbed column, a segment per tab. */
-function TabIndicator({ tiles, activeRow, columnActive }: TabIndicatorProps) {
+export function TabIndicator({ tiles, activeRow, columnActive }: TabIndicatorProps) {
   const first = tiles[0];
   if (!first) return null;
   const side = Math.max(...tiles.map((tile) => tile.height));

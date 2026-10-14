@@ -1,0 +1,21 @@
+/* Only the drawing: the world draws the toolbar, and the canvas shows through. */
+html,
+body,
+#root,
+.paper,
+.excalidraw,
+.excalidraw-container {
+  background: transparent !important;
+}
+
+.paper {
+  height: 100%;
+}
+
+.excalidraw .layer-ui__wrapper,
+.excalidraw .App-bottom-bar,
+.excalidraw .scroll-back-to-content,
+.excalidraw .welcome-screen-center,
+.excalidraw .welcome-screen-decor {
+  display: none !important;
+}

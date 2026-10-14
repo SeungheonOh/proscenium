@@ -57,7 +57,9 @@ apps:
 
 - [`canvas.tsx`](../examples/canvas.tsx): an infinite canvas with
   momentum panning, anchored zoom, native window moves and resizes, keyboard
-  fly-to, an overview and a minimap.
+  fly-to, an overview and a minimap, and paper to draw on under the windows
+  (Super+P): an Excalidraw page while it is out, and a picture of each drawing
+  while it is put away ([`canvas/paper`](../examples/canvas/paper/Paper.tsx)).
 - [`hypr.tsx`](../examples/hypr.tsx): a Hyprland-style tiler with nine
   workspaces that slide, dwindle and master layouts with gaps, a spinning
   gradient border on the focused window, dimmed inactive windows, floating,
@@ -588,7 +590,10 @@ Iris Xe laptop at 2256 × 1504, a full-screen canvas that only clears takes
 about 250 ms of CPU and 700 ms of GPU time a second, and video plays from
 software decoding. Keep pages for what shows briefly or changes rarely, and
 draw what moves all the time with nodes: the compositor runs their animations
-itself and repaints only where they change.
+itself and repaints only where they change. The canvas world's paper does both:
+its Excalidraw page is out only while the user draws, and is parked off the
+screen, where Chromium does not draw it, while the camera moves; the rest of
+the time each drawing is an `Image` of the PNG the page exported for it.
 
 ### Hot reload
 

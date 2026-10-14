@@ -3,3 +3,4 @@ __pycache__/
 .DS_Store
 gmon.out
 examples/persona/assets/
+node_modules/

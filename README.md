@@ -37,6 +37,7 @@ installing anything.
 meson setup build/meson          # PKG_CONFIG_PATH must find wlroots-0.20
 ninja -C build/meson
 (cd sdk && npm ci && npm run build)
+(cd examples && npm ci)          # packages the examples' pages bundle: Excalidraw
 ```
 
 Web nodes need the Chromium helper, built with CMake against CEF:
@@ -66,8 +67,10 @@ Examples: `hypr` (tiling workspaces), `niri` (niri's scrollable tiling),
 `deck` (windows as playing cards), `shelf` (windows as books), `cube`
 (workspaces on a turning cube), `meta` (rooms on an infinite canvas, each
 tiling as hypr, niri or the deck does), `canvas` (a zoomable canvas with a
-minimap), `persona` (a Persona 3 Reload shell after Persona-Quickshell;
-`scripts/fetch-persona` fetches its art first).
+minimap, and paper to draw on with
+[Excalidraw](https://github.com/excalidraw/excalidraw), MIT), `persona` (a
+Persona 3 Reload shell after Persona-Quickshell; `scripts/fetch-persona`
+fetches its art first).
 
 ## Documentation
 

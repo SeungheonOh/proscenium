@@ -1,0 +1,8 @@
+{
+  "name": "proscenium-examples",
+  "private": true,
+  "description": "Packages the example worlds' pages bundle. React and React DOM come from the SDK, so a page has only the one copy.",
+  "dependencies": {
+    "@excalidraw/excalidraw": "0.18.1"
+  }
+}

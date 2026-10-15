@@ -1,4 +1,4 @@
-import { watch, type FSWatcher } from "node:fs";
+import { existsSync, watch, type FSWatcher } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -86,6 +86,55 @@ const applications = new Source<ApplicationInfo[]>([], (source) => {
 /** Installed applications by name, kept current while anything reads them. */
 export function useApplications(): readonly ApplicationInfo[] {
   return useSyncExternalStore(applications.subscribe, applications.read);
+}
+
+const iconRoots = () => {
+  const data = [
+    process.env.XDG_DATA_HOME || join(homedir(), ".local/share"),
+    ...(process.env.XDG_DATA_DIRS || "/usr/local/share:/usr/share").split(":"),
+  ];
+  return { themes: [join(homedir(), ".icons"), ...data.map((directory) => join(directory, "icons"))], data };
+};
+/** Applications install their icons into hicolor; a few only into a desktop's theme. */
+const iconThemes = ["hicolor", "Adwaita"];
+const iconSizes = ["48x48", "64x64", "128x128", "256x256", "scalable", "32x32"];
+const iconFiles = new Map<string, string | null>();
+
+/** The file of ICON, a theme icon name or a path, as applications name them; null if none. */
+export function iconFile(icon: string): string | null {
+  if (!icon) return null;
+  const known = iconFiles.get(icon);
+  if (known !== undefined) return known;
+  let found: string | null = null;
+  if (icon.startsWith("/")) found = existsSync(icon) ? icon : null;
+  else {
+    const { themes, data } = iconRoots();
+    search: for (const root of themes) {
+      for (const theme of iconThemes) {
+        for (const size of iconSizes) {
+          for (const extension of [".png", ".svg"]) {
+            const path = join(root, theme, size, "apps", icon + extension);
+            if (existsSync(path)) {
+              found = path;
+              break search;
+            }
+          }
+        }
+      }
+    }
+    for (const directory of data) {
+      if (found) break;
+      for (const extension of [".png", ".svg"]) {
+        const path = join(directory, "pixmaps", icon + extension);
+        if (existsSync(path)) {
+          found = path;
+          break;
+        }
+      }
+    }
+  }
+  iconFiles.set(icon, found);
+  return found;
 }
 
 /** Launch an installed application by its id, as its desktop entry says. */

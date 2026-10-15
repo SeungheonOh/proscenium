@@ -52,7 +52,7 @@ session or on a tty; `--headless --size 1280x720` runs it without a display, and
 user unit logging to `$XDG_STATE_HOME/proscenium/run.log`.
 
 The compositor starts XWayland, then the director on `--script`
-(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Seven examples ship with it, organized as ordinary React
+(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Eight examples ship with it, organized as ordinary React
 apps:
 
 - [`canvas.tsx`](../examples/canvas.tsx): an infinite canvas with
@@ -77,6 +77,23 @@ apps:
   screenshot UI and the Alt-Tab switcher with live previews, all with niri's
   springs and bindings. Its state is one reducer
   ([`niri/state.ts`](../examples/niri/state.ts)) mirroring niri's layout code.
+- [`trellis.tsx`](../examples/trellis.tsx): a fractal desktop after
+  [TrellisWM](https://trelliswm.app/) and [TrellisUI](https://trellisui.com/).
+  Windows open floating on the Desktop. Drag one to the screen's edge to dock it
+  beside everything in view, onto another window's edge to split it, onto a gap
+  to join that row, or onto its middle to stack them under a strip of tabs;
+  drops preview as real slots once they hold for 150 ms. Spaces nest as deep as
+  you like, and the view frames any space or run of neighbours, mapped onto the
+  screen with a scale for each axis, so the windows in it take the sizes they get
+  there. Zoomed out, a window too small to use shows its app's colour and icon,
+  and a group too small to see becomes one tile lined with its splits. Seams
+  resize both sides; pinch or Super+wheel zooms and settles on the space that
+  fits best, a three-finger swipe pans and settles the same way, and
+  Super+Shift+drag draws a rectangle to frame what fits it best; back, forward, nine saved views and the menu bar's Desktop and
+  Everything move the view, every layout change in one 460 ms motion. Its
+  arrangement is plain data ([`trellis/model.ts`](../examples/trellis/model.ts))
+  that [`TrellisProvider`](../examples/trellis/TrellisProvider.tsx) shares
+  through context.
 - [`meta.tsx`](../examples/meta.tsx): Metaworld, an infinite
   canvas of screen-sized rooms placed anywhere, each running another world's
   window management: hypr's tiling, niri's scrolling columns or the deck's hand

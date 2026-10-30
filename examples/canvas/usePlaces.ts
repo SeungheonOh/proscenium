@@ -11,6 +11,8 @@ const minimumSize = { width: 960, height: 620 };
 const cascadeStep = 36;
 
 export type PlaceWindow = (window: number, next: Partial<Rectangle>) => void;
+/** Moves several windows at once, as an arrangement that pushed some does. */
+export type PlaceWindows = (next: ReadonlyMap<number, Partial<Rectangle>>) => void;
 
 interface Saved {
   /** The compositor instance the window ids belong to. */
@@ -22,7 +24,7 @@ interface Saved {
  * Where each window sits on the canvas, and a function that moves one. New
  * windows open where the camera looks, cascading so none hides another.
  */
-export function usePlaces(): [ReadonlyMap<number, Rectangle>, PlaceWindow] {
+export function usePlaces(): [ReadonlyMap<number, Rectangle>, PlaceWindow, PlaceWindows] {
   const windows = useWindows();
   const instance = useCompositorInstance();
   const [saved, setSaved] = usePersistentState<Saved>("canvas.places", {
@@ -65,5 +67,14 @@ export function usePlaces(): [ReadonlyMap<number, Rectangle>, PlaceWindow] {
     [places, instance, setSaved],
   );
 
-  return [places, place];
+  const placeAll = useCallback<PlaceWindows>(
+    (next) => {
+      const all = Object.fromEntries(places);
+      for (const [window, change] of next) if (all[window]) all[window] = { ...all[window], ...change };
+      setSaved({ instance, places: all });
+    },
+    [places, instance, setSaved],
+  );
+
+  return [places, place, placeAll];
 }

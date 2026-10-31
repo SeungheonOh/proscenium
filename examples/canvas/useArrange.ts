@@ -32,6 +32,7 @@ import {
   type Guide,
   type Point,
 } from "./snapping.js";
+import type { History } from "./usePlacement.js";
 import type { PlaceWindows } from "./usePlaces.js";
 
 /** What arranging windows on the canvas does, kept with the canvas. */
@@ -114,6 +115,7 @@ export function useArrange(
   places: ReadonlyMap<number, Rectangle>,
   placeWindows: PlaceWindows,
   output: OutputInfo | undefined,
+  history: History,
 ) {
   const [settings] = useArrangeSettings();
   const [live, setLive] = useState<Live>(still);
@@ -122,8 +124,6 @@ export function useArrange(
   // Handlers outlive the render that made them while the pointer is captured.
   const current = useRef({ places, settings, output, placeWindows });
   current.current = { places, settings, output, placeWindows };
-  // The arrangement before the last gesture that pushed windows, for undo.
-  const undo = useRef<Map<number, Rectangle> | null>(null);
   const flingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   // A window closing mid-gesture ends it.
@@ -171,11 +171,9 @@ export function useArrange(
 
   /** Lay WINDOW down at RECT, and what it pushed where it is heading. */
   const commit = (window: number, rect: Rectangle, pushed: ReadonlyMap<number, Rectangle>, flung: Live["flung"]) => {
-    const { places, placeWindows } = current.current;
-    if (pushed.size) {
-      undo.current = new Map([[window, places.get(window)!]]);
-      for (const id of pushed.keys()) undo.current.set(id, places.get(id)!);
-    }
+    const { placeWindows } = current.current;
+    // A push can be undone; positions only, so a resize that pushed keeps its size.
+    if (pushed.size) history.record([window, ...pushed.keys()], true);
     // Places first: a frame with the new places and the old live state shows nothing amiss.
     placeWindows(new Map([[window, rect], ...pushed]));
     setLive({ ...still, flung });
@@ -291,21 +289,6 @@ export function useArrange(
     commit(window, next, pushed, null);
   }, []);
 
-  /** Put back every window the last push moved, and the one that pushed them. */
-  const undoPush = useCallback(() => {
-    const before = undo.current;
-    if (!before || drag.current) return;
-    const { places, placeWindows } = current.current;
-    const back = new Map<number, Rectangle>();
-    // Positions only: a resize keeps its size, as the window has it.
-    for (const [id, place] of before) {
-      const now = places.get(id);
-      if (now) back.set(id, { ...now, x: place.x, y: place.y });
-    }
-    undo.current = null;
-    placeWindows(back);
-  }, []);
-
   /** Where each window shows now: in hand, pushed, or at its place. */
   const shown = useMemo(() => {
     if (!live.held && live.pushed.size === 0) return places;
@@ -341,7 +324,6 @@ export function useArrange(
     startResize,
     resize,
     endResize,
-    undoPush,
   };
 }
 

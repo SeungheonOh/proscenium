@@ -7,7 +7,12 @@
  *   Super+right-drag, or a client's edges             resize a window
  *   Super+G / Super+Shift+G                           snapping on or off / grid 20, 40 or 80
  *   Super+M / Super+Shift+M                           magnet mode on or off / Gentle, Medium, Firm
- *   Super+Shift+Z                                     put back what the last push moved
+ *   Ctrl+Alt+arrows                                   the focused window to a half; again for ⅔, ⅓
+ *   Ctrl+Alt+U I J K / D F G / E T                    a quarter / a third / two-thirds
+ *   Ctrl+Alt+Return / Ctrl+Alt+C                      fill the screen / centre at its size
+ *   Ctrl+Alt+2 / 3 / 4                                the windows on that screen in columns
+ *   Ctrl+Alt+A                                        tidy: every window on one grid, framed
+ *   Super+Shift+Z                                     put back what the last push or placement moved
  *   Super+arrows                                      focus the nearest window that way and fly to it
  *   Super+O                                           overview of every window; click one to dive in
  *   Super+C                                           center the focused window at 100%
@@ -28,6 +33,12 @@
  * a guide holds; a resize's moved edges settle onto the grid. In magnet mode
  * the windows in the way are pushed aside along the shortest route, shoving
  * the ones behind them, and a window flung hard coasts a little further.
+ *
+ * The Ctrl+Alt keys are Sunlight's placement commands (canvas/usePlacement.ts).
+ * At 100% a slot is a share of the screen in view; zoomed out it is a share of
+ * the page the window is on, pages being screen-sized areas in a grid from
+ * where the camera starts. A new window opens in the middle of the view if
+ * that is clear, else in the nearest free spot beside the windows in the way.
  *
  * Pans, zooms and resizes run inside the compositor in the same frame as the
  * input; a window in hand is placed by this world on every move, so a guide can
@@ -59,7 +70,9 @@ import { PaperToolbar } from "./canvas/paper/Toolbar.js";
 import { useCameraActions } from "./canvas/useCameraActions.js";
 import { gridSizes } from "./canvas/snapping.js";
 import { useArrange, useArrangeSettings } from "./canvas/useArrange.js";
+import { arrangements, presetKeys } from "./canvas/tiling.js";
 import { useOpenings } from "./canvas/useOpenings.js";
+import { useHistory, usePlacement } from "./canvas/usePlacement.js";
 import { usePlaces } from "./canvas/usePlaces.js";
 import { useStackingOrder } from "./canvas/useStackingOrder.js";
 import { ZoomLabel } from "./canvas/ZoomLabel.js";
@@ -77,11 +90,13 @@ export default function Canvas() {
   const windows = useWindowIds();
   const output = useOutputs()[0];
   const focused = useFocusedWindow();
-  const [places, , placeWindows] = usePlaces();
+  const [places, , placeWindows] = usePlaces(output);
   const stacked = useStackingOrder(windows, focused);
   const opening = useOpenings(windows);
   const { flyTo, toggleOverview } = useCameraActions(places, output, focused);
-  const arrange = useArrange(places, placeWindows, output);
+  const history = useHistory(places, placeWindows);
+  const arrange = useArrange(places, placeWindows, output, history);
+  const placement = usePlacement(places, placeWindows, output, focused ?? stacked.at(-1), history);
   const [, setArrangement] = useArrangeSettings();
   // Windows being dragged or pushed show where they are now, on the canvas and the minimap.
   const shown = arrange.shown;
@@ -164,7 +179,14 @@ export default function Canvas() {
             setArrangement((s) => ({ ...s, strength: cycle(strengths.map((x) => x.value), s.strength) }))
           }
         />
-        <Shortcut keys="Super+Shift+Z" onPress={arrange.undoPush} />
+        <Shortcut keys="Super+Shift+Z" onPress={history.undo} />
+        {presetKeys.map(([key, preset]) => (
+          <Shortcut key={preset} keys={`Ctrl+Alt+${key}`} onPress={() => placement.tile(preset)} />
+        ))}
+        {arrangements.map((columns) => (
+          <Shortcut key={columns} keys={`Ctrl+Alt+${columns}`} onPress={() => placement.arrange(columns)} />
+        ))}
+        <Shortcut keys="Ctrl+Alt+A" onPress={placement.tidy} />
         {arrowKeys.map((key) => (
           <Shortcut key={key} keys={`Super+${key}`} onPress={() => focusToward(key)} />
         ))}

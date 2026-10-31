@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useMemo } from "react";
 import {
-  getCamera,
   useCompositorInstance,
   usePersistentState,
   useWindows,
+  type OutputInfo,
   type Rectangle,
 } from "proscenium";
+import { spot } from "./newWindowSpot.js";
+import { spacing } from "./tidy.js";
+import { visibleArea } from "./view.js";
 
 const minimumSize = { width: 960, height: 620 };
-const cascadeStep = 36;
+/** Where to open windows before any output is known: where the camera starts on a small screen. */
+const fallbackView = { x: 0, y: 0, width: 1280, height: 800 };
 
 export type PlaceWindow = (window: number, next: Partial<Rectangle>) => void;
 /** Moves several windows at once, as an arrangement that pushed some does. */
@@ -21,10 +25,13 @@ interface Saved {
 }
 
 /**
- * Where each window sits on the canvas, and a function that moves one. New
- * windows open where the camera looks, cascading so none hides another.
+ * Where each window sits on the canvas, and functions that move them. A new
+ * window opens in the middle of the view if that is clear, else in the free
+ * spot nearest it beside the windows in the way, as on Sunlight's canvas.
  */
-export function usePlaces(): [ReadonlyMap<number, Rectangle>, PlaceWindow, PlaceWindows] {
+export function usePlaces(
+  output: OutputInfo | undefined,
+): [ReadonlyMap<number, Rectangle>, PlaceWindow, PlaceWindows] {
   const windows = useWindows();
   const instance = useCompositorInstance();
   const [saved, setSaved] = usePersistentState<Saved>("canvas.places", {
@@ -35,19 +42,20 @@ export function usePlaces(): [ReadonlyMap<number, Rectangle>, PlaceWindow, Place
   const stored = saved.instance === instance ? saved.places : {};
 
   const places = useMemo(() => {
-    const center = getCamera() ?? { x: 0, y: 0 };
+    const view = output ? visibleArea(output) : fallbackView;
+    const taken = windows.flatMap((window) => stored[window.id] ?? []);
     return new Map(
-      windows.map((window, index) => {
-        const width = Math.max(window.width, minimumSize.width);
-        const height = Math.max(window.height, minimumSize.height);
-        const cascade = cascadeStep * (index % 6);
-        const opening = {
-          x: center.x - width / 2 + cascade,
-          y: center.y - height / 2 + cascade,
-          width,
-          height,
+      windows.map((window) => {
+        const known = stored[window.id];
+        if (known) return [window.id, known];
+        const size = {
+          width: Math.max(window.width, minimumSize.width),
+          height: Math.max(window.height, minimumSize.height),
         };
-        return [window.id, stored[window.id] ?? opening];
+        // Each new one keeps clear of those opened before it, too.
+        const opening = spot(size, taken, view, spacing);
+        taken.push(opening);
+        return [window.id, opening];
       }),
     );
   }, [windows, stored]);

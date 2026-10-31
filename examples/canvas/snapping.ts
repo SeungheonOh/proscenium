@@ -1,8 +1,7 @@
 /**
- * Where a window being dragged lines up with its neighbours, and where it lands
- * on the grid when it is let go: Sunlight's alignment guides and drop grid
- * (spacefarm-digital/sunlight, Snapping.swift and Resizing.swift). Canvas
- * coordinates throughout.
+ * Where a window being dragged lines up with its neighbours: Sunlight's
+ * alignment guides (spacefarm-digital/sunlight, Snapping.swift). There is no
+ * drop grid: a window stays where it is let go. Canvas coordinates throughout.
  */
 import type { Rectangle } from "proscenium";
 
@@ -25,7 +24,7 @@ export interface Guide {
 export interface Alignment {
   x: number;
   y: number;
-  /** Whether a neighbour holds the window on that axis; the grid leaves a held axis alone. */
+  /** Whether a neighbour holds the window on that axis. */
   snappedX: boolean;
   snappedY: boolean;
   guides: Guide[];
@@ -34,12 +33,8 @@ export interface Alignment {
 /** How near, on screen, an edge comes before a guide catches it. */
 export const snapDistance = 8;
 
-/** Grid steps to choose from, and the one a canvas starts with. */
-export const gridSizes = [20, 40, 80] as const;
-export const defaultGridSize = 40;
-
-/** No smaller than this at 1:1 once a resize settles on the grid. */
-export const minSize = { width: 160, height: 100 };
+/** The gap a guide holds a window at beside a neighbour. */
+export const neighbourGap = 16;
 
 type Axis = "x" | "y";
 
@@ -66,7 +61,7 @@ export function align(
   moving: Rectangle,
   others: readonly Rectangle[],
   threshold: number,
-  gap: number,
+  gap = neighbourGap,
 ): Alignment {
   const x = nearest(candidates("x", moving, others, gap), threshold);
   const y = nearest(candidates("y", moving, others, gap), threshold);
@@ -81,65 +76,6 @@ export function align(
       ...y.map((c) => guide(c, "y", snapped, gap)),
     ],
   };
-}
-
-/** The nearest grid point on each axis that no neighbour is holding. */
-export function grid(origin: Point, size: number, keepX: boolean, keepY: boolean): Point {
-  if (!(size > 0)) return origin;
-  return {
-    x: keepX ? origin.x : Math.round(origin.x / size) * size,
-    y: keepY ? origin.y : Math.round(origin.y / size) * size,
-  };
-}
-
-/** The edges of a resize that moved. */
-export interface Edges {
-  left: boolean;
-  right: boolean;
-  top: boolean;
-  bottom: boolean;
-}
-
-/** Which edges moved between START and END. */
-export function movedEdges(start: Rectangle, end: Rectangle): Edges {
-  const moved = (a: number, b: number) => Math.abs(a - b) > 0.5;
-  return {
-    left: moved(start.x, end.x),
-    right: moved(start.x + start.width, end.x + end.width),
-    top: moved(start.y, end.y),
-    bottom: moved(start.y + start.height, end.y + end.height),
-  };
-}
-
-/**
- * A resize let go: the edges that moved settle onto the grid, the others stay
- * where they are. An edge that would come closer than MIN to its opposite goes
- * to the next grid line out instead.
- */
-export function gridEdges(rect: Rectangle, edges: Edges, size: number, min = minSize): Rectangle {
-  if (!(size > 0)) return rect;
-  const snap = (v: number) => Math.round(v / size) * size;
-  let minX = rect.x;
-  let maxX = rect.x + rect.width;
-  let minY = rect.y;
-  let maxY = rect.y + rect.height;
-  if (edges.left) {
-    minX = snap(minX);
-    if (maxX - minX < min.width) minX = Math.floor((maxX - min.width) / size) * size;
-  }
-  if (edges.right) {
-    maxX = snap(maxX);
-    if (maxX - minX < min.width) maxX = Math.ceil((minX + min.width) / size) * size;
-  }
-  if (edges.top) {
-    minY = snap(minY);
-    if (maxY - minY < min.height) minY = Math.floor((maxY - min.height) / size) * size;
-  }
-  if (edges.bottom) {
-    maxY = snap(maxY);
-    if (maxY - minY < min.height) maxY = Math.ceil((minY + min.height) / size) * size;
-  }
-  return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
 
 /**

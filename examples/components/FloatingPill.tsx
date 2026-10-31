@@ -35,6 +35,8 @@ export function FloatingPill({ shown, children }: FloatingPillProps) {
           shadow={{ color: "#00000029", blur: 28, y: 10 }}
           transform={scale(shown ? 1 : 0.92)}
           transition={motion.pop}
+          // Content that grows faster than the pill stays inside it.
+          clip
         >
           {children}
         </Box>

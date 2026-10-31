@@ -76,6 +76,26 @@ export const presetKeys: readonly (readonly [key: string, preset: Preset])[] = [
   ["C", "center"],
 ];
 
+/** What each slot is called, as Sunlight's menus name them. */
+export const titles: Record<Preset, string> = {
+  leftHalf: "Left Half",
+  rightHalf: "Right Half",
+  topHalf: "Top Half",
+  bottomHalf: "Bottom Half",
+  topLeft: "Top Left Quarter",
+  topRight: "Top Right Quarter",
+  bottomLeft: "Bottom Left Quarter",
+  bottomRight: "Bottom Right Quarter",
+  leftThird: "Left Third",
+  centerThird: "Centre Third",
+  rightThird: "Right Third",
+  leftTwoThirds: "Left Two-Thirds",
+  centerTwoThirds: "Centre Two-Thirds",
+  rightTwoThirds: "Right Two-Thirds",
+  full: "Full",
+  center: "Centre",
+};
+
 /** Arrange: the windows of one area in this many columns, on Ctrl+Alt with the digit. */
 export const arrangements = [2, 3, 4] as const;
 

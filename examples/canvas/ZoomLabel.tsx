@@ -16,8 +16,9 @@ export function ZoomLabel() {
       <Text weight={600} color={colors.ink}>
         {percent}%
       </Text>
-      {(arrange.snapping ? ` · Grid ${arrange.gridSize}` : "") +
-        (arrange.magnet ? ` · Magnet ${strength}` : "")}
+      {(arrange.snapping ? "" : " · Guides off") +
+        (arrange.magnet ? ` · Magnet ${strength}` : "") +
+        (arrange.magnet && arrange.polarity ? " · Polarity" : "")}
     </BarText>
   );
 }

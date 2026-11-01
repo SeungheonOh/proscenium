@@ -100,6 +100,11 @@ struct window {
     struct vec snapshot; /* struct surface_draw */
     struct wlr_box snapshot_bounds;
     uint64_t snapshot_commit;
+    /* Withdrawn with its last frame held, that frame still shows on the nodes
+     * presenting the window, for a moment at most: the director removes them as
+     * soon as it hears, and their exit animation goes on from the same frame. */
+    bool bridging;
+    struct wl_event_source *bridge_end;
     /* The frame from before a resize, fading out under the new one while the box
      * presenting the window still moves to its new size: retained buffers, the bounds
      * they had, and the box's size when the new frame came. */

@@ -42,7 +42,35 @@ void window_ref(struct window *window) {
     window->references++;
 }
 
+/* How long a withdrawn window's last frame bridges the wait for the director to
+ * remove the nodes presenting it, in milliseconds: a few frames, ample for it to
+ * hear, and short enough that a window a world keeps showing never looks frozen. */
+#define BRIDGE_MS 250
+
+static void end_bridge(struct window *window) {
+    if (window->bridge_end) wl_event_source_remove(window->bridge_end);
+    window->bridge_end = NULL;
+    window->bridging = false;
+}
+
+static int bridge_due(void *data) {
+    struct window *window = data;
+    end_bridge(window);
+    invalidate_displays(window->server);
+    return 0;
+}
+
+/* Show the held frame on the window's nodes until they go, BRIDGE_MS at most. */
+static void begin_bridge(struct window *window) {
+    if (!window->snapshot.length) return;
+    if (!window->bridge_end)
+        window->bridge_end = wl_event_loop_add_timer(window->server->loop, bridge_due, window);
+    wl_event_source_timer_update(window->bridge_end, BRIDGE_MS);
+    window->bridging = true;
+}
+
 void window_release_snapshot(struct window *window) {
+    end_bridge(window);
     VEC_FOR(&window->snapshot, struct surface_draw, draw) wlr_buffer_unlock(draw->buffer);
     vec_clear(&window->snapshot);
     window->snapshot_commit = 0;
@@ -576,6 +604,7 @@ void window_committed(struct window *window, struct wlr_surface *committed) {
 
 void window_mapped(struct window *window) {
     struct server *server = window->server;
+    end_bridge(window);
     window->mapped = true;
     windows_sync_fallback(server);
     window_configure(window);
@@ -599,8 +628,12 @@ void window_unmapped(struct window *window) {
     struct server *server = window->server;
     release_fade(window);
     /* Withdrawn without a last commit, as when the client destroys the window. */
-    if (window_exits(window)) hold_frame(window);
-    else window_release_snapshot(window);
+    if (window_exits(window)) {
+        hold_frame(window);
+        begin_bridge(window);
+    } else {
+        window_release_snapshot(window);
+    }
     window->mapped = false;
     windows_sync_fallback(server);
     window_gone(window);

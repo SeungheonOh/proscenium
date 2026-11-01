@@ -638,8 +638,9 @@ static void emit_window(struct emit *e, struct node *node, struct mat3 t, double
     struct window *window = window_for_node(e->server, node);
     if (!window) return;
     bool live = window_presentable(window);
-    /* An exiting node shows the last frame of a window its client closed. */
-    if (!live && node->state == NODE_LIVE) return;
+    /* An exiting node shows the last frame of a window its client closed, and so does a
+     * live one for the moment until the director removes it, so the frame never drops. */
+    if (!live && node->state == NODE_LIVE && !window->bridging) return;
     window_surfaces(window, e->surfaces);
     if (!e->surfaces->length || !(width > 0 && height > 0)) return;
     double fade = live ? window_fade_progress(window) : 1;

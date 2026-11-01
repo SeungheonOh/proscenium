@@ -34,7 +34,7 @@ export interface Alignment {
 export const snapDistance = 8;
 
 /** The gap a guide holds a window at beside a neighbour. */
-export const neighbourGap = 16;
+const neighbourGap = 16;
 
 type Axis = "x" | "y";
 
@@ -45,7 +45,14 @@ interface Candidate {
   at: number;
 }
 
-function span(r: Rectangle, axis: Axis) {
+interface Span {
+  min: number;
+  mid: number;
+  max: number;
+}
+
+/** R's extent along AXIS. */
+function span(r: Rectangle, axis: Axis): Span {
   return axis === "x"
     ? { min: r.x, mid: r.x + r.width / 2, max: r.x + r.width }
     : { min: r.y, mid: r.y + r.height / 2, max: r.y + r.height };
@@ -63,17 +70,17 @@ export function align(
   threshold: number,
   gap = neighbourGap,
 ): Alignment {
-  const x = nearest(candidates("x", moving, others, gap), threshold);
-  const y = nearest(candidates("y", moving, others, gap), threshold);
-  const snapped = { ...moving, x: moving.x + (x[0]?.delta ?? 0), y: moving.y + (y[0]?.delta ?? 0) };
+  const onX = nearest(candidates("x", moving, others, gap), threshold);
+  const onY = nearest(candidates("y", moving, others, gap), threshold);
+  const snapped = { ...moving, x: moving.x + (onX[0]?.delta ?? 0), y: moving.y + (onY[0]?.delta ?? 0) };
   return {
     x: snapped.x,
     y: snapped.y,
-    snappedX: x.length > 0,
-    snappedY: y.length > 0,
+    snappedX: onX.length > 0,
+    snappedY: onY.length > 0,
     guides: [
-      ...x.map((c) => guide(c, "x", snapped, gap)),
-      ...y.map((c) => guide(c, "y", snapped, gap)),
+      ...onX.map((c) => guide(c, "x", snapped, gap)),
+      ...onY.map((c) => guide(c, "y", snapped, gap)),
     ],
   };
 }
@@ -83,17 +90,19 @@ export function align(
  * be useful), plus the gap either side of a neighbour that overlaps the window
  * across the axis.
  */
-function candidates(axis: Axis, moving: Rectangle, others: readonly Rectangle[], gap: number) {
+function candidates(axis: Axis, moving: Rectangle, others: readonly Rectangle[], gap: number): Candidate[] {
+  const cross = axis === "x" ? "y" : "x";
   const m = span(moving, axis);
+  const across = span(moving, cross);
   const list: Candidate[] = [];
   for (const o of others) {
     const t = span(o, axis);
-    for (const mv of [m.min, m.max])
+    for (const mv of [m.min, m.max]) {
       for (const tv of [t.min, t.max]) list.push({ delta: tv - mv, other: o, kind: "line", at: tv });
+    }
     list.push({ delta: t.mid - m.mid, other: o, kind: "line", at: t.mid });
 
-    const across = span(moving, axis === "x" ? "y" : "x");
-    const theirs = span(o, axis === "x" ? "y" : "x");
+    const theirs = span(o, cross);
     if (!(across.min < theirs.max && theirs.min < across.max)) continue;
     list.push({ delta: t.max + gap - m.min, other: o, kind: "gap", at: t.max });
     list.push({ delta: t.min - gap - m.max, other: o, kind: "gap", at: t.min - gap });
@@ -102,13 +111,14 @@ function candidates(axis: Axis, moving: Rectangle, others: readonly Rectangle[],
 }
 
 /** The closest candidate within reach, and every other one it lines the window up with too. */
-function nearest(list: Candidate[], threshold: number): Candidate[] {
+function nearest(list: readonly Candidate[], threshold: number): Candidate[] {
   let best: Candidate | undefined;
-  for (const c of list)
-    if (Math.abs(c.delta) <= threshold && (!best || Math.abs(c.delta) < Math.abs(best.delta)))
-      best = c;
+  for (const c of list) {
+    if (Math.abs(c.delta) > threshold) continue;
+    if (!best || Math.abs(c.delta) < Math.abs(best.delta)) best = c;
+  }
   if (!best) return [];
-  const delta = best.delta;
+  const { delta } = best;
   return list.filter((c) => Math.abs(c.delta - delta) < 0.5);
 }
 

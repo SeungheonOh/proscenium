@@ -40,7 +40,6 @@ export function PaperToolbar() {
             y={output.height - height - 22}
             flexDirection="row"
             justifyContent="center"
-            interactive={false}
           >
             <Box
               height={height}
@@ -58,7 +57,7 @@ export function PaperToolbar() {
             >
               {tools.map((type) => (
                 <Button key={type} active={tool.type === type} onPress={() => pickTool(type)}>
-                  <Image src={icons[type]} width={20} height={20} interactive={false} />
+                  <Image src={icons[type]} width={20} height={20} />
                 </Button>
               ))}
               <Divider />
@@ -74,12 +73,12 @@ export function PaperToolbar() {
               <Divider />
               {widths.map((width) => (
                 <Button key={width} active={style.width === width} onPress={() => pickStyle({ width })}>
-                  <Rect width={18} height={width + 1} radius={(width + 1) / 2} fill={colors.ink} interactive={false} />
+                  <Rect width={18} height={width + 1} radius={(width + 1) / 2} fill={colors.ink} />
                 </Button>
               ))}
               <Divider />
               <Button active={false} onPress={() => setOut(false)}>
-                <Image src={done} width={20} height={20} interactive={false} />
+                <Image src={done} width={20} height={20} />
               </Button>
             </Box>
           </Box>
@@ -127,10 +126,10 @@ function Swatch({ color, active, onPress }: { color: string; active: boolean; on
       onPointerDown={onPress}
     >
       <Rect width={18} height={18} radius={9} fill={none ? "#ffffff" : color}
-            border={{ width: 1, color: "#00000029" }} interactive={false} clip>
+            border={{ width: 1, color: "#00000029" }} clip>
         {none && (
           <Rect x={-2} y={8.25} width={22} height={1.5} fill={colors.danger}
-                transform={rotate(-45)} interactive={false} />
+                transform={rotate(-45)} />
         )}
       </Rect>
     </Box>
@@ -138,5 +137,5 @@ function Swatch({ color, active, onPress }: { color: string; active: boolean; on
 }
 
 function Divider() {
-  return <Rect width={1} height={26} marginX={4} fill="#00000017" interactive={false} />;
+  return <Rect width={1} height={26} marginX={4} fill="#00000017" />;
 }

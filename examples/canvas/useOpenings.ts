@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useCompositorInstance, usePersistentState } from "proscenium";
 import { DURATION } from "./isotopyEffect.js";
 
@@ -24,13 +24,16 @@ export function useOpenings(windows: readonly number[]): ReadonlySet<number> {
   // New ones count as opening in the render that first shows them, so their node starts with it.
   const fresh = instance === null ? [] : windows.filter((id) => !known.has(id) && !opening.has(id));
 
-  useEffect(() => {
+  // Each is seen for good, and opening until its opening has run.
+  const welcome = useEffectEvent(() => {
     if (fresh.length === 0) return;
     setSeen({ instance, ids: [...known, ...fresh].filter((id) => windows.includes(id)) });
     setOpening((now) => new Set([...now, ...fresh]));
-    setTimeout(() => setOpening((now) => new Set([...now].filter((id) => !fresh.includes(id)))),
-               DURATION * 1000 + 100);
-  }, [fresh.join(",")]);
+    const opened = () => setOpening((now) => new Set([...now].filter((id) => !fresh.includes(id))));
+    setTimeout(opened, DURATION * 1000 + 100);
+  });
+  const freshIds = fresh.join(",");
+  useEffect(() => welcome(), [freshIds]);
 
   return fresh.length === 0 ? opening : new Set([...opening, ...fresh]);
 }

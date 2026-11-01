@@ -2,10 +2,11 @@ import { Rect, Screen, spring, useCamera, type OutputInfo, type Rectangle } from
 import { union } from "../lib/geometry.js";
 import { colors, motion } from "../lib/theme.js";
 
+/** The map's size, and the margin around what it shows, in screen pixels. */
 const size = { width: 200, height: 128 };
+const padding = 8;
 /** Quick and without bounce, so the map keeps up with drags and pans reported every frame. */
 const track = spring({ duration: 0.16 });
-const padding = 8;
 
 interface MinimapProps {
   output: OutputInfo;

@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useEffectEvent } from "react";
 import { usePersistentState } from "proscenium";
 
 /**
@@ -16,16 +16,19 @@ export function useStackingOrder(
   const raise = (ids: readonly number[]) =>
     setStack((order) => [...order.filter((id) => !ids.includes(id) && windows.includes(id)), ...ids]);
 
-  useEffect(() => {
-    if (focused === null) return;
-    const companions = together(focused).filter((id) => id !== focused);
+  /** WINDOW to the top, its companions just under it. */
+  const lift = useEffectEvent((window: number) => {
+    const companions = together(window).filter((id) => id !== window);
     setStack((order) => {
-      if (order.at(-1) === focused && companions.every((id) => order.includes(id))) return order;
+      if (order.at(-1) === window && companions.every((id) => order.includes(id))) return order;
       const kept = order.filter((id) => companions.includes(id));
       const missing = companions.filter((id) => !order.includes(id));
-      const lifted = [...kept, ...missing, focused];
+      const lifted = [...kept, ...missing, window];
       return [...order.filter((id) => !lifted.includes(id) && windows.includes(id)), ...lifted];
     });
+  });
+  useEffect(() => {
+    if (focused !== null) lift(focused);
   }, [focused]);
 
   return [[...windows].sort((a, b) => stack.indexOf(a) - stack.indexOf(b)), raise];

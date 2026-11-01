@@ -49,17 +49,22 @@ const applyBrightness = latestOnly(({ device, value }: { device: string; value: 
   ]),
 );
 
-/** Set the backlight to PERCENT through logind, which allows the session's own user. Rapid calls keep only the latest. */
-export function setBrightness(percent: number): void {
+/**
+ * Set the backlight to PERCENT through logind, which allows the session's own
+ * user; never below FLOOR, so a slider dragged to the end leaves the screen
+ * lit. Rapid calls keep only the latest.
+ */
+export function setBrightness(percent: number, floor = 1): void {
   const current = brightness.value ?? readBrightness();
   const maximum = current && brightnessMaximum.get(current.device);
   if (!current || !maximum) return;
-  const target = Math.min(Math.max(Math.round(percent), 1), 100);
+  const target = Math.min(Math.max(Math.round(percent), floor), 100);
   brightness.set({ ...current, percent: target });
   applyBrightness({ device: current.device, value: Math.round((maximum * target) / 100) });
 }
 
+/** Step the backlight by DELTA percent; the brightness keys step it all the way down to off. */
 export function changeBrightness(delta: number): void {
   const current = brightness.value ?? readBrightness();
-  if (current) setBrightness(current.percent + delta);
+  if (current) setBrightness(current.percent + delta, 0);
 }

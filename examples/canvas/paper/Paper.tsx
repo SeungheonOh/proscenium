@@ -21,8 +21,8 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useEffectEvent,
   useMemo,
-  useReducer,
   useRef,
   useState,
   useSyncExternalStore,
@@ -43,7 +43,15 @@ import {
 } from "proscenium";
 import { PaperDocument, type Drawing } from "./document.js";
 import paperPage from "./page/index.tsx?url";
-import { Inbox, type PaperMessage, type PaperProps, type Placement, type Style, type Tool } from "./wire.js";
+import {
+  Inbox,
+  type PaperMessage,
+  type PaperProps,
+  type Placement,
+  type Style,
+  type Tool,
+  type Wheel,
+} from "./wire.js";
 
 /** How long the page has to hand over, and the pictures to load, before the paper goes ahead anyway. */
 const handOverPatience = 2000;
@@ -143,10 +151,16 @@ function placementFor(camera: CameraInfo, size: { width: number; height: number 
 }
 
 /** Whether PLACEMENT still does for CAMERA: the view, and a little around it, within the page, near its zoom. */
-function covers(placement: Placement, camera: CameraInfo, output: OutputInfo, size: { width: number; height: number }) {
+function covers(
+  placement: Placement,
+  camera: CameraInfo,
+  output: OutputInfo,
+  size: { width: number; height: number },
+): boolean {
   const width = (output.width / camera.zoom) * (1 + 2 * nearEdge);
   const height = (output.height / camera.zoom) * (1 + 2 * nearEdge);
-  const left = camera.x - width / 2, top = camera.y - height / 2;
+  const left = camera.x - width / 2;
+  const top = camera.y - height / 2;
   const ratio = camera.zoom / placement.zoom;
   return left >= placement.x && top >= placement.y &&
     left + width <= placement.x + size.width / placement.zoom &&
@@ -170,11 +184,10 @@ export function PaperLayer() {
   const [flush, setFlush] = useState(0);
   const [flushed, setFlushed] = useState(0);
   const [handing, setHanding] = useState(false);
-  // The pictures the compositor has loaded; a count renders again as more come.
-  const loadedPictures = useRef(new Set<string>()).current;
-  const [, pictureCame] = useReducer((count: number) => count + 1, 0);
+  // The pictures the compositor has loaded.
+  const [loadedPictures, setLoadedPictures] = useState<ReadonlySet<string>>(() => new Set());
   const [impatient, setImpatient] = useState(false);
-  const inbox = useRef(new Inbox()).current;
+  const [inbox] = useState(() => new Inbox());
   const parts = useRef<string[]>([]);
 
   const size = output ? pageSize(output) : { width: 0, height: 0 };
@@ -200,33 +213,41 @@ export function PaperLayer() {
   }
 
   // Out: the page comes. Put away: once it has handed everything over, it goes.
-  useEffect(() => {
+  const outChanged = useEffectEvent((out: boolean) => {
     if (out) {
       if (!placement) follow();
       setHanding(false);
-    } else if (placement) {
-      if (!ready) {
-        takeAway();
-        return;
-      }
-      setImpatient(false);
-      setFlush((count) => count + 1);
-      setHanding(true);
+      return;
     }
+    if (!placement) return;
+    if (!ready) {
+      takeAway();
+      return;
+    }
+    setImpatient(false);
+    setFlush((count) => count + 1);
+    setHanding(true);
+  });
+  useEffect(() => {
+    outChanged(out);
   }, [out]);
 
   // Once the page has drawn where it lies, the camera may have gone on past it.
-  useEffect(() => follow(), [placed]);
+  const drew = useEffectEvent(() => follow());
+  useEffect(() => {
+    drew();
+  }, [placed]);
 
   useEffect(() => {
     if (!handing) return;
-    if (owed) {
-      // A page that stops answering, or a picture that never loads, does not hold the paper up
-      // for long; one still sending its renders is waited for.
-      const timer = setTimeout(() => setImpatient(true), handOverPatience);
-      return () => clearTimeout(timer);
+    if (!owed) {
+      takeAway();
+      return;
     }
-    takeAway();
+    // A page that stops answering, or a picture that never loads, does not hold the paper up
+    // for long; one still sending its renders is waited for.
+    const timer = setTimeout(() => setImpatient(true), handOverPatience);
+    return () => clearTimeout(timer);
   }, [owed, handing, received]);
 
   function handle(message: PaperMessage) {
@@ -272,8 +293,7 @@ export function PaperLayer() {
   }
 
   const pictureLoaded = useCallback((src: string) => {
-    loadedPictures.add(src);
-    pictureCame();
+    setLoadedPictures((loaded) => (loaded.has(src) ? loaded : new Set(loaded).add(src)));
   }, []);
   const pictureFailed = useCallback((drawing: Drawing) => document.lose(drawing.id, drawing.version), [document]);
 
@@ -318,17 +338,15 @@ export function PaperLayer() {
 /** Hears where OUTPUT's camera is headed each time that changes; it alone renders that often. */
 function Watching({ output, onCamera }: { output: string; onCamera: (camera: CameraInfo) => void }) {
   const camera = useCamera(output);
-  const latest = useRef(onCamera);
-  latest.current = onCamera;
+  const cameraMoved = useEffectEvent(onCamera);
   useEffect(() => {
-    if (camera) latest.current(camera);
+    if (camera) cameraMoved(camera);
   }, [camera]);
   return null;
 }
 
 /** The wheel over the page: a pan by screen pixels, or a zoom about the canvas point (x, y). */
-function wheel(output: OutputInfo, { dx, dy, factor, x, y }: { dx: number; dy: number; factor: number;
-                                                               x: number; y: number }) {
+function wheel(output: OutputInfo, { dx, dy, factor, x, y }: Wheel) {
   const camera = getCamera(output.name);
   if (!camera) return;
   const move = { output: output.name, transition: instant };
@@ -337,10 +355,9 @@ function wheel(output: OutputInfo, { dx, dy, factor, x, y }: { dx: number; dy: n
     return;
   }
   // The canvas point under the pointer stays under it.
-  const point = { x, y };
   const zoom = camera.zoom * factor;
   const keep = camera.zoom / zoom;
-  moveCamera({ x: point.x - (point.x - camera.x) * keep, y: point.y - (point.y - camera.y) * keep, zoom }, move);
+  moveCamera({ x: x - (x - camera.x) * keep, y: y - (y - camera.y) * keep, zoom }, move);
 }
 
 interface PicturesProps {

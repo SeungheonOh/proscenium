@@ -1,7 +1,7 @@
 import { useCallback, useRef } from "react";
-import { moveCamera, useWindows, type OutputInfo, type Rectangle, type WindowInfo } from "proscenium";
+import { moveCamera, useWindows, type OutputInfo, type Rectangle } from "proscenium";
 import { body, bounds, offset, reach, resolveBodies } from "./magnetism.js";
-import { closure, pile, spread } from "./stacks.js";
+import { closure, frontOf, pile, pileAt, spread, toFront } from "./stacks.js";
 import { tidy as tidyLayout } from "./tidy.js";
 import {
   anchor,
@@ -19,10 +19,8 @@ import {
   type Preset,
   type Tile,
 } from "./tiling.js";
-import { useArrangeSettings } from "./useArrange.js";
+import { useArrangeSettings, type Links } from "./useArrange.js";
 import type { PlaceWindows } from "./usePlaces.js";
-import type { Links } from "./useArrange.js";
-import type { Polarity } from "./usePolarity.js";
 import type { Stacks } from "./useStacks.js";
 import { atActualSize, framing, homeArea, visibleArea } from "./view.js";
 
@@ -33,7 +31,7 @@ interface Entry {
   rects: ReadonlyMap<number, Rectangle>;
   /** Put back where they were but keep the size they have now, as after a push. */
   positionsOnly: boolean;
-  /** Whatever else the placement changed, put back: the groups a drag bonded or broke. */
+  /** Whatever else the placement changed, put back: the stacks or selection a drag changed. */
   also?: () => void;
 }
 
@@ -97,7 +95,6 @@ export function usePlacement(
   /** The window Move & Resize and Arrange act on: the focused one, else the frontmost. */
   target: number | undefined,
   history: History,
-  polarity: Polarity,
   stacks: Stacks,
   links: Links,
 ) {
@@ -106,7 +103,10 @@ export function usePlacement(
   // Where each window was last tiled, so a repeat press steps through widths.
   const tiles = useRef(new Map<number, Tile & { rect: Rectangle }>());
 
-  const limits = (id: number): Limits | undefined => windows.find((w: WindowInfo) => w.id === id);
+  /** How small and large window ID may be. */
+  function limits(id: number): Limits | undefined {
+    return windows.find((w) => w.id === id);
+  }
 
   /** The area WINDOW is tiled in: the screen in view at 100%, else where it was tiled, else its page. */
   function areaOf(window: number, output: OutputInfo): Rectangle {
@@ -126,13 +126,15 @@ export function usePlacement(
     return atActualSize(output) ? view : page(middle(view), homeArea(output));
   }
 
-  /** WINDOW and the windows it is tied to for good: its bonded group and its stack. */
-  const bound = (window: number) => closure(window, [polarity.groupOf, stacks.of]);
+  /** WINDOW and the windows it is tied to for good: its stack. */
+  function bound(window: number) {
+    return closure(window, [stacks.of]);
+  }
 
   /**
    * NEXT with, in magnet mode, the windows in its way pushed aside, as a
    * window grown by hand pushes them: the placed windows hold, the rest are
-   * shoved along the shortest route, a group as one, shoving the ones behind.
+   * shoved along the shortest route, a stack as one, shoving the ones behind.
    */
   function withPushes(next: ReadonlyMap<number, Rectangle>): Map<number, Rectangle> {
     const out = new Map(next);
@@ -152,7 +154,7 @@ export function usePlacement(
       for (const rect of next.values()) {
         const result = resolveBodies(
           body(rect),
-          bodies.map((ids) => ({ rects: ids.map(at), poles: ids.map(() => null) })),
+          bodies.map((ids) => ({ rects: ids.map(at) })),
           reach(settings.strength),
         );
         for (const i of result.moved) for (const id of bodies[i]!) out.set(id, offset(at(id), result.offsets[i]!));
@@ -165,7 +167,7 @@ export function usePlacement(
 
   /**
    * Move the windows in NEXT, and what they push, remembering where they all
-   * were for undo. Placed on their own, they leave their groups and stacks, as
+   * were for undo. Placed on their own, they leave their stacks, as
    * in Sunlight, unless KEEP says they stay tied.
    */
   function place(next: ReadonlyMap<number, Rectangle>, keep = false) {
@@ -192,6 +194,22 @@ export function usePlacement(
     place(spread(ids, places), true);
     stacks.dissolve(window);
     return ids.length;
+  }
+
+  /** WINDOW to the front of its stack, the others keeping their turn; the stack, bottom first, or null if WINDOW is in none. */
+  function bringToFront(window: number): number[] | null {
+    const ids = stacks.of(window);
+    if (ids.length < 2) return null;
+    const turned = toFront(ids, window);
+    restack(turned);
+    return turned;
+  }
+
+  /** A stack's windows piled again in the order TURNED, bottom first, its front where the front was. */
+  function restack(turned: readonly number[]) {
+    const ids = stacks.of(turned[0]!);
+    place(pileAt(turned, frontOf(ids, places), places), true);
+    stacks.make(turned);
   }
 
   /** Put the target window in REQUESTED's slot, or the next width on a repeat; the slot it took. */
@@ -230,7 +248,7 @@ export function usePlacement(
   function tidy() {
     if (!output || places.size === 0) return;
     const screen = screenInView(output);
-    // A bonded group goes as one block, not taken apart.
+    // A stack goes as one block, not taken apart.
     const blocks: number[][] = [];
     const seen = new Set<number>();
     for (const id of places.keys()) {
@@ -257,7 +275,7 @@ export function usePlacement(
     moveCamera(framing(laid.bounds, output));
   }
 
-  return { tile, arrange, tidy, stack, expand };
+  return { tile, arrange, tidy, stack, expand, bringToFront, restack };
 }
 
 function same(a: Rectangle, b: Rectangle) {

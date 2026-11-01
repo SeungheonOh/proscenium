@@ -34,7 +34,6 @@ interface Saved {
   blank?: Record<string, number>;
 }
 
-
 /** Elements bottom first, by Excalidraw's fractional index, which compares as plain strings. */
 function byIndex(a: SceneElement, b: SceneElement): number {
   const first = a.index ?? "";
@@ -106,7 +105,8 @@ export class PaperDocument {
    */
   addedSince(serial: number, budget: number): { serial: number; elements: SceneElement[] } | null {
     const elements: SceneElement[] = [];
-    let last = serial, size = 0;
+    let last = serial;
+    let size = 0;
     for (const entry of this.added) {
       if (entry.serial <= serial) continue;
       size += JSON.stringify(entry.element).length;
@@ -180,7 +180,8 @@ export class PaperDocument {
     if (this.closed || !(period > 0)) return;
     let moved = false;
     for (const [id, element] of this.elements) {
-      const x = Number(element.x), width = Number(element.width) || 0;
+      const x = Number(element.x);
+      const width = Number(element.width) || 0;
       const shift = -period * Math.round((x + width / 2) / period);
       if (!Number.isFinite(shift) || shift === 0) continue;
       const version = element.version + 1;
@@ -266,7 +267,10 @@ export class PaperDocument {
     const saved: Saved = {
       elements: [...this.elements.values()].sort(byIndex),
       renders: Object.fromEntries(
-        [...this.renders.values()].map(({ id, src: _src, ...render }) => [id, render]),
+        [...this.renders.values()].map(({ id, version, x, y, width, height }) => [
+          id,
+          { version, x, y, width, height },
+        ]),
       ),
       blank: Object.fromEntries(this.blank),
     };
@@ -300,4 +304,3 @@ export class PaperDocument {
     }
   }
 }
-

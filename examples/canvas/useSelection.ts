@@ -29,6 +29,8 @@ export function useSelection(places: ReadonlyMap<number, Rectangle>, zoom: () =>
   const [chosen, setChosen] = useState<ReadonlySet<number>>(new Set());
   const [box, setBox] = useState<Rectangle | null>(null);
   const from = useRef<Point | null>(null);
+  // The box as it is now: a move and the release can both come before React draws again.
+  const latest = useRef<Rectangle | null>(null);
   const current = useRef(places);
   current.current = places;
 
@@ -46,21 +48,24 @@ export function useSelection(places: ReadonlyMap<number, Rectangle>, zoom: () =>
     box,
     begin: (x, y) => {
       from.current = { x, y };
-      setBox({ x, y, width: 0, height: 0 });
+      latest.current = { x, y, width: 0, height: 0 };
+      setBox(latest.current);
     },
     move: (x, y) => {
       if (!from.current) return false;
       const r = boxTo(x, y);
+      latest.current = r;
       setBox(r);
       setChosen(touched(r));
       return true;
     },
     end: () => {
       if (!from.current) return false;
-      const r = box ?? { x: from.current.x, y: from.current.y, width: 0, height: 0 };
+      const r = latest.current ?? { x: from.current.x, y: from.current.y, width: 0, height: 0 };
       const small = clickSize / zoom();
       setChosen(r.width < small && r.height < small ? new Set() : touched(r));
       from.current = null;
+      latest.current = null;
       setBox(null);
       return true;
     },

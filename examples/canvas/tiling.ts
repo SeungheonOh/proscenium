@@ -16,7 +16,7 @@ import type { Point } from "./snapping.js";
 export { tileGap };
 
 /** Between pages, so zoomed out they read as separate areas. */
-export const pageGutter = 240;
+const pageGutter = 240;
 
 export type Preset =
   | "leftHalf"
@@ -36,7 +36,7 @@ export type Preset =
   | "full"
   | "center";
 
-const t = 1 / 3;
+const third = 1 / 3;
 
 /** Each slot in a unit area: (0, 0, 0.5, 1) is the left half. Centre keeps the window's size. */
 export const units: Record<Exclude<Preset, "center">, Rectangle> = {
@@ -48,12 +48,12 @@ export const units: Record<Exclude<Preset, "center">, Rectangle> = {
   topRight: { x: 0.5, y: 0, width: 0.5, height: 0.5 },
   bottomLeft: { x: 0, y: 0.5, width: 0.5, height: 0.5 },
   bottomRight: { x: 0.5, y: 0.5, width: 0.5, height: 0.5 },
-  leftThird: { x: 0, y: 0, width: t, height: 1 },
-  centerThird: { x: t, y: 0, width: t, height: 1 },
-  rightThird: { x: 2 * t, y: 0, width: 1 - 2 * t, height: 1 },
-  leftTwoThirds: { x: 0, y: 0, width: 2 * t, height: 1 },
-  centerTwoThirds: { x: t / 2, y: 0, width: 2 * t, height: 1 },
-  rightTwoThirds: { x: t, y: 0, width: 1 - t, height: 1 },
+  leftThird: { x: 0, y: 0, width: third, height: 1 },
+  centerThird: { x: third, y: 0, width: third, height: 1 },
+  rightThird: { x: 2 * third, y: 0, width: 1 - 2 * third, height: 1 },
+  leftTwoThirds: { x: 0, y: 0, width: 2 * third, height: 1 },
+  centerTwoThirds: { x: third / 2, y: 0, width: 2 * third, height: 1 },
+  rightTwoThirds: { x: third, y: 0, width: 1 - third, height: 1 },
   full: { x: 0, y: 0, width: 1, height: 1 },
 };
 
@@ -123,6 +123,16 @@ const cycleRoot: Partial<Record<Preset, Preset>> = {
   centerTwoThirds: "centerThird",
 };
 
+/** Within a hair of a unit area's start: an outer edge, not one shared with a neighbour. */
+function atStart(u: number): boolean {
+  return u <= 0.0001;
+}
+
+/** Within a hair of a unit area's end. */
+function atEnd(u: number): boolean {
+  return u >= 0.9999;
+}
+
 /** The slot REQUESTED gives a window last tiled at LAST: the next width when it is a repeat. */
 export function cycled(requested: Preset, last: Preset | undefined): Preset {
   if (!last || (cycleRoot[last] ?? last) !== requested) return requested;
@@ -142,7 +152,7 @@ export interface Tile {
 export function slotRect(unit: Rectangle, area: Rectangle, gap = tileGap): Rectangle {
   const edge = (u: number, origin: number, length: number, leading: boolean) => {
     const v = origin + u * length;
-    const inset = u <= 0.0001 || u >= 0.9999 ? gap : gap / 2;
+    const inset = atStart(u) || atEnd(u) ? gap : gap / 2;
     return Math.round(leading ? v + inset : v - inset);
   };
   const x = edge(unit.x, area.x, area.width, true);
@@ -178,10 +188,14 @@ export interface Size {
  */
 export function anchor(unit: Rectangle | null): Point {
   if (!unit) return { x: 0.5, y: 0.5 };
-  const axis = (lo: number, hi: number) => (lo <= 0.0001 ? 0 : hi >= 0.9999 ? 1 : 0.5);
+  const axis = (lo: number, hi: number) => {
+    if (atStart(lo)) return 0;
+    return atEnd(hi) ? 1 : 0.5;
+  };
   return { x: axis(unit.x, unit.x + unit.width), y: axis(unit.y, unit.y + unit.height) };
 }
 
+/** PRESET's slot in a unit area, or null for Centre, which has none. */
 export function presetUnit(preset: Preset): Rectangle | null {
   return preset === "center" ? null : units[preset];
 }
@@ -220,28 +234,29 @@ export function page(point: Point, screen: Rectangle, gutter = pageGutter): Rect
 /** The unit cells of an arrangement, in reading order: COLUMNS across and ROWS down. */
 export function cells(columns: number, rows: number): Rectangle[] {
   const out: Rectangle[] = [];
-  for (let r = 0; r < rows; r++)
-    for (let c = 0; c < columns; c++)
-      out.push({ x: c / columns, y: r / rows, width: 1 / columns, height: 1 / rows });
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < columns; c++) out.push({ x: c / columns, y: r / rows, width: 1 / columns, height: 1 / rows });
+  }
   return out;
 }
 
 /** The order windows at RECTS fill a row of columns: left to right, by their middles. */
 export function arrangeOrder(rects: readonly Rectangle[]): number[] {
-  const mid = (r: Rectangle) => ({ x: r.x + r.width / 2, y: r.y + r.height / 2 });
   return rects
     .map((_, i) => i)
     .sort((a, b) => {
-      const ma = mid(rects[a]!);
-      const mb = mid(rects[b]!);
+      const ma = middle(rects[a]!);
+      const mb = middle(rects[b]!);
       return ma.x !== mb.x ? ma.x - mb.x : ma.y - mb.y;
     });
 }
 
+/** Whether P is in R, edges included. */
 export function contains(r: Rectangle, p: Point): boolean {
   return p.x >= r.x && p.x <= r.x + r.width && p.y >= r.y && p.y <= r.y + r.height;
 }
 
+/** R's centre. */
 export function middle(r: Rectangle): Point {
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 }

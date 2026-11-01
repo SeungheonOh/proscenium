@@ -1,4 +1,5 @@
-import { Group, Rect, useCamera } from "proscenium";
+import { Group, Rect, type Rectangle } from "proscenium";
+import { useScreenPixel } from "./ScreenSized.js";
 import type { Guide } from "./snapping.js";
 
 /** Sunlight's guide pink. */
@@ -10,32 +11,34 @@ const pink = "#ff529e";
  * at each end.
  */
 export function Guides({ guides }: { guides: readonly Guide[] }) {
-  const zoom = useCamera()?.zoom ?? 1;
+  const pixel = useScreenPixel();
   if (guides.length === 0) return null;
-  const width = 1 / zoom;
-  const tick = 4 / zoom;
-  const lines: { x: number; y: number; width: number; height: number }[] = [];
-  for (const g of guides) {
-    const horizontal = g.from.y === g.to.y;
-    const x = Math.min(g.from.x, g.to.x);
-    const y = Math.min(g.from.y, g.to.y);
+  const hairline = pixel;
+  const tick = 4 * pixel;
+  const lines: Rectangle[] = [];
+  for (const guide of guides) {
+    const { from, to } = guide;
+    const horizontal = from.y === to.y;
+    const x = Math.min(from.x, to.x);
+    const y = Math.min(from.y, to.y);
     lines.push(
       horizontal
-        ? { x, y: y - width / 2, width: Math.abs(g.to.x - g.from.x), height: width }
-        : { x: x - width / 2, y, width, height: Math.abs(g.to.y - g.from.y) },
+        ? { x, y: y - hairline / 2, width: Math.abs(to.x - from.x), height: hairline }
+        : { x: x - hairline / 2, y, width: hairline, height: Math.abs(to.y - from.y) },
     );
-    if (g.kind !== "gap") continue;
-    for (const end of [g.from, g.to])
+    if (guide.kind !== "gap") continue;
+    for (const end of [from, to]) {
       lines.push(
         horizontal
-          ? { x: end.x - width / 2, y: end.y - tick, width, height: 2 * tick }
-          : { x: end.x - tick, y: end.y - width / 2, width: 2 * tick, height: width },
+          ? { x: end.x - hairline / 2, y: end.y - tick, width: hairline, height: 2 * tick }
+          : { x: end.x - tick, y: end.y - hairline / 2, width: 2 * tick, height: hairline },
       );
+    }
   }
   return (
-    <Group interactive={false}>
+    <Group>
       {lines.map((line, i) => (
-        <Rect key={i} {...line} fill={pink} interactive={false} />
+        <Rect key={i} {...line} fill={pink} />
       ))}
     </Group>
   );

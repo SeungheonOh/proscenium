@@ -29,8 +29,11 @@ export function useStacks(places: ReadonlyMap<number, Rectangle>): Stacks {
   const instance = useCompositorInstance();
   const [saved, setSaved] = usePersistentState<Saved>("canvas.stacks", { instance: null, stacks: [] });
   const ids = useMemo(() => new Set(places.keys()), [places]);
-  const stored = saved.instance === instance ? saved.stacks : [];
-  const all = useMemo(() => pruneStacks(stored, ids), [stored, ids]);
+  const all = useMemo(() => {
+    // Window ids start over with the compositor: stacks kept for the old ones name nothing now.
+    const stored = saved.instance === instance ? saved.stacks : [];
+    return pruneStacks(stored, ids);
+  }, [saved, instance, ids]);
 
   const update = (change: (stacks: number[][]) => number[][]) =>
     setSaved((s) => ({ instance, stacks: change(s.instance === instance ? s.stacks : []) }));

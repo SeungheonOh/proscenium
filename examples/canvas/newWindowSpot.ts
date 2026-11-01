@@ -6,7 +6,8 @@
  * Canvas coordinates throughout.
  */
 import type { Rectangle } from "proscenium";
-import type { Size } from "./tiling.js";
+import { grow } from "./magnetism.js";
+import { middle, type Size } from "./tiling.js";
 import type { Point } from "./snapping.js";
 
 /**
@@ -25,11 +26,11 @@ export function spot(
   gap: number,
   target?: Point,
 ): Rectangle {
-  const centre = target ?? { x: view.x + view.width / 2, y: view.y + view.height / 2 };
-  let middle = { x: centre.x - size.width / 2, y: centre.y - size.height / 2, ...size };
-  if (target) middle = inside(middle, view);
-  if (isClear(middle, others, gap)) return middle;
-  return beside(others, middle, gap, (r) => score(r, centre, view));
+  const centre = target ?? middle(view);
+  const centred = { x: centre.x - size.width / 2, y: centre.y - size.height / 2, ...size };
+  const preferred = target ? inside(centred, view) : centred;
+  if (isClear(preferred, others, gap)) return preferred;
+  return beside(others, preferred, gap, (r) => score(r, centre, view));
 }
 
 /** The lowest-scoring free spot touching any of OTHERS, for a window R's size. */
@@ -41,7 +42,7 @@ function beside(
 ): Rectangle {
   let best: Rectangle | null = null;
   let bestScore = Infinity;
-  for (const o of others)
+  for (const o of others) {
     for (const origin of candidates(o, r, gap, r)) {
       const c = { ...origin, width: r.width, height: r.height };
       if (!isClear(c, others, gap)) continue;
@@ -51,6 +52,7 @@ function beside(
         bestScore = s;
       }
     }
+  }
   if (best) return best;
   // Nothing beside anything is free (it can't happen with finite windows, but): right of them all.
   const right = Math.max(...others.map((o) => o.x + o.width));
@@ -68,8 +70,7 @@ export function inside(r: Rectangle, view: Rectangle): Rectangle {
 
 /** Clear of every window by at least the gap (edges exactly a gap apart are clear). */
 export function isClear(r: Rectangle, others: readonly Rectangle[], gap: number): boolean {
-  const reach = Math.max(gap - 0.5, 0);
-  const grown = { x: r.x - reach, y: r.y - reach, width: r.width + 2 * reach, height: r.height + 2 * reach };
+  const grown = grow(r, Math.max(gap - 0.5, 0));
   return !others.some((o) => intersects(grown, o));
 }
 
@@ -111,6 +112,7 @@ function score(r: Rectangle, target: Point, view: Rectangle): number {
   return out > 0 ? outOfViewPenalty + outOfViewWeight * out + distance : distance;
 }
 
-function intersects(a: Rectangle, b: Rectangle) {
+/** Overlap with some area to it; edges that merely touch don't count. */
+function intersects(a: Rectangle, b: Rectangle): boolean {
   return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
 }

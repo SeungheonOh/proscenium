@@ -1,9 +1,9 @@
 /**
- * The isotopy.xyz intro as a window's opening: a beam
- * leaves a short strip at an edge of the screen, fans open toward the new
- * window, runs through blue, a color storm and a magenta grade with datamosh
- * and pixel-sort smears, then dissolves through an ordered dither while the
- * window settles as one-bit dither, which then dithers into the window itself.
+ * The isotopy.xyz intro as a window's opening: a beam leaves a short strip at
+ * an edge of the screen, fans open toward the new window, runs through blue, a
+ * color storm and a magenta grade with datamosh and pixel-sort smears, then
+ * dissolves through an ordered dither while the window settles as one-bit
+ * dither, which then dithers into the window itself.
  * On the site the mark is a 3D loop; here the window is the mark, and its own
  * pixels color the beam where it crosses it. It stays on the screen edge it
  * left from while the camera moves the window, and its pixels stay the site's
@@ -14,11 +14,10 @@
  * frames instead: while its block kept the last frame, it steps inward along
  * its ray, until a frame refreshed it or it leaves the beam.
  */
-
-import { effectShader } from "proscenium";
+import { effectShader, type Rectangle } from "proscenium";
 
 /** Seconds of the site's intro, then of the dither into the window. */
-export const INTRO = 4;
+const INTRO = 4;
 export const DURATION = INTRO + 0.6;
 
 const SOURCE = `
@@ -216,12 +215,24 @@ export const isotopy = effectShader({
 });
 
 type Vec2 = [number, number];
-export type IsotopyUniforms = { amount: number; edge: [number, number, number, number] };
-export interface ScreenRect { x: number; y: number; width: number; height: number }
+
+/** A type, not an interface: the effect takes its uniforms as a record of names to values. */
+export type IsotopyUniforms = {
+  amount: number;
+  /** The point the beam leaves from, as fractions of the output, then the edge's inward normal. */
+  edge: [number, number, number, number];
+};
+
+interface Side {
+  /** The inward normal. */
+  n: Vec2;
+  /** The point S of the way along it. */
+  at: (s: number) => Vec2;
+}
 
 /** An edge point the beam can leave from: far enough from the target, and facing it. */
-function pickEdge(width: number, height: number, target: Vec2, random: () => number) {
-  const sides: { n: Vec2; at: (s: number) => Vec2 }[] = [
+function pickEdge(width: number, height: number, target: Vec2, random: () => number): { edge: Vec2; n: Vec2 } {
+  const sides: Side[] = [
     { n: [1, 0], at: (s) => [0, s * height] },
     { n: [-1, 0], at: (s) => [width, s * height] },
     { n: [0, 1], at: (s) => [s * width, 0] },
@@ -230,11 +241,14 @@ function pickEdge(width: number, height: number, target: Vec2, random: () => num
   for (let i = 0; i < 200; i++) {
     const side = sides[Math.floor(random() * 4)]!;
     const at = side.at(0.08 + 0.84 * random());
-    const dx = target[0] - at[0], dy = target[1] - at[1], d = Math.hypot(dx, dy);
-    if (d < Math.min(width, height) * 0.45 || (dx * side.n[0] + dy * side.n[1]) / d < 0.55) continue;
+    const dx = target[0] - at[0];
+    const dy = target[1] - at[1];
+    const d = Math.hypot(dx, dy);
+    const facing = (dx * side.n[0] + dy * side.n[1]) / d;
+    if (d < Math.min(width, height) * 0.45 || facing < 0.55) continue;
     return { edge: at, n: side.n };
   }
-  return { edge: [0, height / 2 + height * 0.2] as Vec2, n: [1, 0] as Vec2 };
+  return { edge: [0, height / 2 + height * 0.2], n: [1, 0] };
 }
 
 /** A repeatable random sequence, so a window's beam leaves from the same edge on every render. */
@@ -254,8 +268,7 @@ export function seeded(seed: number): () => number {
  * in logical pixels: the screen edge its beam leaves from, which RANDOM picks
  * facing the window, as fractions of the output and the edge's inward normal.
  */
-export function isotopyUniforms(rect: ScreenRect, width: number, height: number,
-                                random: () => number): IsotopyUniforms {
+export function isotopyUniforms(rect: Rectangle, width: number, height: number, random: () => number): IsotopyUniforms {
   const target: Vec2 = [rect.x + rect.width / 2, rect.y + rect.height / 2];
   const { edge, n } = pickEdge(width, height, target, random);
   return { amount: 1, edge: [edge[0] / width, edge[1] / height, n[0], n[1]] };

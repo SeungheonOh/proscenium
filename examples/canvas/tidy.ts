@@ -26,10 +26,13 @@ export function readingOrder(rects: readonly Rectangle[]): number[] {
   let rowMiddle = 0;
   for (const i of byTop) {
     const r = rects[i]!;
-    if (rows.length === 0 || r.y >= rowMiddle) {
-      rows.push([i]);
-      rowMiddle = r.y + r.height / 2;
-    } else rows[rows.length - 1]!.push(i);
+    const row = rows.at(-1);
+    if (row && r.y < rowMiddle) {
+      row.push(i);
+      continue;
+    }
+    rows.push([i]);
+    rowMiddle = r.y + r.height / 2;
   }
   return rows.flatMap((row) => row.sort((a, b) => rects[a]!.x - rects[b]!.x || rects[a]!.y - rects[b]!.y));
 }

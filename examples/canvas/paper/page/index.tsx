@@ -25,9 +25,10 @@ import {
   newElementWith,
   restoreElements,
 } from "@excalidraw/excalidraw";
-import type { AppState, ExcalidrawImperativeAPI } from "@excalidraw/excalidraw/types";
+import type { ExcalidrawElement } from "@excalidraw/excalidraw/element/types";
+import type { AppState, ExcalidrawImperativeAPI, NormalizedZoomValue } from "@excalidraw/excalidraw/types";
 import { send, tagFrames } from "proscenium/page";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import {
   bytesToBase64,
@@ -49,8 +50,6 @@ const renderScale = () => Math.max(2, 2 * devicePixelRatio);
 /** The largest render, in pixels a side and in all; the compositor decodes up to 4096 a side. */
 const renderSide = 4096;
 const renderPixels = 8e6;
-
-type ExcalidrawElement = Parameters<typeof isInvisiblySmallElement>[0];
 
 /** Only the drawing: the world has the toolbar, and keeps the document. */
 const uiOptions = {
@@ -78,11 +77,17 @@ function tell(message: PaperMessage): void {
  * Excalidraw's App component, reached through the fiber of its root element.
  */
 function stopCollaboratorTrails(root: Element | null): void {
-  const key = root && Object.keys(root).find((name) => name.startsWith("__reactFiber$"));
+  if (!root) return;
+  const key = Object.keys(root).find((name) => name.startsWith("__reactFiber$"));
+  if (!key) return;
   type Fiber = { return: Fiber | null; stateNode: { laserTrails?: { stop(): void } } | null };
-  for (let fiber = key ? ((root as never)[key] as Fiber) : null; fiber; fiber = fiber.return) {
+  const fibered = root as unknown as Record<string, Fiber>;
+  for (let fiber: Fiber | null = fibered[key]; fiber; fiber = fiber.return) {
     const trails = fiber.stateNode?.laserTrails;
-    if (trails) return trails.stop();
+    if (trails) {
+      trails.stop();
+      return;
+    }
   }
 }
 
@@ -93,123 +98,107 @@ export default function Page(props: Partial<PaperProps>) {
 
 /** Excalidraw's view with PLACEMENT's corner at the page's top left, at its zoom. */
 function viewOf(placement: Placement) {
-  return { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as never } };
+  return { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as NormalizedZoomValue } };
 }
 
-/** ELEMENTS bottom first, by their fractional index, as a scene keeps them. */
+/** ELEMENTS bottom first, by their fractional index, which compares as plain strings, as a scene keeps them. */
 function inOrder<T extends { index?: string | null }>(elements: T[]): T[] {
-  return elements.sort((a, b) => ((a.index ?? "") < (b.index ?? "") ? -1 : (a.index ?? "") > (b.index ?? "") ? 1 : 0));
+  return elements.sort((a, b) => {
+    const first = a.index ?? "";
+    const second = b.index ?? "";
+    return first < second ? -1 : first > second ? 1 : 0;
+  });
+}
+
+/** What the page keeps between renders, and its handlers read as it is now. */
+interface Live {
+  session: string;
+  parts: string[];
+  /** Whether the scene holds a document yet. */
+  filled: boolean;
+  /** The version of each element the world has, and of each render. */
+  known: Map<string, number>;
+  rendered: Map<string, number>;
+  /** Where the page last drew. */
+  placement: Placement;
+  /** Whether the page has said it is ready; before, view changes are Excalidraw settling in. */
+  ready: boolean;
+  tool: Tool | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  rendering: Promise<void> | null;
 }
 
 function Paper({ session, placement, load, received, tool, style, flush, added }: PaperProps) {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   // The document as the world last had it, and the session it came with.
   const [loaded, setLoaded] = useState<{ session: string; document: Loaded } | null>(null);
-  const live = useRef({
+  const live = useRef<Live>({
     session: "",
-    parts: [] as string[],
-    /** Whether the scene holds a document yet. */
+    parts: [],
     filled: false,
-    /** The version of each element the world has, and of each render. */
-    known: new Map<string, number>(),
-    rendered: new Map<string, number>(),
-    /** Where the page last drew. */
+    known: new Map(),
+    rendered: new Map(),
     placement,
-    /** Whether the page has said it is ready; before, view changes are Excalidraw settling in. */
     ready: false,
-    tool: null as Tool | null,
-    timer: null as ReturnType<typeof setTimeout> | null,
-    rendering: null as Promise<void> | null,
-  }).current;
+    tool: null,
+    timer: null,
+    rendering: null,
+  });
   const [outbox] = useState(() => new Outbox((chunk) => tell({ name: "chunk", value: chunk })));
+  // Whether a document has come at all: another session's does not pick the tool or flush again.
+  const hasDocument = loaded !== null;
+  // The placement by its parts, as its object is new with every prop the world sends.
+  const { x: left, y: top, zoom: scale, tag } = placement;
 
   // Each new world starts the conversation over.
   useEffect(() => {
-    if (session === live.session) return;
-    live.session = session;
-    live.parts = [];
+    if (session === live.current.session) return;
+    live.current.session = session;
+    live.current.parts = [];
     outbox.reset();
-    tell({ name: "hello", value: { fresh: !live.filled } });
-  }, [session]);
+    tell({ name: "hello", value: { fresh: !live.current.filled } });
+  }, [session, outbox]);
+
+  // Each part of the document once, as it comes; `load` too is new with every prop.
+  const takePart = useEffectEvent(() => {
+    if (!load || load.part !== live.current.parts.length) return;
+    live.current.parts.push(load.data);
+    tell({ name: "loaded", value: load.part });
+    if (live.current.parts.length < load.parts) return;
+    const document = JSON.parse(fromBase64(live.current.parts.join(""))) as Loaded;
+    live.current.parts = [];
+    setLoaded({ session, document });
+  });
+  const part = load?.part;
+  const partCount = load?.parts;
+  useEffect(() => {
+    takePart();
+  }, [part, partCount]);
 
   useEffect(() => {
-    if (!load || load.part !== live.parts.length) return;
-    live.parts.push(load.data);
-    tell({ name: "loaded", value: load.part });
-    if (live.parts.length < load.parts) return;
-    const document = JSON.parse(fromBase64(live.parts.join(""))) as Loaded;
-    live.parts = [];
-    setLoaded({ session, document });
-  }, [load?.part, load?.parts]);
-
-  useEffect(() => outbox.confirm(received), [received]);
+    outbox.confirm(received);
+  }, [outbox, received]);
 
   // After Excalidraw's own mount, which started the trails.
   useEffect(() => {
     if (api) stopCollaboratorTrails(document.querySelector(".excalidraw-container"));
   }, [api]);
 
-  /** Sends the elements that differ from what the world has. */
-  function sync(api: ExcalidrawImperativeAPI): void {
-    if (live.timer) clearTimeout(live.timer);
-    live.timer = null;
-    const put: SceneElement[] = [];
-    const drop: string[] = [];
-    const present = new Set<string>();
-    for (const element of api.getSceneElementsIncludingDeleted()) {
-      if (element.isDeleted) continue;
-      present.add(element.id);
-      if (live.known.get(element.id) === element.version) continue;
-      put.push(element as unknown as SceneElement);
-      live.known.set(element.id, element.version);
-    }
-    for (const id of live.known.keys()) {
-      if (present.has(id)) continue;
-      drop.push(id);
-      live.known.delete(id);
-      live.rendered.delete(id);
-    }
-    if (put.length || drop.length) outbox.push({ type: "elements", put, drop });
-  }
-
-  /**
-   * Renders every element whose render the world lacks. A render holds up the
-   * page for some 50 ms, so this waits for the paper to be put away rather than
-   * coming between strokes.
-   */
-  function renderOwed(api: ExcalidrawImperativeAPI): Promise<void> {
-    if (live.rendering) return live.rendering.then(() => renderOwed(api));
-    live.rendering = (async () => {
-      for (;;) {
-        const element = api.getSceneElements().find((each) => live.rendered.get(each.id) !== each.version);
-        if (!element) return;
-        try {
-          outbox.push({ type: "render", ...(await draw(element, api)) });
-        } catch (error) {
-          // An element Excalidraw cannot export keeps the picture it had.
-          console.error(`paper: cannot render ${element.id}:`, error);
-        }
-        live.rendered.set(element.id, element.version);
-      }
-    })().finally(() => (live.rendering = null));
-    return live.rendering;
-  }
-
   // The document arrived: a page without one takes it; one with its own takes in what it never
   // had and the world's newer versions of what it has, as what the world drew or moved itself
   // while it was away, and sends what differs. What it deleted stays deleted.
   useEffect(() => {
-    if (!api || !loaded || loaded.session !== live.session) return;
+    if (!api || !loaded || loaded.session !== live.current.session) return;
     const { elements, rendered } = loaded.document;
-    live.known = new Map(elements.map((element) => [element.id, element.version]));
-    live.rendered = new Map(Object.entries(rendered));
-    if (!live.filled) {
+    live.current.known = new Map(elements.map((element) => [element.id, element.version]));
+    live.current.rendered = new Map(Object.entries(rendered));
+    if (!live.current.filled) {
       api.updateScene({
         elements: restoreElements(elements as never, null),
         captureUpdate: CaptureUpdateAction.NEVER,
       });
       api.history.clear();
-      live.filled = true;
+      live.current.filled = true;
     } else {
       const mine = new Map(api.getSceneElementsIncludingDeleted().map((element) => [element.id, element.version]));
       const newer = elements.filter((element) => (mine.get(element.id) ?? -1) < element.version);
@@ -222,18 +211,18 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
         });
       }
     }
-    sync(api);
-  }, [api, loaded]);
+    sync(api, live.current, outbox);
+  }, [api, loaded, outbox]);
 
   // Elements the world drew itself while the page is out, as an agent does: the world has them
-  // and their renders already.
-  useEffect(() => {
-    if (!api || !live.filled || !added) return;
+  // and their renders already. A new document fills the scene first, and may bring some.
+  const takeAdded = useEffectEvent((api: ExcalidrawImperativeAPI) => {
+    if (!live.current.filled || !added) return;
     const present = new Set(api.getSceneElementsIncludingDeleted().map((element) => element.id));
     const fresh = added.elements.filter((element) => !present.has(element.id));
     for (const element of fresh) {
-      live.known.set(element.id, element.version);
-      live.rendered.set(element.id, element.version);
+      live.current.known.set(element.id, element.version);
+      live.current.rendered.set(element.id, element.version);
     }
     if (fresh.length) {
       api.updateScene({
@@ -242,7 +231,11 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
       });
     }
     tell({ name: "added", value: added.serial });
-  }, [api, loaded, added?.serial]);
+  });
+  const addedSerial = added?.serial;
+  useEffect(() => {
+    if (api) takeAdded(api);
+  }, [api, loaded, addedSerial]);
 
   // The page draws where it is placed, once the document is in and at each new place, in one
   // frame with the place's number, so its node moves the moment that frame comes. Not in the
@@ -250,6 +243,7 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
   const [placed, setPlaced] = useState(false);
   useEffect(() => {
     if (!api || !loaded) return;
+    const where: Placement = { x: left, y: top, zoom: scale, tag };
     // Outside React's own work, so that flushSync can draw at once.
     let timer = setTimeout(function place() {
       const state = api.getAppState();
@@ -257,41 +251,44 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
         timer = setTimeout(place, 100);
         return;
       }
-      live.placement = placement;
+      live.current.placement = where;
       // Excalidraw draws the new view before the number goes on, both in this one task.
-      flushSync(() => api.updateScene({ appState: viewOf(placement), captureUpdate: CaptureUpdateAction.NEVER }));
-      tagFrames(placement.tag);
-      tell({ name: "placed", value: placement.tag });
+      flushSync(() => api.updateScene({ appState: viewOf(where), captureUpdate: CaptureUpdateAction.NEVER }));
+      tagFrames(tag);
+      tell({ name: "placed", value: tag });
       setPlaced(true);
     });
     return () => clearTimeout(timer);
-  }, [api, loaded, placement.tag, placement.x, placement.y, placement.zoom]);
+  }, [api, loaded, left, top, scale, tag]);
 
   // Once the document is in and drawn where the page is placed, the page can show.
   useEffect(() => {
     if (!api || !loaded || !placed) return;
     let frames = 3;
     let request = requestAnimationFrame(function wait() {
-      if (--frames > 0) request = requestAnimationFrame(wait);
-      else {
-        live.ready = true;
-        tell({ name: "ready" });
+      if (--frames > 0) {
+        request = requestAnimationFrame(wait);
+        return;
       }
+      live.current.ready = true;
+      tell({ name: "ready" });
     });
     return () => cancelAnimationFrame(request);
   }, [api, loaded, placed]);
 
-  // Excalidraw settles its tool once the scene is in, so the first pick waits for that.
-  useEffect(() => {
-    if (!api || !loaded) return;
-    live.tool = tool.type;
+  // Excalidraw settles its tool once the scene is in, so the first pick waits for that. A tool
+  // the page picked by its own keys comes back with the same serial, and is in already.
+  const takeTool = useEffectEvent((api: ExcalidrawImperativeAPI) => {
+    live.current.tool = tool.type;
     api.setActiveTool({ type: tool.type });
-  }, [api, !loaded, tool.serial]);
+  });
+  useEffect(() => {
+    if (api && hasDocument) takeTool(api);
+  }, [api, hasDocument, tool.serial]);
 
   // The style is new elements', and with a new serial the selection's too.
   const styled = useRef(style.serial);
-  useEffect(() => {
-    if (!api) return;
+  const takeStyle = useEffectEvent((api: ExcalidrawImperativeAPI) => {
     const state = api.getAppState();
     const restyle = styled.current !== style.serial;
     styled.current = style.serial;
@@ -305,21 +302,24 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
       },
       elements: restyle
         ? api.getSceneElementsIncludingDeleted().map((element) =>
-            selected[element.id] ? newElementWith(element, changes as never) : element)
+            selected[element.id] ? newElementWith(element, changes) : element)
         : undefined,
       captureUpdate: restyle ? CaptureUpdateAction.IMMEDIATELY : CaptureUpdateAction.NEVER,
     });
+  });
+  useEffect(() => {
+    if (api) takeStyle(api);
   }, [api, style.serial]);
 
   // Before the paper is put away or moved, everything owed goes out; a page that started
   // since the world asked answers once it has the document.
   useEffect(() => {
-    if (!api || !loaded || flush === 0) return;
-    sync(api);
-    void renderOwed(api)
+    if (!api || !hasDocument || flush === 0) return;
+    sync(api, live.current, outbox);
+    void renderOwed(api, live.current, outbox)
       .then(() => outbox.drained())
       .then(() => tell({ name: "flushed", value: flush }));
-  }, [api, !loaded, flush]);
+  }, [api, hasDocument, flush, outbox]);
 
   // Excalidraw's own panning, by its hand tool or by dragging with Space held, would follow
   // the pointer across a page that the camera moves under it; the canvas pans by itself.
@@ -344,8 +344,8 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
       if (event.shiftKey && dx === 0) [dx, dy] = [dy, 0];
       const zoom = event.ctrlKey || event.metaKey;
       // The pointer on the canvas, as the page draws it now.
-      const { x, y, zoom: scale } = live.placement;
-      const point = { x: x + event.clientX / scale, y: y + event.clientY / scale };
+      const drawn = live.current.placement;
+      const point = { x: drawn.x + event.clientX / drawn.zoom, y: drawn.y + event.clientY / drawn.zoom };
       tell({
         name: "wheel",
         value: zoom ? { dx: 0, dy: 0, factor: Math.exp(-dy / 300), ...point } : { dx, dy, factor: 1, ...point },
@@ -358,25 +358,25 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
   function changed(_elements: unknown, state: AppState) {
     // Excalidraw's own tool changes, by its keys or after a shape is drawn, show on the toolbar.
     const type = state.activeTool.type as Tool;
-    if (live.filled && type !== live.tool && tools.includes(type)) {
-      live.tool = type;
+    if (live.current.filled && type !== live.current.tool && tools.includes(type)) {
+      live.current.tool = type;
       tell({ name: "tool", value: type });
     }
-    if (!api || !live.filled) return;
-    if (live.timer) clearTimeout(live.timer);
-    live.timer = setTimeout(() => sync(api), settleChanges);
+    if (!api || !live.current.filled) return;
+    if (live.current.timer) clearTimeout(live.current.timer);
+    live.current.timer = setTimeout(() => sync(api, live.current, outbox), settleChanges);
   }
 
   /** Excalidraw moved its view by itself: the camera goes there, and the page stays put. */
   function scrolled(scrollX: number, scrollY: number, zoom: { value: number }) {
     if (!api) return;
-    const view = viewOf(live.placement);
+    const view = viewOf(live.current.placement);
     if (Math.abs(scrollX - view.scrollX) < 0.5 && Math.abs(scrollY - view.scrollY) < 0.5 &&
-        Math.abs(zoom.value - live.placement.zoom) < 1e-4) {
+        Math.abs(zoom.value - live.current.placement.zoom) < 1e-4) {
       return;
     }
     // Excalidraw sets its view as it starts, after the page placed it: the placement stands.
-    if (!live.ready) {
+    if (!live.current.ready) {
       api.updateScene({ appState: view, captureUpdate: CaptureUpdateAction.NEVER });
       return;
     }
@@ -419,6 +419,54 @@ function Paper({ session, placement, load, received, tool, style, flush, added }
       />
     </div>
   );
+}
+
+/** Sends through OUTBOX the elements in API's scene that differ from what the world has, as LIVE knows it. */
+function sync(api: ExcalidrawImperativeAPI, live: Live, outbox: Outbox): void {
+  if (live.timer) clearTimeout(live.timer);
+  live.timer = null;
+  const put: SceneElement[] = [];
+  const drop: string[] = [];
+  const present = new Set<string>();
+  for (const element of api.getSceneElementsIncludingDeleted()) {
+    if (element.isDeleted) continue;
+    present.add(element.id);
+    if (live.known.get(element.id) === element.version) continue;
+    put.push(element as unknown as SceneElement);
+    live.known.set(element.id, element.version);
+  }
+  for (const id of live.known.keys()) {
+    if (present.has(id)) continue;
+    drop.push(id);
+    live.known.delete(id);
+    live.rendered.delete(id);
+  }
+  if (put.length || drop.length) outbox.push({ type: "elements", put, drop });
+}
+
+/**
+ * Renders every element whose render the world lacks. A render holds up the
+ * page for some 50 ms, so this waits for the paper to be put away rather than
+ * coming between strokes.
+ */
+function renderOwed(api: ExcalidrawImperativeAPI, live: Live, outbox: Outbox): Promise<void> {
+  if (live.rendering) return live.rendering.then(() => renderOwed(api, live, outbox));
+  live.rendering = (async () => {
+    for (;;) {
+      const element = api.getSceneElements().find((each) => live.rendered.get(each.id) !== each.version);
+      if (!element) return;
+      try {
+        outbox.push({ type: "render", ...(await draw(element, api)) });
+      } catch (error) {
+        // An element Excalidraw cannot export keeps the picture it had.
+        console.error(`paper: cannot render ${element.id}:`, error);
+      }
+      live.rendered.set(element.id, element.version);
+    }
+  })().finally(() => {
+    live.rendering = null;
+  });
+  return live.rendering;
 }
 
 /** ELEMENT drawn alone over its bounds and a margin for its stroke, as Excalidraw exports it. */

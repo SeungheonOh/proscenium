@@ -99,6 +99,15 @@ export interface Chunk {
   end: boolean;
 }
 
+/** The wheel turned over the page: pan by screen pixels, or zoom by `factor` about the canvas point (x, y). */
+export interface Wheel {
+  dx: number;
+  dy: number;
+  factor: number;
+  x: number;
+  y: number;
+}
+
 export type PaperMessage =
   /** The page met a new session and wants the document; chunk serials start over. */
   | { name: "hello"; value: { fresh: boolean } }
@@ -109,8 +118,7 @@ export type PaperMessage =
   /** The page drew at placement `value` and marks its frames with it. */
   | { name: "placed"; value: number }
   | { name: "chunk"; value: Chunk }
-  /** The wheel turned over the page: pan by screen pixels, or zoom by `factor` about the canvas point (x, y). */
-  | { name: "wheel"; value: { dx: number; dy: number; factor: number; x: number; y: number } }
+  | { name: "wheel"; value: Wheel }
   /** Excalidraw wanted to look elsewhere, e.g. zooming to fit: the canvas point to center, at `zoom`. */
   | { name: "look"; value: { x: number; y: number; zoom: number } }
   /** The tool changed in the page, by its own keys. */

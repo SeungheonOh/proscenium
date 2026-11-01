@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo } from "react";
 import {
   useCompositorInstance,
   usePersistentState,
@@ -39,7 +39,7 @@ export function usePlaces(
     places: {},
   });
   // Window ids start over with the compositor: places kept for the old ones name nothing now.
-  const stored = saved.instance === instance ? saved.places : {};
+  const stored = useMemo(() => (saved.instance === instance ? saved.places : {}), [saved, instance]);
 
   const places = useMemo(() => {
     const view = output ? visibleArea(output) : fallbackView;
@@ -58,13 +58,14 @@ export function usePlaces(
         return [window.id, opening];
       }),
     );
-  }, [windows, stored]);
+  }, [windows, stored, output]);
 
   // New windows keep the place they opened at; closed ones are forgotten.
-  useEffect(() => {
+  const remember = useEffectEvent((places: ReadonlyMap<number, Rectangle>) => {
     if (instance !== null && windows.some((window) => !stored[window.id]))
       setSaved({ instance, places: Object.fromEntries(places) });
-  }, [places]);
+  });
+  useEffect(() => remember(places), [places]);
 
   const place = useCallback<PlaceWindow>(
     (window, next) =>

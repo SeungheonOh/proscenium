@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useEffectEvent } from "react";
 import {
   getCamera,
   moveCamera,
@@ -48,8 +48,11 @@ export function useCameraActions(
   }
 
   // Clicking a window in the overview dives into it.
+  const onFocus = useEffectEvent((window: number) => {
+    if (overview) flyTo(window, overview.zoom);
+  });
   useEffect(() => {
-    if (focused !== null && overview) flyTo(focused, overview.zoom);
+    if (focused !== null) onFocus(focused);
   }, [focused]);
 
   return { flyTo, toggleOverview };

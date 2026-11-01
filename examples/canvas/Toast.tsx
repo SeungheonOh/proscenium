@@ -7,11 +7,11 @@ import { colors, motion } from "../lib/theme.js";
 
 /** What just changed, said briefly at the bottom of the screen. */
 export interface ToastMessage {
-  /** What it is: "Magnet", "Grid". */
+  /** What it is: "Magnet", "Guides". */
   label: string;
-  /** What it is now: "On · Firm", "80". */
+  /** What it is now: "On · Firm", "3 columns". */
   detail?: string;
-  /** The dot before it: on (the accent), off (grey), or a colour of its own, as a pole's. */
+  /** The dot before it: on (the accent), off (grey), or a colour of its own. */
   dot?: "on" | "off" | string;
 }
 
@@ -22,7 +22,9 @@ const showFor = 1400;
 export function useToast(): [ToastMessage | null, (message: ToastMessage) => void] {
   const [message, setMessage] = useState<ToastMessage | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
-  useEffect(() => () => clearTimeout(timer.current), []);
+  useEffect(() => {
+    return () => clearTimeout(timer.current);
+  }, []);
   const show = useCallback((next: ToastMessage) => {
     setMessage(next);
     clearTimeout(timer.current);
@@ -31,12 +33,19 @@ export function useToast(): [ToastMessage | null, (message: ToastMessage) => voi
   return [message, show];
 }
 
+/** The colour of a message's DOT, or undefined for none. */
+function dotColor(dot: ToastMessage["dot"]): string | undefined {
+  if (dot === "on") return colors.accent;
+  if (dot === "off") return "#17171a40";
+  return dot;
+}
+
 /** The toast: a frosted pill that rises at the bottom of every output while a message shows. */
 export function Toast({ message }: { message: ToastMessage | null }) {
   // The last message stays in the pill while it sinks away.
   const shown = useRetained(message);
   if (!shown) return null;
-  const dot = shown.dot === "on" ? colors.accent : shown.dot === "off" ? "#17171a40" : shown.dot;
+  const dot = dotColor(shown.dot);
   return (
     <FloatingPill shown={message !== null}>
       {dot && <Rect width={10} height={10} radius={5} fill={dot} transition={motion.pop} />}

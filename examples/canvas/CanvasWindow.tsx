@@ -1,8 +1,5 @@
-import { memo, useState } from "react";
+import { memo } from "react";
 import {
-  getCamera,
-  instant,
-  type OutputInfo,
   Rect,
   type Rectangle,
   rotate,
@@ -13,14 +10,13 @@ import {
   type Transition,
   Window,
 } from "proscenium";
-import { burn } from "../lib/effects.js";
 import { colors } from "../lib/theme.js";
 import type { FanPose } from "./stacks.js";
-import { isotopy, isotopyUniforms, seeded } from "./isotopyEffect.js";
+import { cloak } from "./camoEffect.js";
 
-const burning = burn(104);
-/** How a window looks before it opens and after it closes: a little small, burnt away. */
-const burnt = { transform: [rotate(0), scale(0.94)], shaders: burning.burnt };
+const cloaking = cloak(104);
+/** How a window looks before it shows and once it has closed: cloaked away where it is. */
+const cloaked = { shaders: cloaking.cloaked };
 
 interface CanvasWindowProps {
   id: number;
@@ -47,24 +43,8 @@ interface CanvasWindowProps {
   onResizeStart: (window: number) => void;
   onResize: (window: number, event: StageResizeEvent) => void;
   onResizeEnd: (window: number, event: StageResizeEvent) => void;
-  /** While the window is opening, the output it opens on. */
-  opening?: OutputInfo | undefined;
-}
-
-/**
- * The Isotopy opening for a window at BOX on OUTPUT: its beam leaves the screen
- * edge facing where the camera shows the window as it opens, and stays there.
- */
-function openingUse(id: number, box: Rectangle, output: OutputInfo) {
-  const camera = getCamera(output.name) ?? { x: 0, y: 0, zoom: 1 };
-  const rect = {
-    x: (box.x - camera.x) * camera.zoom + output.width / 2,
-    y: (box.y - camera.y) * camera.zoom + output.height / 2,
-    width: box.width * camera.zoom,
-    height: box.height * camera.zoom,
-  };
-  const uniforms = isotopyUniforms(rect, output.width, output.height, seeded(id));
-  return { id: "isotopy", shader: isotopy, uniforms, transition: instant };
+  /** Just opened: it uncloaks into view. A window already there when the world (re)loads just shows. */
+  opening: boolean;
 }
 
 /** A move request that says where the pointer is, so it can become a drag. */
@@ -97,13 +77,8 @@ export const CanvasWindow = memo(function CanvasWindow({
   onResizeEnd,
   opening,
 }: CanvasWindowProps) {
-  // A window opens only as it mounts, so the beam is aimed once, then.
-  const [openingShader] = useState(() => opening && openingUse(id, box, opening));
-
   // Lifted shows in the shadow alone: grown, its edges would miss the guides they line up with.
   const transform = [rotate(tilt?.angle ?? 0), scale(tilt?.scale ?? 1)];
-  // A window opens through the Isotopy beam; it burns away as it closes.
-  const shader = opening && openingShader ? openingShader : burning.use;
 
   return (
     <>
@@ -120,9 +95,10 @@ export const CanvasWindow = memo(function CanvasWindow({
           blur: lifted ? 64 : 36,
           y: lifted ? 26 : 12,
         }}
-        shaders={[shader]}
-        initial={opening ? undefined : burnt}
-        exit={burnt}
+        // It uncloaks as it opens and cloaks away as it closes.
+        shaders={[cloaking.use]}
+        initial={opening ? cloaked : undefined}
+        exit={cloaked}
         transition={transition}
         onMoveRequest={(event) => {
           if (isFromPointer(event)) onPickUp(id, event);

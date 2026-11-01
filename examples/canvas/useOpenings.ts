@@ -1,6 +1,6 @@
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useCompositorInstance, usePersistentState } from "proscenium";
-import { DURATION } from "./isotopyEffect.js";
+import { cloakDuration } from "./camoEffect.js";
 
 interface Seen {
   /** The compositor instance the window ids belong to. */
@@ -30,7 +30,7 @@ export function useOpenings(windows: readonly number[]): ReadonlySet<number> {
     setSeen({ instance, ids: [...known, ...fresh].filter((id) => windows.includes(id)) });
     setOpening((now) => new Set([...now, ...fresh]));
     const opened = () => setOpening((now) => new Set([...now].filter((id) => !fresh.includes(id))));
-    setTimeout(opened, DURATION * 1000 + 100);
+    setTimeout(opened, cloakDuration * 1000 + 100);
   });
   const freshIds = fresh.join(",");
   useEffect(() => welcome(), [freshIds]);

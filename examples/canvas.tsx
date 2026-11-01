@@ -378,7 +378,7 @@ export default function Canvas() {
               onPress={fanned ? fan.press : undefined}
               onHover={fanned ? fan.hover : undefined}
               onRelease={fanned ? fan.release : undefined}
-              opening={opening.has(id) ? output : undefined}
+              opening={opening.has(id)}
               onPickUp={arrange.startDrag}
               onCarry={arrange.moveDrag}
               onLetGo={arrange.endDrag}

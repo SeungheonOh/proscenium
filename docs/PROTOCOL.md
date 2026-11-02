@@ -161,6 +161,7 @@ and the runtime then shuts down.
 | `camera` | `output`: name or `null` (every output); optional `x`, `y`, `zoom` (> 0), `rotation` (radians); optional `transition` ([motion](#motions)) | Moves cameras even to where they already are; reports come back as `camera`. |
 | `set-clipboard` | `text`, or `mime` and `path` | Takes ownership of the first seat's clipboard with the text, or with the data of the file at `path` (in `$XDG_RUNTIME_DIR`, at most 64 MiB) offered as `mime`, e.g. `image/png`. The compositor reads the file and deletes it. |
 | `warp-pointer` | `output`, `x`, `y` | Moves the pointer to (`x`, `y`) in the output's logical pixels, as if it had moved there: what it is over now hears it. |
+| `inject` | `window`, `events` | Up to 512 pointer events straight to the window, as an agent sends them: `{"motion": [x, y]}` in the window's logical pixels from its top left, `{"button": code, "pressed": bool}`, `{"wheel": notches}`. The seat's pointer enters the window's surface under each point for them, wherever the window shows or not, and goes back to what the pointer is over after; a press focuses the window, and buttons left down are let go. The window then keeps getting frame callbacks for a moment, shown or not; empty `events` just does that. Refused while the pointer holds a button, a grab or a drag. |
 | `grab-keyboard` | `grab`: boolean | While `true`, keys no shortcut takes come to the director as `key` messages instead of reaching windows and pages, which lose keyboard focus meanwhile. A key goes where its press went until it is released. |
 | `watch-input` | `watch`: boolean | While `true`, every key and button press, wheel motion and gesture start is also told to the director as an `input` message; each still reaches its target. |
 | `share-accept` | `id`, then `window`, or `output` (default: the first) with optional `region {x, y, width, height}` in output-logical pixels | Starts a screen share. The client must have asked for that kind of source, and the region must lie within the output and be at least 8×8. |
@@ -319,8 +320,8 @@ it, with uniforms that animate like any property. Each has a stage:
 | `id` | 1 to 64 of `A-Za-z0-9_-.:`. The SDK derives it from the definition. |
 | `stage` | `"paint"`, `"filter"` or `"effect"`. |
 | `source` | GLSL ES 1.0 defining the stage's function. At most 64 KiB. Colors are premultiplied. |
-| `uniforms` | Name to 1, 2 or 4 values, in declaration order. At most 16 names, GLSL identifiers outside the `gl_`, `u_`, `v_`, `a_` and `stage_` prefixes, and none of `size`, `radius`, `pixel`, `time`, `pointer`, `paint`, `filter`, `effect`, `content`, `backdrop` and `main`. |
-| `reads` | What it reads beyond its uniforms: `time`, `pointer` (all stages); `backdrop` (paints and effects): `true`, or for a paint `{blur: <float uniform>}`; `local` (effects): it reads `content` only at its own position. |
+| `uniforms` | Name to 1, 2 or 4 values, in declaration order. At most 16 names, GLSL identifiers outside the `gl_`, `u_`, `v_`, `a_` and `stage_` prefixes, and none of `size`, `radius`, `pixel`, `time`, `pointer`, `paint`, `filter`, `effect`, `content`, `backdrop`, `main`, `output_size`, `to_output` and `from_output`. |
+| `reads` | What it reads beyond its uniforms: `time`, `pointer`, `output` (all stages); `backdrop` (paints and effects): `true`, or for a paint `{blur: <float uniform>}`; `local` (effects): it reads `content` only at its own position. |
 | `extent` | A [bound](#bounds): how far a paint or effect draws beyond the box. None: within it. |
 | `opaque` | A paint's [region](#bounds) it covers opaquely while its condition holds and the node is fully opaque; what it hides is never drawn. A filter's `{when?}`: opaque content stays opaque through it. |
 | `hole` | A paint's [region](#bounds) where it draws nothing while its condition holds: it is drawn, and repaints, as a ring around it. |
@@ -339,6 +340,7 @@ The compositor wraps the source in a prelude that declares its uniforms and:
 | `pixel` | Local units per output pixel, for antialiasing. |
 | `time` | With `reads.time`: seconds the use's clock has run. |
 | `pointer` | With `reads.pointer`: the first seat's pointer in local units, far away unless it is on this output. |
+| `to_output(p)`, `from_output(p)`, `output_size` | With `reads.output`: where the node lies on its output, as functions mapping a local position to output-logical pixels and back (projectively, so through perspective too), and the output's size in them. |
 | `backdrop(position)` | With `reads.backdrop`: what is drawn behind, at a local position. A paint's is blurred by its `blur` uniform in local units. |
 | `content(position)` | Effects: the node and its subtree as drawn. |
 

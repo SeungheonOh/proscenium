@@ -45,6 +45,7 @@ import { Minimap } from "./canvas/Minimap.js";
 import { PaperLayer, PaperProvider } from "./canvas/paper/Paper.js";
 import { PaperToolbar } from "./canvas/paper/Toolbar.js";
 import { useCameraActions } from "./canvas/useCameraActions.js";
+import { useOpenings } from "./canvas/useOpenings.js";
 import { usePlaces } from "./canvas/usePlaces.js";
 import { useStackingOrder } from "./canvas/useStackingOrder.js";
 import { ZoomLabel } from "./canvas/ZoomLabel.js";
@@ -64,6 +65,7 @@ export default function Canvas() {
   const focused = useFocusedWindow();
   const [places, place] = usePlaces();
   const stacked = useStackingOrder(windows, focused);
+  const opening = useOpenings(windows);
   const { flyTo, toggleOverview } = useCameraActions(places, output, focused);
   // A window being dragged shows on the minimap where it is, not where it was.
   const [moving, setMoving] = useState<{ window: number; x: number; y: number } | null>(null);
@@ -100,6 +102,7 @@ export default function Canvas() {
             id={id}
             box={places.get(id)!}
             focused={id === focused}
+            opening={opening.has(id) ? output : undefined}
             onPlace={place}
             onMove={onMove}
           />

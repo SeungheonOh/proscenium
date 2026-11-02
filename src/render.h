@@ -96,6 +96,10 @@ struct render_shading {
     const float *values;
     /* The node's box and corner radius, the shading's clock, and the pointer, in local units. */
     double size[2], radius, time, pointer[2];
+    /* For a shader reading the output: local units to output-logical pixels and back, and
+     * the output's size in them. */
+    struct mat3 to_output, from_output;
+    double output_size[2];
 };
 
 /* Whether SHADER's program is built and ran, so what it draws can be relied on. */

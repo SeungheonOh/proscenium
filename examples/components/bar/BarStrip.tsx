@@ -31,6 +31,8 @@ export interface BarStripProps {
   output: OutputInfo;
   items: readonly StatusItem[];
   start?: ComponentType<{ output: OutputInfo }>;
+  /** Whether the middle names the focused window. */
+  windowTitle: boolean;
   /** Key of the item whose menu is open on this output. */
   openItem: string | null;
   /** RIGHT is the item's right edge on the output, for its menu to hang from. */
@@ -43,6 +45,7 @@ export function BarStrip({
   output,
   items,
   start: Start,
+  windowTitle,
   openItem,
   onPress,
   onDismiss,
@@ -89,17 +92,19 @@ export function BarStrip({
       >
         {Start && <Start output={output} />}
 
-        <Box position="absolute" x={title.x} height={height} alignItems="center">
-          <RollingText
-            identity={focused ?? "desktop"}
-            width={title.width}
-            align="center"
-            weight={600}
-            color={window ? colors.ink : "#17171a80"}
-          >
-            {window?.title || "Desktop"}
-          </RollingText>
-        </Box>
+        {windowTitle && (
+          <Box position="absolute" x={title.x} height={height} alignItems="center">
+            <RollingText
+              identity={focused ?? "desktop"}
+              width={title.width}
+              align="center"
+              weight={600}
+              color={window ? colors.ink : "#17171a80"}
+            >
+              {window?.title || "Desktop"}
+            </RollingText>
+          </Box>
+        )}
 
         <Spacer />
         <Box flexDirection="row" alignItems="center" height={height} onLayout={setStatus}>

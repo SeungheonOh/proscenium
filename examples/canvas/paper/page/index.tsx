@@ -96,7 +96,12 @@ function viewOf(placement: Placement) {
   return { scrollX: -placement.x, scrollY: -placement.y, zoom: { value: placement.zoom as never } };
 }
 
-function Paper({ session, placement, load, received, tool, style, flush }: PaperProps) {
+/** ELEMENTS bottom first, by their fractional index, as a scene keeps them. */
+function inOrder<T extends { index?: string | null }>(elements: T[]): T[] {
+  return elements.sort((a, b) => ((a.index ?? "") < (b.index ?? "") ? -1 : (a.index ?? "") > (b.index ?? "") ? 1 : 0));
+}
+
+function Paper({ session, placement, load, received, tool, style, flush, added }: PaperProps) {
   const [api, setApi] = useState<ExcalidrawImperativeAPI | null>(null);
   // The document as the world last had it, and the session it came with.
   const [loaded, setLoaded] = useState<{ session: string; document: Loaded } | null>(null);
@@ -190,7 +195,9 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
     return live.rendering;
   }
 
-  // The document arrived: a page without one takes it; one with its own sends what differs.
+  // The document arrived: a page without one takes it; one with its own takes in what it never
+  // had and the world's newer versions of what it has, as what the world drew or moved itself
+  // while it was away, and sends what differs. What it deleted stays deleted.
   useEffect(() => {
     if (!api || !loaded || loaded.session !== live.session) return;
     const { elements, rendered } = loaded.document;
@@ -203,9 +210,39 @@ function Paper({ session, placement, load, received, tool, style, flush }: Paper
       });
       api.history.clear();
       live.filled = true;
+    } else {
+      const mine = new Map(api.getSceneElementsIncludingDeleted().map((element) => [element.id, element.version]));
+      const newer = elements.filter((element) => (mine.get(element.id) ?? -1) < element.version);
+      if (newer.length) {
+        const ids = new Set(newer.map((element) => element.id));
+        api.updateScene({
+          elements: inOrder([...api.getSceneElementsIncludingDeleted().filter((element) => !ids.has(element.id)),
+                             ...restoreElements(newer as never, null)]),
+          captureUpdate: CaptureUpdateAction.NEVER,
+        });
+      }
     }
     sync(api);
   }, [api, loaded]);
+
+  // Elements the world drew itself while the page is out, as an agent does: the world has them
+  // and their renders already.
+  useEffect(() => {
+    if (!api || !live.filled || !added) return;
+    const present = new Set(api.getSceneElementsIncludingDeleted().map((element) => element.id));
+    const fresh = added.elements.filter((element) => !present.has(element.id));
+    for (const element of fresh) {
+      live.known.set(element.id, element.version);
+      live.rendered.set(element.id, element.version);
+    }
+    if (fresh.length) {
+      api.updateScene({
+        elements: inOrder([...api.getSceneElementsIncludingDeleted(), ...restoreElements(fresh as never, null)]),
+        captureUpdate: CaptureUpdateAction.NEVER,
+      });
+    }
+    tell({ name: "added", value: added.serial });
+  }, [api, loaded, added?.serial]);
 
   // The page draws where it is placed, once the document is in and at each new place, in one
   // frame with the place's number, so its node moves the moment that frame comes. Not in the

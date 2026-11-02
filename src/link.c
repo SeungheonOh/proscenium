@@ -464,6 +464,54 @@ static bool message_id(const struct json_value *message, const char *type, int64
     return protocol_fail(error, "%s requires a numeric id.", type);
 }
 
+/* Most events an inject message carries. */
+#define INJECT_MOST 512
+
+/* {"type": "inject", "window": id, "events": [{"motion": [x, y]} | {"button": code,
+ * "pressed": bool} | {"wheel": notches}, ...]}: an agent's pointer input for the window. */
+static bool inject(struct server *server, const struct json_value *message,
+                   struct protocol_error *error) {
+    struct window *window;
+    if (!window_field(server, message, &window, false, error)) return false;
+    const struct json_value *list = json_get(message, "events");
+    if (!list || list->type != JSON_ARRAY || list->array.count > INJECT_MOST)
+        return protocol_fail(error, "inject requires events, %d at most.", INJECT_MOST);
+    struct injected *events = xcalloc(list->array.count + 1, sizeof *events);
+    bool ok = true;
+    for (size_t i = 0; i < list->array.count && ok; i++) {
+        const struct json_value *item = &list->array.items[i];
+        const struct json_value *motion = json_get(item, "motion"),
+                                *button = json_get(item, "button"),
+                                *wheel = json_get(item, "wheel");
+        struct injected *event = &events[i];
+        int64_t code;
+        if (motion && motion->type == JSON_ARRAY && motion->array.count == 2 &&
+            motion->array.items[0].type == JSON_NUMBER &&
+            motion->array.items[1].type == JSON_NUMBER &&
+            fabs(motion->array.items[0].number) < 1e7 &&
+            fabs(motion->array.items[1].number) < 1e7) {
+            *event = (struct injected){.kind = INJECT_MOTION,
+                                       .x = motion->array.items[0].number,
+                                       .y = motion->array.items[1].number};
+        } else if (json_integer(button, 0, UINT32_MAX, &code)) {
+            const struct json_value *pressed = json_get(item, "pressed");
+            ok = pressed && (pressed->type == JSON_TRUE || pressed->type == JSON_FALSE);
+            *event = (struct injected){.kind = INJECT_BUTTON,
+                                       .button = (uint32_t)code,
+                                       .pressed = pressed && pressed->type == JSON_TRUE};
+        } else if (wheel && wheel->type == JSON_NUMBER && fabs(wheel->number) <= 100) {
+            *event = (struct injected){.kind = INJECT_WHEEL, .notches = wheel->number};
+        } else {
+            ok = false;
+        }
+    }
+    ok = ok ? input_inject(server, window, events, (int)list->array.count, error)
+            : protocol_fail(
+                  error, "An inject event is a motion [x, y], a button with pressed, or a wheel.");
+    free(events);
+    return ok;
+}
+
 static bool dispatch(struct director *director, const struct json_value *message,
                      struct protocol_error *error) {
     struct server *server = director->link->server;
@@ -521,6 +569,7 @@ static bool dispatch(struct director *director, const struct json_value *message
         input_warp_pointer(server, output, position[0], position[1]);
         return true;
     }
+    if (json_is_string(type, "inject")) return inject(server, message, error);
     if (json_is_string(type, "capture")) {
         int64_t id;
         struct capture_source source;

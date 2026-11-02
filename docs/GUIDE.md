@@ -367,6 +367,7 @@ Hooks and actions:
 | `screenshot(source?)`, `encodePng(shot)` | Pixels of a window, an output or a region of one, at full resolution; PNG encoding runs on a worker thread. |
 | `focus(id \| null)`, `close(id)`, `launch(command)` | Keyboard focus, polite close, start a client on this display. |
 | `warpPointer(output, x, y)` | Moves the pointer there, as if it had moved: e.g. to the middle of an output focused by keyboard. |
+| `injectPointer(window, events)` | Pointer events straight to a window, shown or not, the pointer itself untouched: `{ motion: [x, y] }` in the window's logical pixels, `{ button, pressed }` (evdev codes), `{ wheel: notches }`. A press focuses the window; the window keeps drawing a while after, so no events at all wakes it, e.g. after keys. For agents at the computer. |
 | `useKeyboardGrab(handler \| null)` | Holds the keyboard while a handler is given: keys no `Shortcut` takes come to it (`key`, `text`, `code`, `pressed`, `repeat`, `modifiers`) instead of windows and pages, which lose keyboard focus meanwhile. The latest grab holds it until it lets go. For dialogs, overviews and world-drawn text fields. |
 | `useInput(handler \| null)` | Hears every key and button press, wheel turn and gesture start (`kind`, and `key` or `button`) while a handler is given; each still reaches its target. E.g. to close an overlay at any input. |
 | `dwindle`, `masterStack`, `columns`, `grid`, `inset` | Pure tiling layouts from window ids and an area to boxes. |
@@ -453,7 +454,7 @@ counted in its own source.
 | Definition | Meaning |
 | --- | --- |
 | `uniforms` | Each uniform's number of values: 1, 2 or 4. |
-| `reads` | `time` (seconds the use's clock has run), `pointer` (in local units, followed with no message to the director), `backdrop` (`backdrop(p)`, what is behind; a paint's `{ blur: "uniform" }` blurs it), `local` (an effect reading `content` only at its own position, so a change repaints only where it happened). |
+| `reads` | `time` (seconds the use's clock has run), `pointer` (in local units, followed with no message to the director), `output` (`to_output(p)`, `from_output(p)` and `output_size`: where the node lies on its output, in output-logical pixels, also with no message), `backdrop` (`backdrop(p)`, what is behind; a paint's `{ blur: "uniform" }` blurs it), `local` (an effect reading `content` only at its own position, so a change repaints only where it happened). |
 | `extent` | How far a paint or effect draws beyond the box, per side: `pad` plus `pixel` output pixels plus `radius` times the corner radius plus each uniform's value (raised to its `floor`) times its coefficients; a list of such forms means their largest. Pixels outside are never shaded, so keep it tight. |
 | `opaque` | A paint: where it is opaque (`{ inset, when }`), so what it hides is never drawn. A filter: `true` if opaque content stays opaque. |
 | `hole` | A paint: where it draws nothing (`{ inset, when }`), so a border alone draws and repaints only its ring. |
@@ -692,6 +693,47 @@ display list as the output presents it. Either way a share captures only while a
 consumer streams it and after the source changed, at most 30 times a second,
 with four frames a second to keep a still stream alive, and never forces an
 output frame. With no share streaming, sharing costs nothing.
+
+## Computer use
+
+A world can let agents use the computer as a person does, from screenshots, a
+pointer and the keyboard, by rendering `ComputerUseService` from
+[`lib/computer-use.ts`](../examples/lib/computer-use.ts) with an `AgentSurface`:
+pixels of the world's own, which agents work on wherever the view looks. The
+service serves several agents at once on
+`$XDG_RUNTIME_DIR/proscenium-computer-use.sock`, one a connection:
+
+- Each has a pointer of its own on the surface. A click, drag or scroll goes
+  straight to the window under it through `injectPointer`, whether any output
+  shows that window or not; the person's pointer and the view stay put, and the
+  window keeps drawing a while after, so its pixels show what was done.
+- A screenshot is any region of the surface, at most 1400 pixels a side, made
+  from the windows' own pixels and the paper's drawings, with a list of the
+  windows and where they lie.
+- Keys go to the window the agent last clicked, given the keyboard quietly
+  (`focusedByAgent` tells a world not to bring it into view), through
+  `proscenium-drive`, the virtual keyboard beside the compositor's binary (on a
+  real seat the compositor offers virtual input to that binary alone). There is
+  one keyboard, so what reaches windows takes turns, a whole action at a time.
+- A `draw` is a freehand stroke through up to 400 points, in a colour and
+  width, put on the world's paper directly: an Excalidraw element and its
+  picture in the paper's document, shown at once whether the paper is out or not.
+- A `talk` hands something to another agent at the computer, by its name, about
+  a bug, a document, code, a pull request, a check or a chat, for the world to
+  show them meet.
+- Keys that open an application make the next window the agent's own, for the
+  world to show it opening.
+
+`useComputerUse()` tells the world what each agent does, a screenshot once it
+is taken, and `stopComputerUse()` lets one go, or all.
+[`scripts/computer-use-mcp.mjs`](../scripts/computer-use-mcp.mjs) is the MCP
+server an agent talks to; for Claude Code:
+
+```sh
+claude mcp add proscenium -- node /path/to/proscenium/scripts/computer-use-mcp.mjs
+```
+
+Agents type plain ASCII.
 
 ## Protocol
 

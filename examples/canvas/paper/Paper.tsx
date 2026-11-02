@@ -86,14 +86,22 @@ export function usePaper(): PaperContextValue {
   return paper;
 }
 
-export function PaperProvider({ output, children }: { output: OutputInfo | undefined; children: ReactNode }) {
-  const [document] = useState(() => new PaperDocument());
-  const [out, setOut] = usePersistentState("canvas.paper.out", false);
-  const [tool, setTool] = usePersistentState<PaperProps["tool"]>("canvas.paper.tool", {
+interface PaperProviderProps {
+  output: OutputInfo | undefined;
+  /** What the paper's settings are kept under, and the folder its drawings are kept in. */
+  name?: string;
+  folder?: string;
+  children: ReactNode;
+}
+
+export function PaperProvider({ output, name = "canvas.paper", folder = "paper", children }: PaperProviderProps) {
+  const [document] = useState(() => new PaperDocument(folder));
+  const [out, setOut] = usePersistentState(`${name}.out`, false);
+  const [tool, setTool] = usePersistentState<PaperProps["tool"]>(`${name}.tool`, {
     type: "freedraw",
     serial: 0,
   });
-  const [style, setStyle] = usePersistentState<PaperProps["style"]>("canvas.paper.style", {
+  const [style, setStyle] = usePersistentState<PaperProps["style"]>(`${name}.style`, {
     stroke: "#1e1e1e",
     background: "transparent",
     width: 2,

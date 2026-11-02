@@ -7,8 +7,8 @@
 
 /* Names the preludes declare themselves. */
 static const char *const PRELUDE_NAMES[] = {
-    "size",   "radius", "pixel",   "time",     "pointer", "paint",
-    "filter", "effect", "content", "backdrop", "main",
+    "size",   "radius",  "pixel",    "time", "pointer",     "paint",     "filter",
+    "effect", "content", "backdrop", "main", "output_size", "to_output", "from_output",
 };
 
 bool uniform_name_ok(const char *name, size_t length) {
@@ -334,7 +334,7 @@ static bool decode_uniform_list(const struct json_value *raw, struct shader *sha
     return true;
 }
 
-/* READS: {time?, pointer?, local?, backdrop?: true or {blur: uniform}}. */
+/* READS: {time?, pointer?, local?, output?, backdrop?: true or {blur: uniform}}. */
 static bool decode_reads(const struct json_value *raw, struct shader *shader,
                          struct protocol_error *error) {
     shader->backdrop_blur = -1;
@@ -352,6 +352,8 @@ static bool decode_reads(const struct json_value *raw, struct shader *shader,
             shader->pointer = flag;
         } else if (json_is_string(key, "local")) {
             shader->local = flag;
+        } else if (json_is_string(key, "output")) {
+            shader->output = flag;
         } else if (json_is_string(key, "backdrop")) {
             if (value->type == JSON_OBJECT) {
                 shader->backdrop = true;
@@ -394,8 +396,9 @@ static bool same_shader(const struct shader *a, const struct shader *b) {
         a->uniform_count != b->uniform_count || a->gate_count != b->gate_count ||
         memcmp(a->gates, b->gates, a->gate_count * sizeof a->gates[0]) || a->time != b->time ||
         a->pointer != b->pointer || a->backdrop != b->backdrop || a->local != b->local ||
-        a->backdrop_blur != b->backdrop_blur || !same_bound(&a->extent, &b->extent) ||
-        !same_region(&a->opaque, &b->opaque) || !same_region(&a->hole, &b->hole))
+        a->output != b->output || a->backdrop_blur != b->backdrop_blur ||
+        !same_bound(&a->extent, &b->extent) || !same_region(&a->opaque, &b->opaque) ||
+        !same_region(&a->hole, &b->hole))
         return false;
     for (int i = 0; i < a->uniform_count; i++) {
         if (strcmp(a->names[i], b->names[i]) || a->counts[i] != b->counts[i]) return false;

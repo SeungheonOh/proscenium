@@ -48,6 +48,9 @@ enum item_kind {
 struct item_shading {
     struct shader *shader;
     double size[2], radius, time, pointer[2];
+    /* For a shader reading the output: local units to output-logical pixels and back. */
+    struct mat3 to_output, from_output;
+    double output_size[2];
     int values;
 };
 
@@ -318,6 +321,18 @@ static void record_shading(struct emit *e, const struct shading *shading, const 
     out->time = shader->time ? shading_time(shading, e->server->advanced_at) : 0;
     out->pointer[0] = out->pointer[1] = 0;
     if (shader->pointer) local_pointer(e, t, out->pointer);
+    out->to_output = out->from_output = MAT3_IDENTITY;
+    out->output_size[0] = out->output_size[1] = 0;
+    if (shader->output) {
+        struct mat3 screen_inverse, to;
+        if (mat3_invert(e->screen, &screen_inverse)) {
+            to = mat3_multiply(screen_inverse, t);
+            if (mat3_invert(to, &out->from_output)) out->to_output = to;
+            else out->from_output = MAT3_IDENTITY;
+        }
+        out->output_size[0] = e->output->width;
+        out->output_size[1] = e->output->height;
+    }
     out->values = (int)e->display->values.length;
     for (int c = 0; c < shader->component_count; c++)
         *(float *)vec_push(&e->display->values) = values[c];
@@ -1642,6 +1657,9 @@ static const struct render_shading *shading_of(struct server *server, struct dis
         .radius = recorded->radius,
         .time = recorded->time,
         .pointer = {recorded->pointer[0], recorded->pointer[1]},
+        .to_output = recorded->to_output,
+        .from_output = recorded->from_output,
+        .output_size = {recorded->output_size[0], recorded->output_size[1]},
     };
     return out;
 }

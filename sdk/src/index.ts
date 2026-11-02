@@ -34,9 +34,11 @@ export type { Modifier, StageBubblingEvent, StageDragEvent, StageElement,
 export type { CameraInfo, OutputInfo, Rectangle, ShareInfo, WindowInfo } from "./store.js";
 import type { CameraInfo } from "./store.js";
 export type { CameraMove, Screenshot, ShareSource } from "./session.js";
+export type { InjectedPointer } from "./protocol.js";
 export { encodePng } from "./png.js";
 import type { Motion } from "./motion.js";
 import { currentSession, type CameraMove, type Screenshot, type ShareSource } from "./session.js";
+import type { InjectedPointer } from "./protocol.js";
 
 /** Give keyboard focus to WINDOW on the first seat, or clear it with null. */
 export function focus(window: number | null): void {
@@ -89,4 +91,15 @@ export function copyData(mime: string, data: Uint8Array): Promise<void> {
 /** Move the pointer to (X, Y) on OUTPUT, in its logical pixels, as if it had moved there. */
 export function warpPointer(output: string, x: number, y: number): void {
   currentSession().warpPointer(output, x, y);
+}
+
+/**
+ * Pointer EVENTS straight to WINDOW, wherever it shows or not and wherever the
+ * pointer is, as an agent at the computer sends them: the window's surface
+ * under each point gets them, a press focuses the window, and the pointer goes
+ * back to what it is over after. The window keeps drawing a while, shown or
+ * not; no events just does that, e.g. after typing into it.
+ */
+export function injectPointer(window: number, events: readonly InjectedPointer[]): void {
+  currentSession().injectPointer(window, events);
 }

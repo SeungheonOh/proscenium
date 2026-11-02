@@ -315,8 +315,9 @@ static bool server_start(struct server *server, const struct options *options) {
 
     outputs_init(server);
     input_init(server);
-    /* Only a headless session takes input from clients; a real seat's comes from its devices. */
-    if (options->headless) input_enable_virtual_devices(server);
+    /* A headless session takes input from any client. A real seat's comes from its devices,
+     * and from proscenium-drive alone, which plays a computer-use agent's input. */
+    input_enable_virtual_devices(server, !options->headless);
     clipboard_init(server);
 
     const char *socket = wl_display_add_socket_auto(server->wl_display);

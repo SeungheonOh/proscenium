@@ -81,7 +81,7 @@ running or understanding the GLSL:
 
 | Field | What the compositor does with it |
 | --- | --- |
-| `reads` | Declares `time`, `pointer`, `backdrop(p)` (a paint's blurred by a uniform) and, for an effect, `local`. The prelude declares only these; a running clock keeps frames coming, a pointer reader repaints as the pointer moves, a backdrop reader gets the backdrop copied and blurred and its area repaired whole. |
+| `reads` | Declares `time`, `pointer`, `output` (`to_output(p)`, `from_output(p)` and `output_size`: where the node lies on its output), `backdrop(p)` (a paint's blurred by a uniform) and, for an effect, `local`. The prelude declares only these; a running clock keeps frames coming, a pointer reader repaints as the pointer moves, a backdrop reader gets the backdrop copied and blurred and its area repaired whole. |
 | `extent` | The quad: how far the shader draws beyond the box, per side. |
 | `opaque` | Occlusion: the rectangle a paint covers opaquely, so what lies beneath is never drawn. For a filter, whether opaque content stays opaque. |
 | `hole` | The ring: where a paint draws nothing, so it is drawn and damaged as the ring around it. |

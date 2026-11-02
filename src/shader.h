@@ -77,7 +77,7 @@ struct shader {
     /* What it reads: its clock, the pointer, what is behind it (blurred by the
      * component BACKDROP_BLUR in local units, or not at all for -1); an effect
      * reading the node only where it draws is LOCAL. */
-    bool time, pointer, backdrop, local;
+    bool time, pointer, backdrop, local, output;
     int backdrop_blur;
     /* How far it draws beyond the box, per side. */
     struct shader_bound extent;

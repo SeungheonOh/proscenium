@@ -18,8 +18,9 @@ void input_init(struct server *server);
 /* Stop hearing of new devices, before the backend goes. */
 void input_detach_backend(struct server *server);
 void input_finish(struct server *server);
-/* Offer virtual pointers and keyboards, as remote desktops and test drivers use. */
-void input_enable_virtual_devices(struct server *server);
+/* Offer virtual pointers and keyboards, as test drivers use: to every client, or with
+ * DRIVE_ONLY to the proscenium-drive beside this binary alone. */
+void input_enable_virtual_devices(struct server *server, bool drive_only);
 
 /* The output under the pointer and the pointer's output-logical coordinates. */
 struct output *input_pointer_output(struct server *server, double *x, double *y);
@@ -27,6 +28,26 @@ void input_clamp_pointer(struct server *server);
 void input_center_pointer(struct server *server, struct output *output);
 /* Move the pointer to output-logical (X, Y) on OUTPUT, as if it had moved there. */
 void input_warp_pointer(struct server *server, struct output *output, double x, double y);
+
+/* A pointer event an agent sends a window, for input_inject. */
+struct injected {
+    enum { INJECT_MOTION, INJECT_BUTTON, INJECT_WHEEL } kind;
+    /* Motion: where, in the window's own logical pixels from its top left. */
+    double x, y;
+    /* Button: its evdev code, and whether it goes down or up. */
+    uint32_t button;
+    bool pressed;
+    /* Wheel: notches, down positive. */
+    double notches;
+};
+/* Pointer EVENTS an agent sends straight to WINDOW, shown or not and wherever the real
+ * pointer is: the seat's pointer enters the window's surface under each point for them
+ * and goes back to what the real pointer is over after. A press focuses the window.
+ * Either way the window keeps drawing a while, as a shared one does, so what the agent
+ * did, or typed, reaches its pixels where no output shows it. Refused while the real
+ * pointer holds a button, a grab or a drag. */
+bool input_inject(struct server *server, struct window *window, const struct injected *events,
+                  int count, struct protocol_error *error);
 /* After the scene moved under a still pointer on OUTPUT: enter and leave what it is
  * over now. Motion waits for the pointer to move. */
 void input_repick(struct server *server, struct output *output);

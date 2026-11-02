@@ -63,6 +63,12 @@ export interface PaperProps {
   style: Style & { serial: number };
   /** Raised to ask for every render still owed, then a "flushed" with it. */
   flush: number;
+  /**
+   * Elements the world drew itself, rendered already, for the page to take in,
+   * a few at a time: `serial` numbers the last, and the page says "added" with
+   * it once they are in, for the next.
+   */
+  added?: { serial: number; elements: readonly SceneElement[] };
 }
 
 /** The document as the world sends it to a page: elements, and the version each render shows. */
@@ -110,7 +116,9 @@ export type PaperMessage =
   /** The tool changed in the page, by its own keys. */
   | { name: "tool"; value: Tool }
   /** Every render asked for by flush `value` is on its way. */
-  | { name: "flushed"; value: number };
+  | { name: "flushed"; value: number }
+  /** The page has the elements the world drew itself up to number `value`. */
+  | { name: "added"; value: number };
 
 /** Chunks a page sends ahead of the world's confirmation; the queue holds 32 messages. */
 const chunkWindow = 16;

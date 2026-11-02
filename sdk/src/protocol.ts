@@ -143,6 +143,12 @@ export type Op =
   | { op: "insert"; parent: number; id: number; before: number | null }
   | { op: "remove"; parent: number; id: number };
 
+/**
+ * A pointer event sent straight to a window: motion to a point in the window's
+ * own logical pixels, a button (evdev code) going down or up, or wheel notches.
+ */
+export type InjectedPointer = { motion: [number, number] } | { button: number; pressed: boolean } | { wheel: number };
+
 export type ClientMessage =
   | { type: "hello"; protocol: number; client: string }
   | { type: "commit"; ops: Op[] }
@@ -152,6 +158,7 @@ export type ClientMessage =
   /** Hands the file at PATH, in the runtime directory, to the compositor to offer as MIME. */
   | { type: "set-clipboard"; mime: string; path: string }
   | { type: "warp-pointer"; output: string; x: number; y: number }
+  | { type: "inject"; window: number; events: readonly InjectedPointer[] }
   /** While GRAB, keys no shortcut takes come as `key` messages instead of reaching clients. */
   | { type: "grab-keyboard"; grab: boolean }
   /** While WATCH, every press, scroll and gesture start is also told as an `input` message. */

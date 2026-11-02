@@ -156,6 +156,35 @@ static void test_paint(struct renderer *renderer) {
     render_shader_destroy(broken);
 }
 
+/* A paint reading the output knows where it lies: red its output x in 256ths, green the
+ * local y it maps back to in hundredths, blue the output's width in thousandths. */
+static void test_output(struct renderer *renderer) {
+    struct shader definition = define(STAGE_PAINT,
+                                      "vec4 paint(vec2 p) {\n"
+                                      "  vec2 o = to_output(p);\n"
+                                      "  return vec4(o.x / 256.0, from_output(o).y / 100.0,\n"
+                                      "              output_size.x / 1000.0, 1.0);\n"
+                                      "}",
+                                      0, NULL, NULL);
+    definition.output = true;
+    struct render_shader *shader = render_shader_create(&definition);
+    /* Local units twice the size of output pixels, the box at (40, 30) on the output. */
+    struct mat3 to = mat3_affine(2, 0, 0, 2, 40, 30), from;
+    mat3_invert(to, &from);
+    struct render_shading shading = {shader, NULL, {100, 100}, 0, 0, {0, 0}, to, from, {500, 400}};
+    struct render_paint_draw draw = {
+        .transform = mat3_translation(50, 50), .quad = {0, 0, 100, 100}, .opacity = 1};
+    struct render_report report;
+    begin(renderer);
+    bool drawn = painted(renderer, &shading, &draw, &report);
+    finish(renderer);
+    CHECK(drawn, "output paint failed: %s", report.error ? report.error : "?");
+    /* Local (50.5, 50.5): output x 141, local y 50.5 back, width 500. */
+    const unsigned char *p = at(100, 100);
+    CHECK(near(p, 141, 129, 128, 255, 2), "output %d %d %d %d", p[0], p[1], p[2], p[3]);
+    render_shader_destroy(shader);
+}
+
 /* A hole leaves a ring, every pixel of which is drawn once. */
 static void test_ring(struct renderer *renderer) {
     struct shader definition = define(STAGE_PAINT, solid_source, 1, solid_names, solid_counts);
@@ -488,6 +517,7 @@ int main(void) {
     struct gl_binding binding;
     render_target_bind(target, &binding);
     test_paint(renderer);
+    test_output(renderer);
     test_ring(renderer);
     test_plane(renderer);
     test_texture(renderer);

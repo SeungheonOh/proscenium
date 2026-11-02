@@ -10,10 +10,14 @@
 #define _GNU_SOURCE
 #include "input.h"
 
+#include <libgen.h>
+#include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 #include <strings.h>
+#include <unistd.h>
 #include <libinput.h>
 #include <wlr/backend/libinput.h>
 #include <wlr/types/wlr_compositor.h>
@@ -131,6 +135,17 @@ struct input {
     struct web_page *keyboard_page;
     bool virtual_devices;
     struct wl_listener virtual_keyboard, virtual_pointer;
+    struct wl_global *virtual_keyboard_global, *virtual_pointer_global;
+    /* The one client that sees the virtual devices on a real seat; empty on a headless one. */
+    char drive[PATH_MAX];
+
+    /* Windows agents sent input, kept drawing until a while after. */
+    struct agent_wake {
+        struct window *window;
+        double until;
+    } wakes[8];
+    int wake_count;
+    struct wl_event_source *wake_timer;
 };
 
 static struct input *input_of(struct server *server) {
@@ -537,8 +552,13 @@ static bool forget_client(struct input *in, struct window *window, struct web_pa
 }
 
 void input_forget_window(struct server *server, struct window *window) {
+    struct input *in = input_of(server);
+    for (int i = 0; i < in->wake_count;) {
+        if (in->wakes[i].window == window) in->wakes[i] = in->wakes[--in->wake_count];
+        else i++;
+    }
     /* An unmapped surface keeps the seat's focus until it is destroyed. */
-    if (forget_client(input_of(server), window, NULL) && !drag_active(server))
+    if (forget_client(in, window, NULL) && !drag_active(server))
         wlr_seat_pointer_notify_clear_focus(server->seat);
 }
 
@@ -1170,7 +1190,8 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
     update_capabilities(server);
 }
 
-/* Virtual devices, for remote desktops and test drivers on headless sessions. */
+/* Virtual devices, for test drivers on headless sessions, and on a real seat for
+ * proscenium-drive alone, which plays a computer-use agent's input. */
 
 static void handle_virtual_keyboard(struct wl_listener *listener, void *data) {
     struct input *in = wl_container_of(listener, in, virtual_keyboard);
@@ -1185,7 +1206,26 @@ static void handle_virtual_pointer(struct wl_listener *listener, void *data) {
     wlr_cursor_attach_input_device(in->server->cursor, &event->new_pointer->pointer.base);
 }
 
-void input_enable_virtual_devices(struct server *server) {
+/* Whether CLIENT runs the executable at PATH. */
+static bool client_runs(const struct wl_client *client, const char *path) {
+    pid_t pid;
+    wl_client_get_credentials((struct wl_client *)client, &pid, NULL, NULL);
+    char link[32], exe[PATH_MAX];
+    snprintf(link, sizeof(link), "/proc/%d/exe", (int)pid);
+    ssize_t length = readlink(link, exe, sizeof(exe) - 1);
+    if (length < 0) return false;
+    exe[length] = '\0';
+    return !strcmp(exe, path);
+}
+
+static bool filter_virtual_devices(const struct wl_client *client, const struct wl_global *global,
+                                   void *data) {
+    struct input *in = data;
+    if (global != in->virtual_keyboard_global && global != in->virtual_pointer_global) return true;
+    return in->drive[0] && client_runs(client, in->drive);
+}
+
+void input_enable_virtual_devices(struct server *server, bool drive_only) {
     struct input *in = input_of(server);
     struct wlr_virtual_keyboard_manager_v1 *keyboards =
         wlr_virtual_keyboard_manager_v1_create(server->wl_display);
@@ -1196,6 +1236,19 @@ void input_enable_virtual_devices(struct server *server) {
     in->virtual_pointer.notify = handle_virtual_pointer;
     wl_signal_add(&pointers->events.new_virtual_pointer, &in->virtual_pointer);
     in->virtual_devices = true;
+    if (!drive_only) return;
+
+    in->virtual_keyboard_global = keyboards->global;
+    in->virtual_pointer_global = pointers->global;
+    /* The drive beside this binary; a rebuilt binary still names its old directory. */
+    char self[PATH_MAX];
+    ssize_t length = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (length > 0) {
+        self[length] = '\0';
+        int n = snprintf(in->drive, sizeof(in->drive), "%s/proscenium-drive", dirname(self));
+        if (n < 0 || (size_t)n >= sizeof(in->drive)) in->drive[0] = '\0';
+    }
+    wl_display_set_global_filter(server->wl_display, filter_virtual_devices, in);
 }
 
 /* Pointer. */
@@ -1251,6 +1304,122 @@ static void after_motion(struct server *server) {
 void input_warp_pointer(struct server *server, struct output *output, double x, double y) {
     wlr_cursor_warp_closest(server->cursor, NULL, output->offset + x, y);
     after_motion(server);
+}
+
+/* Agents. */
+
+/* How long a window an agent sent input keeps drawing where no output shows it, and how
+ * often it is told to (ms). */
+#define AGENT_WAKE_SECONDS 1.5
+#define AGENT_WAKE_INTERVAL 16
+
+static int wake_fired(void *data) {
+    struct server *server = data;
+    struct input *in = input_of(server);
+    double now = now_seconds();
+    struct timespec when;
+    clock_gettime(CLOCK_MONOTONIC, &when);
+    for (int i = 0; i < in->wake_count;) {
+        if (in->wakes[i].until <= now) {
+            in->wakes[i] = in->wakes[--in->wake_count];
+            continue;
+        }
+        if (window_presentable(in->wakes[i].window))
+            window_send_frame_done(in->wakes[i].window, &when);
+        i++;
+    }
+    if (in->wake_count) wl_event_source_timer_update(in->wake_timer, AGENT_WAKE_INTERVAL);
+    return 0;
+}
+
+/* WINDOW keeps drawing a while, shown or not. */
+static void wake_window(struct server *server, struct window *window) {
+    struct input *in = input_of(server);
+    int i = 0;
+    while (i < in->wake_count && in->wakes[i].window != window) i++;
+    if (i == in->wake_count) {
+        /* Full, the one that ends soonest makes room. */
+        if (in->wake_count == (int)ARRAY_LENGTH(in->wakes)) {
+            i = 0;
+            for (int j = 1; j < in->wake_count; j++)
+                if (in->wakes[j].until < in->wakes[i].until) i = j;
+        } else {
+            in->wake_count++;
+        }
+        in->wakes[i].window = window;
+    }
+    in->wakes[i].until = now_seconds() + AGENT_WAKE_SECONDS;
+    if (!in->wake_timer) in->wake_timer = wl_event_loop_add_timer(server->loop, wake_fired, server);
+    wl_event_source_timer_update(in->wake_timer, 1);
+}
+
+bool input_inject(struct server *server, struct window *window, const struct injected *events,
+                  int count, struct protocol_error *error) {
+    struct input *in = input_of(server);
+    if (!window_presentable(window))
+        return protocol_fail(error, "Window %llu shows nothing.", (unsigned long long)window->id);
+    if (in->button_count || in->manipulation || in->capture || drag_active(server))
+        return protocol_fail(error, "The pointer is busy.");
+    struct wlr_seat *seat = server->seat;
+    struct wlr_box bounds = window_bounds(window);
+    /* The surface the first button down went to, which motion goes to until all are up. */
+    struct wlr_surface *held = NULL;
+    int ox = 0, oy = 0;
+    uint32_t down[8];
+    int down_count = 0;
+    bool entered = false;
+    for (int i = 0; i < count; i++) {
+        const struct injected *event = &events[i];
+        uint32_t time = time_msec();
+        if (event->kind == INJECT_MOTION) {
+            double x = bounds.x + event->x, y = bounds.y + event->y, sx = x - ox, sy = y - oy;
+            struct wlr_surface *surface = held ? held : window_surface_at(window, x, y, &sx, &sy);
+            if (!surface) continue;
+            if (surface != seat->pointer_state.focused_surface)
+                wlr_seat_pointer_notify_enter(seat, surface, sx, sy);
+            wlr_seat_pointer_notify_motion(seat, time, sx, sy);
+            entered = true;
+        } else if (!entered) {
+            /* A button or the wheel goes where the last motion entered. */
+            continue;
+        } else if (event->kind == INJECT_BUTTON) {
+            int j = 0;
+            while (j < down_count && down[j] != event->button) j++;
+            if (event->pressed) {
+                if (j < down_count || down_count == (int)ARRAY_LENGTH(down)) continue;
+                if (!down_count) {
+                    if (window_focusable(window)) focus_window(server, window);
+                    held = seat->pointer_state.focused_surface;
+                    if (held && !window_surface_offset(window, held, &ox, &oy)) held = NULL;
+                }
+                down[down_count++] = event->button;
+            } else {
+                if (j == down_count) continue;
+                down[j] = down[--down_count];
+                if (!down_count) held = NULL;
+            }
+            wlr_seat_pointer_notify_button(seat, time, event->button,
+                                           event->pressed ? WL_POINTER_BUTTON_STATE_PRESSED
+                                                          : WL_POINTER_BUTTON_STATE_RELEASED);
+        } else {
+            wlr_seat_pointer_notify_axis(seat, time, WL_POINTER_AXIS_VERTICAL_SCROLL,
+                                         event->notches * 15, (int32_t)lround(event->notches * 120),
+                                         WL_POINTER_AXIS_SOURCE_WHEEL,
+                                         WL_POINTER_AXIS_RELATIVE_DIRECTION_IDENTICAL);
+        }
+        wlr_seat_pointer_notify_frame(seat);
+    }
+    /* Nothing stays down, and the pointer goes back to what is under the real one. */
+    for (int j = 0; j < down_count; j++) {
+        wlr_seat_pointer_notify_button(seat, time_msec(), down[j],
+                                       WL_POINTER_BUTTON_STATE_RELEASED);
+        wlr_seat_pointer_notify_frame(seat);
+    }
+    set_hovered(server, NULL);
+    wlr_seat_pointer_notify_clear_focus(seat);
+    pointer_moved(server);
+    wake_window(server, window);
+    return true;
 }
 
 static void handle_motion(struct wl_listener *listener, void *data) {
@@ -1923,6 +2092,7 @@ void input_finish(struct server *server) {
     set_ref(&in->gesture, NULL);
     stop_repeat(in);
     if (in->repeat_timer) wl_event_source_remove(in->repeat_timer);
+    if (in->wake_timer) wl_event_source_remove(in->wake_timer);
     if (in->manipulation) manipulation_free(in->manipulation);
     if (in->gesture_manipulation) manipulation_free(in->gesture_manipulation);
     VEC_FOR(&in->shortcuts, struct shortcut, shortcut) node_unref(shortcut->node);

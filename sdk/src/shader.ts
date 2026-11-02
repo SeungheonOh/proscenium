@@ -72,6 +72,8 @@ export interface PaintDefinition extends Definition {
     time?: boolean;
     /** `pointer`, in local units; the output repaints it as the pointer moves. */
     pointer?: boolean;
+    /** `to_output(p)`, `from_output(p)` and `output_size`: where the node lies on its output. */
+    output?: boolean;
     /** `backdrop(position)`: what is drawn behind, blurred by the `blur` uniform's local units. */
     backdrop?: boolean | { blur: string };
   };
@@ -90,7 +92,7 @@ export interface PaintDefinition extends Definition {
  * and `time` and `pointer` when it asks.
  */
 export interface FilterDefinition extends Definition {
-  reads?: { time?: boolean; pointer?: boolean };
+  reads?: { time?: boolean; pointer?: boolean; output?: boolean };
   /** Opaque pixels stay opaque through it, always or while `when` holds. */
   opaque?: true | { when?: UniformComponent | readonly UniformComponent[] };
 }
@@ -105,6 +107,8 @@ export interface EffectDefinition extends Definition {
   reads?: {
     time?: boolean;
     pointer?: boolean;
+    /** `to_output(p)`, `from_output(p)` and `output_size`: where the node lies on its output. */
+    output?: boolean;
     backdrop?: boolean;
     /** It reads `content` only at its own position, so changes repaint only where they are. */
     local?: boolean;

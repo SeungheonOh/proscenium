@@ -10,7 +10,7 @@ import type { ReactNode } from "react";
 import { Connection } from "./connection.js";
 import { Container, createRoot, reconciler } from "./host.js";
 import type { StageInputEvent, StageKeyEvent } from "./events.js";
-import type { ServerMessage } from "./protocol.js";
+import type { InjectedPointer, ServerMessage } from "./protocol.js";
 import { type Motion, wireMotion } from "./motion.js";
 import { Store, type Rectangle } from "./store.js";
 
@@ -199,6 +199,10 @@ export class Session {
   /** Move the pointer to (X, Y) on OUTPUT, in its logical pixels. */
   warpPointer(output: string, x: number, y: number): void {
     this.connection.send({ type: "warp-pointer", output, x, y });
+  }
+
+  injectPointer(window: number, events: readonly InjectedPointer[]): void {
+    this.connection.send({ type: "inject", window, events });
   }
 
   moveCamera(move: CameraMove, options: { output?: string; transition?: Motion } = {}): void {

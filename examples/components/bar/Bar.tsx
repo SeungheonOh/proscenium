@@ -19,9 +19,11 @@ import { useStatusItems, type StatusItem } from "./useStatusItems.js";
 export interface BarProps {
   /** The world's own controls, drawn at the left of each output's bar. */
   start?: ComponentType<{ output: OutputInfo }>;
+  /** Whether the middle names the focused window. */
+  windowTitle?: boolean;
 }
 
-export function Bar({ start }: BarProps) {
+export function Bar({ start, windowTitle = true }: BarProps) {
   const outputs = useOutputs();
   const items = useStatusItems();
   const [menu, setMenu] = useState<OpenMenu | null>(null);
@@ -57,6 +59,7 @@ export function Bar({ start }: BarProps) {
           output={output}
           items={items}
           start={start}
+          windowTitle={windowTitle}
           openItem={menu?.output === output.name ? menu.item : null}
           onPress={(item, right) => handlePress(item, output, right)}
           onDismiss={closeMenu}

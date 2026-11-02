@@ -182,6 +182,13 @@ enum uniform {
     U_READ_SIZE,
     U_READ_AREA,
     U_BACKDROP,
+    U_TO_OUTPUT_X,
+    U_TO_OUTPUT_Y,
+    U_TO_OUTPUT_W,
+    U_FROM_OUTPUT_X,
+    U_FROM_OUTPUT_Y,
+    U_FROM_OUTPUT_W,
+    U_OUTPUT_SIZE,
     UNIFORM_COUNT,
 };
 
@@ -209,6 +216,13 @@ static const char *const uniform_names[UNIFORM_COUNT] = {
     [U_READ_SIZE] = "u_read_size",
     [U_READ_AREA] = "u_read_area",
     [U_BACKDROP] = "u_backdrop",
+    [U_TO_OUTPUT_X] = "stage_to_output_x",
+    [U_TO_OUTPUT_Y] = "stage_to_output_y",
+    [U_TO_OUTPUT_W] = "stage_to_output_w",
+    [U_FROM_OUTPUT_X] = "stage_from_output_x",
+    [U_FROM_OUTPUT_Y] = "stage_from_output_y",
+    [U_FROM_OUTPUT_W] = "stage_from_output_w",
+    [U_OUTPUT_SIZE] = "output_size",
 };
 
 /*
@@ -495,6 +509,24 @@ static void declare_inputs(struct strbuf *text, const struct shader *shader) {
     strbuf_puts(text, "uniform vec2 size;\nuniform float radius;\n");
     if (shader->time) strbuf_puts(text, "uniform float time;\n");
     if (shader->pointer) strbuf_puts(text, "uniform vec2 pointer;\n");
+    /* Where the node lies on its output: projective maps between local units and
+     * output-logical pixels, as rows, and the output's size. */
+    if (shader->output)
+        strbuf_puts(
+            text,
+            "uniform vec4 stage_to_output_x, stage_to_output_y, stage_to_output_w;\n"
+            "uniform vec4 stage_from_output_x, stage_from_output_y, stage_from_output_w;\n"
+            "uniform vec2 output_size;\n"
+            "vec2 to_output(vec2 p) {\n"
+            "  vec3 h = vec3(p, 1.0);\n"
+            "  return vec2(dot(stage_to_output_x.xyz, h), dot(stage_to_output_y.xyz, h))\n"
+            "         / dot(stage_to_output_w.xyz, h);\n"
+            "}\n"
+            "vec2 from_output(vec2 p) {\n"
+            "  vec3 h = vec3(p, 1.0);\n"
+            "  return vec2(dot(stage_from_output_x.xyz, h), dot(stage_from_output_y.xyz, h))\n"
+            "         / dot(stage_from_output_w.xyz, h);\n"
+            "}\n");
     for (int i = 0; i < shader->uniform_count; i++)
         strbuf_printf(text, "uniform %s %s;\n", glsl_type(shader->counts[i]), shader->names[i]);
     /* The director's lines number from 1 in compile errors. */
@@ -617,6 +649,16 @@ static void set_shading(struct shaded *shaded, const struct render_shading *shad
     set_1f(p, U_PIXEL, pixel);
     set_1f(p, U_TIME, shading->time);
     set_2f(p, U_POINTER, shading->pointer[0], shading->pointer[1]);
+    if (shading->shader->shader->output) {
+        struct mat3 to = shading->to_output, from = shading->from_output;
+        set_4f(p, U_TO_OUTPUT_X, to.a, to.c, to.e, 0);
+        set_4f(p, U_TO_OUTPUT_Y, to.b, to.d, to.f, 0);
+        set_4f(p, U_TO_OUTPUT_W, to.g, to.h, to.i, 0);
+        set_4f(p, U_FROM_OUTPUT_X, from.a, from.c, from.e, 0);
+        set_4f(p, U_FROM_OUTPUT_Y, from.b, from.d, from.f, 0);
+        set_4f(p, U_FROM_OUTPUT_W, from.g, from.h, from.i, 0);
+        set_2f(p, U_OUTPUT_SIZE, shading->output_size[0], shading->output_size[1]);
+    }
     /* Uniforms the shader never reads were compiled away: they cost no call. */
     const struct shader *shader = shading->shader->shader;
     const float *values = shading->values;

@@ -1,39 +1,16 @@
-import {
-  Box,
-  Group,
-  Rect,
-  scale,
-  Text,
-  type BoxProps,
-  type Rectangle,
-  type StagePointerEvent,
-  type TextProps,
-  type Transition,
-} from "proscenium";
+import { Box, Group, Rect, scale, type BoxProps, type Rectangle, type StagePointerEvent, type Transition } from "proscenium";
+import { Label, Pill, StyleSheet } from "proscenium/ui";
 import { useRef } from "react";
-import { colors, font, motion } from "../lib/theme.js";
+import { colors, motion } from "../lib/theme.js";
 import { bounds } from "./magnetism.js";
 import { ScreenSized, useScreenPixel } from "./ScreenSized.js";
 
-const styles = {
+const styles = StyleSheet.create({
   // A row as wide as the stack, its pill at the right end and sitting just above it.
   stackRow: { height: 0, flexDirection: "row", justifyContent: "flex-end", alignItems: "flex-end" },
-  stackPill: {
-    height: 24,
-    marginBottom: 8,
-    paddingX: 12,
-    // Box lays out in a row: this centres the label up and down.
-    alignItems: "center",
-    radius: 12,
-    fill: colors.ink,
-    shadow: { color: "#00000040", blur: 8, y: 2 },
-    // The pill is the stack's handle.
-    cursor: "grab",
-  },
-  dropPill: { fill: colors.accent },
-} satisfies Record<string, BoxProps>;
-
-const stackLabel = { font, size: 12, weight: 650, color: "#ffffff" } satisfies TextProps;
+  // The pill is the stack's handle.
+  stackPill: { marginBottom: 8, cursor: "grab" },
+});
 
 /** How far, in screen pixels, the pointer may move between pressing the pill and letting go for it to be a click. */
 const clickSlop = 4;
@@ -157,14 +134,16 @@ function StackMarker({ pile, label, target, transition, ...handlers }: StackMark
       {target && <DropRing rect={pile} transition={transition} />}
       <ScreenSized x={pile.x} y={pile.y} transition={transition}>
         <Box style={styles.stackRow} width={pile.width / pixel}>
-          <Box
-            style={[styles.stackPill, target && styles.dropPill]}
+          <Pill
+            variant={target ? "accent" : "ink"}
+            height={24}
+            style={styles.stackPill}
             transition={motion.pop}
             initial={{ opacity: 0, transform: scale(0.8) }}
             {...handlers}
           >
-            <Text style={stackLabel}>{label}</Text>
-          </Box>
+            <Label variant="caption" tone="inverse">{label}</Label>
+          </Pill>
         </Box>
       </ScreenSized>
     </Group>

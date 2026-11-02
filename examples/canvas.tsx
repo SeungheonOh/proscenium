@@ -97,7 +97,7 @@ import { PaperToolbar } from "./canvas/paper/Toolbar.js";
 import { Selection } from "./canvas/Selection.js";
 import { closure } from "./canvas/stacks.js";
 import { arrangements, presetKeys, titles, type Preset } from "./canvas/tiling.js";
-import { Toast, useToast, type ToastMessage } from "./canvas/Toast.js";
+import { Toast, useToast, type ToastMessage } from "proscenium/ui";
 import { useArrange, useArrangeSettings, type ArrangeEvent, type ArrangeSettings, type Links } from "./canvas/useArrange.js";
 import { useCameraActions } from "./canvas/useCameraActions.js";
 import { useFan } from "./canvas/useFan.js";

@@ -21,6 +21,9 @@
       "proscenium": [
         "../sdk/src/index.ts"
       ],
+      "proscenium/ui": [
+        "../sdk/src/ui/index.ts"
+      ],
       "proscenium/page": [
         "../sdk/src/page.ts"
       ],

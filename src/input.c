@@ -1324,8 +1324,9 @@ static int wake_fired(void *data) {
             in->wakes[i] = in->wakes[--in->wake_count];
             continue;
         }
-        if (window_presentable(in->wakes[i].window))
-            window_send_frame_done(in->wakes[i].window, &when);
+        /* One an output shows already hears of every frame it draws. */
+        struct window *window = in->wakes[i].window;
+        if (!window->outputs) window_send_frame_done(window, &when);
         i++;
     }
     if (in->wake_count) wl_event_source_timer_update(in->wake_timer, AGENT_WAKE_INTERVAL);
@@ -1409,7 +1410,8 @@ bool input_inject(struct server *server, struct window *window, const struct inj
         }
         wlr_seat_pointer_notify_frame(seat);
     }
-    /* Nothing stays down, and the pointer goes back to what is under the real one. */
+    /* Nothing stays down, and the pointer goes back to what is under the real one, which
+     * has not moved: no motion reaches the director for it. */
     for (int j = 0; j < down_count; j++) {
         wlr_seat_pointer_notify_button(seat, time_msec(), down[j],
                                        WL_POINTER_BUTTON_STATE_RELEASED);
@@ -1417,7 +1419,9 @@ bool input_inject(struct server *server, struct window *window, const struct inj
     }
     set_hovered(server, NULL);
     wlr_seat_pointer_notify_clear_focus(seat);
-    pointer_moved(server);
+    double px, py;
+    struct output *output = input_pointer_output(server, &px, &py);
+    if (output) input_repick(server, output);
     wake_window(server, window);
     return true;
 }

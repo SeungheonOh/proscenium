@@ -249,16 +249,20 @@ export const catalog = defineCatalog(schema, {
         size: z.enum(["md", "lg", "xl"]).nullable(),
       }),
       slots: [],
-      description: "A live mm:ss countdown, from `seconds` (counting while running, default true) or to `until` (ISO time or epoch ms). Emits done at zero.",
+      description: "A live mm:ss countdown from `seconds`, or to `until` (ISO time or epoch ms). It counts while `running` is true (the default): for Start and Pause buttons bind it, {\"running\":{\"$state\":\"/running\"}}, and set /running with setState. A Reset button runs resetTimer with the countdown's element key. Emits done at zero.",
     },
   },
   actions: {
     ask: {
       params: z.object({ text: z.string().nullable() }),
-      description: "Hand the UI back to the assistant: your text plus the UI's whole state arrive as a message for you to act on (search, compute, update this UI).",
+      description: 'Hand the UI back to the assistant. Params: { "text": "what to do" }. Your text plus the UI\'s whole state arrive as a message for you to act on (search, compute, update this UI).',
+    },
+    resetTimer: {
+      params: z.object({ timer: z.string() }),
+      description: 'Put a Countdown back to its seconds, stopped (a running read from state is set to false). Params: { "timer": "<the Countdown element\'s key>" }; without it, every Countdown in the UI.',
     },
     close: { params: z.object({}), description: "Close this UI." },
-    copy: { params: z.object({ text: z.string() }), description: "Put text on the clipboard." },
+    copy: { params: z.object({ text: z.string() }), description: 'Put text on the clipboard. Params: { "text": "…" }.' },
   },
 });
 

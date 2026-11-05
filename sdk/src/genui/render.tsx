@@ -137,6 +137,23 @@ function runBinding(surface: Surface, binding: ActionBinding, scope: Scope, onAc
       if (typeof params.clearStatePath === "string") store.set(params.clearStatePath, "");
       break;
     }
+    case "resetTimer": {
+      // A countdown's clock lives in the interface's state; without one it starts over.
+      // Inside a repeat, the countdown is the one of this item. Models name the
+      // param as they please; with none, every countdown starts over.
+      const named = params.timer ?? params.key ?? params.elementKey ?? params.id ?? params.target ?? params.element;
+      const wanted = typeof named === "string" ? [named]
+        : Object.entries(surface.spec.elements).filter(([, element]) => element.type === "Countdown").map(([key]) => key);
+      for (const timer of wanted) {
+        // Back to its seconds, and stopped: a running bound to state is set false.
+        const running = (surface.spec.elements[timer]?.props as Record<string, unknown> | undefined)?.running as
+          { $state?: unknown; $bindState?: unknown } | undefined;
+        const path = running && typeof running === "object" ? running.$bindState ?? running.$state : undefined;
+        if (typeof path === "string") store.set(path, false);
+        store.set(ownStatePath(scope.index === undefined ? timer : `${timer}.${scope.index}`, "clock"), undefined);
+      }
+      break;
+    }
     case "removeState": {
       if (typeof params.statePath !== "string") break;
       const list = store.get(params.statePath);

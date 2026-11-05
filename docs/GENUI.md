@@ -12,6 +12,9 @@ The assistant is the first such program: a [Pi](https://pi.dev) agent that
 chats in a panel drawn by the world (Super+A) and makes interfaces as it
 answers, which the person can then drag anywhere.
 
+[GENUI-DESIGN.md](GENUI-DESIGN.md) goes over the design: modes, the frame, the
+visual system, the components, the chat, live data and known limits.
+
 ```mermaid
 flowchart LR
     A[Assistant\nPi agent, own process] -- JSON lines --> S
@@ -73,8 +76,8 @@ Everything json-render specs can say works: `$state`, `$bindState`, `$item`,
 `$bindItem`, `$index`, `$cond`, `$template`, `visible` conditions, `repeat`,
 `watch`, and `on` bindings. `setState`, `pushState` and `removeState` run in the
 world; `close` closes the interface, `copy` puts `text` on the clipboard, and
-every other action goes to the program that owns the interface, with the
-interface's whole state.
+`resetTimer` puts a countdown back to its seconds, stopped; every other action
+goes to the program that owns the interface, with the interface's whole state.
 
 A root `Card` draws no card of its own, as the frame around the interface is
 one. An element that fails to draw shows why inside its own interface.
@@ -170,8 +173,11 @@ protocol, which also keeps the chat (`chat`, `message` and `status` ops; the
 world sends it `prompt`, `abort` and `reset`).
 
 - **Harness.** Pi's `createAgentSession` (`@earendil-works/pi-coding-agent`),
-  with Pi's read, ls, grep and find, its bash behind an approval card, and four
-  tools of its own: `ui_render`, `ui_place`, `ui_close`, `ui_read`.
+  with Pi's read, ls, grep and find, its bash behind an approval card, and five
+  tools of its own: `ui_render`, `ui_place`, `ui_close`, `ui_read`, and
+  `ui_feed`, which keeps an interface's state current from a shell command run
+  every few seconds after the turn ends (allowed once, stopped with the
+  interface, saved with the chat).
 - **Memory.** `$XDG_STATE_HOME/proscenium/assistant/chat.json` keeps the
   transcript, its interfaces (as the client keeps them, to open again), what
   the person allowed, and the Pi session's file under `sessions/`, which Pi

@@ -9,6 +9,7 @@
 // model is still writing it. The shell runs only once the person allows it, on
 // a card in the chat.
 
+import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
@@ -74,6 +75,8 @@ let sessionFile: string | undefined;
 interface Saved {
   messages: ChatMessage[];
   made: [string, Made][];
+  /** Live data the person allowed, started again with the assistant. */
+  feeds?: Feed[];
   records: ReturnType<UIClient["records"]>;
   session?: string;
   allowAll?: boolean;
@@ -90,6 +93,7 @@ function load(): void {
   messages = (saved.messages ?? []).map((message) =>
     message.streaming ? { ...message, streaming: false, error: message.error ?? "Interrupted." } : message);
   for (const [id, known] of saved.made ?? []) made.set(id, known);
+  for (const feed of saved.feeds ?? []) startFeed(feed);
   sessionFile = saved.session;
   allowAll = saved.allowAll === true;
   ui.restore(saved.records ?? {});
@@ -111,12 +115,11 @@ function changed(): void {
 function save(): void {
   clearTimeout(saveTimer);
   saveTimer = undefined;
-  const saved: Saved = { messages, made: [...made], records: ui.records(), session: sessionFile, allowAll };
+  const saved: Saved = { messages, made: [...made], feeds: [...feeds.values()].map((running) => running.feed),
+                         records: ui.records(), session: sessionFile, allowAll };
   writeFileSync(`${savedFile}.new`, JSON.stringify(saved));
   renameSync(`${savedFile}.new`, savedFile);
 }
-
-load();
 
 // The model is known from the start, so the chat can name it before the first question.
 const engineReady = makeEngine(state);
@@ -139,8 +142,9 @@ ui.on("prompt", (text) => void ask(text, { role: "user", parts: [{ type: "text",
 ui.on("abort", () => void session?.abort());
 ui.on("reset", () => void reset());
 ui.on("closed", ({ id }) => {
-  // Closing an approval card is declining it.
+  // Closing an approval card is declining it; closing an interface ends its live data.
   approvals.get(id)?.("deny", true);
+  stopFeedsOf(id);
   made.delete(id);
   changed();
 });
@@ -223,6 +227,7 @@ async function clear(): Promise<void> {
   // they are, with no chat message to go back to.
   for (const [id, known] of made) {
     if (known.mode === "inline") {
+      stopFeedsOf(id);
       ui.close(id);
       made.delete(id);
     } else if (known.message) {
@@ -351,6 +356,7 @@ HOW TO ANSWER
 INTERFACES
 - ui_render makes an interface (a new id) or changes one (an id you used before: send only the patches that change it, e.g. replace one element or set state).
 - Modes: "inline" (default: inside your chat message), "floating" (a card on the screen), "overlay" (pinned over everything in a corner, \`anchor\`: top-right, top-left, bottom-right, bottom-left, top, bottom), "dock" (a panel along an edge, \`side\`: left or right; windows make room), "canvas" (in the world, panning with the windows), "dialog" (centred, over a dimmed screen, until answered). Use inline unless the person asks for it somewhere, or it should outlive the chat (a timer, a monitor: overlay or floating). The person can drag interfaces between modes; ui_place moves one, ui_close closes one, ui_read reads its state.
+- Live data (a system monitor, a download's progress, a build's status, prices, anything that changes on its own): make the interface with state paths for the values, then call ui_feed with a shell command that prints them; it refreshes the state every few seconds after you have answered, until the interface closes. For several values print one "name value" pair per line and use into "/" (no JSON quoting needed); keep: N keeps the last N values of one path as a list, for a Sparkline.
 - Interfaces work on their own with setState/pushState/removeState (tabs, toggles, adding and ticking items). For anything that needs you (searching, computing, fetching, deciding), bind a button to {"action":"ask","params":{"text":"what to do"}}: you then get a message with the interface's whole state, and can update it.
 - Keep interfaces compact (about 360 px wide), with a clear title and few words. One root element (usually a Card or Stack).
 
@@ -382,14 +388,14 @@ function listen(event: Parameters<Parameters<AgentSession["subscribe"]>[0]>[0]):
     case "message_update": {
       const message = event.message as { role?: string; content?: unknown[] };
       if (message.role !== "assistant") return;
-      reply = { ...reply, parts: [...settledParts, ...partsOf(message.content ?? [], false)] };
+      reply = { ...reply, parts: once([...settledParts, ...partsOf(message.content ?? [], false)]) };
       publishReply();
       return;
     }
     case "message_end": {
       const message = event.message as { role?: string; content?: unknown[]; stopReason?: string; errorMessage?: string };
       if (message.role !== "assistant") return;
-      settledParts = [...settledParts, ...partsOf(message.content ?? [], true)];
+      settledParts = once([...settledParts, ...partsOf(message.content ?? [], true)]);
       reply = { ...reply, parts: settledParts };
       if (message.stopReason === "error") reply.error = message.errorMessage ?? "The model failed.";
       if (message.stopReason === "aborted") reply.error = "Stopped.";
@@ -408,6 +414,12 @@ function listen(event: Parameters<Parameters<AgentSession["subscribe"]>[0]>[0]):
       return;
     }
   }
+}
+
+/** PARTS with each interface once: a ui_render that repairs one already in the message adds nothing to show. */
+function once(parts: ChatPart[]): ChatPart[] {
+  const shown = new Set<string>();
+  return parts.filter((part) => part.type !== "ui" || (!shown.has(part.id) && shown.add(part.id)));
 }
 
 /** Chat parts for a model message's CONTENT; tool calls of ui_render become their interface. */
@@ -496,6 +508,8 @@ function toolLabel(name: string, args: Record<string, unknown>): string {
     case "ui_place": return `Moving ${made.get(String(args.id))?.title ?? args.id} ${args.mode ? `to ${args.mode}` : ""}`;
     case "ui_close": return `Closing ${made.get(String(args.id))?.title ?? args.id}`;
     case "ui_read": return `Reading ${made.get(String(args.id))?.title ?? args.id}`;
+    case "ui_feed": return args.stop ? `Stopping live data for ${made.get(String(args.id))?.title ?? args.id}`
+      : `Live data for ${made.get(String(args.id))?.title ?? args.id}${args.every ? ` every ${args.every} s` : ""}`;
     default: return name;
   }
 }
@@ -541,7 +555,7 @@ function tools(): ToolDefinition[] {
       const where = made.get(params.id)?.mode || rendering.mode || "inline";
       const stays = rendering.stays ? ` It stays where it is (${where}); ui_place moves it.` : "";
       return text(problems.length
-        ? `Shown (${where}), with problems to fix by another ui_render call with id "${params.id}":\n- ${problems.join("\n- ")}${stays}`
+        ? `Not finished: the interface shows, but it is broken:\n- ${problems.join("\n- ")}\nCall ui_render again now with id "${params.id}" and the patches that add or fix exactly these, before you reply. Don't give up and don't describe the problem to the person.${stays}`
         : `Shown (${where}). Don't describe it again in words.${stays}`);
     },
   });
@@ -566,6 +580,7 @@ function tools(): ToolDefinition[] {
     description: "Close an interface you made.",
     parameters: Type.Object({ id: Type.String() }),
     async execute(_, params) {
+      stopFeedsOf(params.id);
       ui.close(params.id);
       made.delete(params.id);
       return text("Closed.");
@@ -594,7 +609,48 @@ function tools(): ToolDefinition[] {
       return bash.execute(callId, params as never, signal, onUpdate as never, context);
     },
   } as ToolDefinition;
-  return [render, place, close, read, askedBash, createReadToolDefinition(home), createLsToolDefinition(home),
+  const feed = defineTool({
+    name: "ui_feed",
+    label: "Live data",
+    description: "Keep an interface's state up to date from a shell command run every few seconds, after you have answered, until the interface closes. The command prints the value: a number, text, JSON, lines (a list), or, easiest for several values, one \"name value\" pair per line, which fills /name for each when into is \"/\" (e.g. printf 'load %s\\nmemory %s\\n' ...). Returns the first value it read, or why the command failed. The person allows the command once. With stop: true, stops a feed.",
+    parameters: Type.Object({
+      id: Type.String({ description: "The interface." }),
+      name: Type.Optional(Type.String({ description: "Names the feed, to replace or stop it; \"data\" by default." })),
+      command: Type.Optional(Type.String({ description: "A shell command printing the value, e.g. \"cat /proc/loadavg | cut -d' ' -f1\"." })),
+      every: Type.Optional(Type.Number({ description: "Seconds between runs, 1 to 3600; 2 by default." })),
+      into: Type.Optional(Type.String({ description: "The state path it sets, e.g. \"/load\"; \"/\" to fill paths from a printed JSON object." })),
+      parse: Type.Optional(Type.Union([Type.Literal("pairs"), Type.Literal("json"), Type.Literal("number"), Type.Literal("text"),
+                                       Type.Literal("lines")])),
+      keep: Type.Optional(Type.Number({ description: "Keep the last N values as a list at into, for a chart." })),
+      stop: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_, params, signal) {
+      if (!ui.has(params.id)) return text(`No interface "${params.id}" is open.`);
+      const name = params.name || "data";
+      if (params.stop) {
+        stopFeed(`${params.id}:${name}`);
+        return text("Stopped.");
+      }
+      if (!params.command) return text("A feed needs a command.");
+      const every = Math.min(Math.max(Math.round(params.every ?? 2), 1), 3600);
+      const title = made.get(params.id)?.title ?? params.id;
+      const answer: Answer = allowAll ? "run" : await approve(params.command, signal, `Update ${title} every ${every} s?`);
+      if (answer === "deny") return text("The person did not allow this command.");
+      if (answer === "always") allowAll = true;
+      const feed: Feed = { id: params.id, name, command: params.command, every, into: params.into || "/value",
+                           parse: params.parse, keep: params.keep ? Math.min(Math.max(Math.round(params.keep), 2), 500) : undefined };
+      // A command that fails at once is not left running: the model fixes it and calls again.
+      stopFeed(`${feed.id}:${feed.name}`);
+      const first = await runOnce(feed);
+      if (!first.ok) {
+        return { ...text(`Not started: the command failed: ${first.error}. Fix it and call ui_feed again (same name).`), isError: true };
+      }
+      startFeed(feed);
+      changed();
+      return text(`Live: ${title} updates every ${every} s. First value: ${JSON.stringify(first.value).slice(0, 400)}`);
+    },
+  });
+  return [render, place, close, read, feed, askedBash, createReadToolDefinition(home), createLsToolDefinition(home),
           createGrepToolDefinition(home), createFindToolDefinition(home)] as ToolDefinition[];
 }
 
@@ -606,15 +662,15 @@ function decision(answer: Answer): JsonPatch {
 }
 
 /** Ask the person, on a card in the chat, whether COMMAND may run. Closing the card, or stopping, declines. */
-function approve(command: string, signal: AbortSignal | undefined): Promise<Answer> {
+function approve(command: string, signal: AbortSignal | undefined, heading = "Run a command?"): Promise<Answer> {
   const id = nextId("approve-");
   const message = reply?.id;
   if (!message) return Promise.resolve("deny");
   settledParts = [...settledParts, { type: "ui", id }];
   reply = { ...reply!, parts: settledParts };
-  made.set(id, { title: "Run a command?", mode: "inline", message, approval: "pending" });
+  made.set(id, { title: heading, mode: "inline", message, approval: "pending" });
   void ui.open(id, {
-    mode: "inline", title: "Run a command?", message,
+    mode: "inline", title: heading, message,
     spec: {
       root: "card", state: {},
       elements: {
@@ -646,3 +702,136 @@ function approve(command: string, signal: AbortSignal | undefined): Promise<Answ
     approvals.set(id, settle);
   });
 }
+
+// Live data: a shell command run every few seconds, its output put in an
+// interface's state. Feeds belong to the assistant: they run while it does,
+// after the turn that made them, and end when their interface closes.
+
+interface Feed {
+  id: string;
+  name: string;
+  command: string;
+  every: number;
+  into: string;
+  parse?: "pairs" | "json" | "number" | "text" | "lines";
+  keep?: number;
+}
+
+interface Running {
+  feed: Feed;
+  timer?: ReturnType<typeof setInterval>;
+  busy: boolean;
+  failures: number;
+  /** The last values, for a feed that keeps them. */
+  history: unknown[];
+}
+
+const feeds = new Map<string, Running>();
+
+function startFeed(feed: Feed): void {
+  const key = `${feed.id}:${feed.name}`;
+  stopFeed(key);
+  const running: Running = { feed, busy: false, failures: 0, history: [] };
+  running.timer = setInterval(() => void tick(running), feed.every * 1000);
+  feeds.set(key, running);
+}
+
+function stopFeed(key: string): void {
+  const running = feeds.get(key);
+  if (!running) return;
+  clearInterval(running.timer);
+  feeds.delete(key);
+  changed();
+}
+
+function stopFeedsOf(id: string): void {
+  for (const [key, running] of feeds) if (running.feed.id === id) stopFeed(key);
+}
+
+/** Run FEED's command once and put what it printed in its interface's state. */
+async function runOnce(feed: Feed): Promise<{ ok: true; value: unknown } | { ok: false; error: string }> {
+  const result = await new Promise<{ code: number | null; out: string; err: string }>((resolve) => {
+    const child = spawn("bash", ["-c", feed.command], { cwd: home, stdio: ["ignore", "pipe", "pipe"],
+                                                       timeout: Math.min(feed.every * 900, 20_000) });
+    let out = "";
+    let err = "";
+    child.stdout.setEncoding("utf8").on("data", (chunk: string) => { if (out.length < 65536) out += chunk; });
+    child.stderr.setEncoding("utf8").on("data", (chunk: string) => { if (err.length < 2000) err += chunk; });
+    child.on("error", (error) => resolve({ code: -1, out, err: error.message }));
+    child.on("close", (code) => resolve({ code, out, err }));
+  });
+  if (result.code !== 0) return { ok: false, error: result.err.trim().slice(0, 300) || `it exited with ${result.code}` };
+  let value: unknown;
+  try {
+    value = parsed(result.out, feed.parse);
+  } catch (error) {
+    return { ok: false, error: `its output is not ${feed.parse}: ${error instanceof Error ? error.message : error}` };
+  }
+  const running = feeds.get(`${feed.id}:${feed.name}`);
+  if (feed.keep) {
+    const history = running?.history ?? [];
+    history.push(value);
+    history.splice(0, Math.max(0, history.length - feed.keep));
+    ui.state(feed.id, { [feed.into]: [...history] });
+  } else if ((feed.into === "/" || feed.into === "") && value && typeof value === "object" && !Array.isArray(value)) {
+    ui.state(feed.id, Object.fromEntries(Object.entries(value).map(([key, item]) => [`/${key}`, item])));
+  } else {
+    ui.state(feed.id, { [feed.into]: value });
+  }
+  return { ok: true, value };
+}
+
+function parsed(output: string, mode: Feed["parse"]): unknown {
+  const words = output.trim();
+  if (mode === "json") return JSON.parse(words);
+  if (mode === "number") {
+    const value = Number.parseFloat(words);
+    if (!Number.isFinite(value)) throw new Error(`"${words.slice(0, 40)}"`);
+    return value;
+  }
+  if (mode === "lines") return words.split("\n").filter((line) => line.trim());
+  if (mode === "text") return words;
+  if (mode === "pairs") return pairs(words) ?? (() => { throw new Error("no \"name value\" lines"); })();
+  // Unsaid: JSON if it is, name-value lines if they are, a number if it is, else text.
+  try {
+    return JSON.parse(words);
+  } catch {
+    const named = pairs(words);
+    if (named) return named;
+    const value = Number(words);
+    return words !== "" && Number.isFinite(value) ? value : words;
+  }
+}
+
+/** "name value" lines (or name=value, name: value) as an object, numbers as numbers; null if any line is not one. */
+function pairs(words: string): Record<string, unknown> | null {
+  const lines = words.split("\n").filter((line) => line.trim());
+  if (!lines.length) return null;
+  const found: Record<string, unknown> = {};
+  for (const line of lines) {
+    const match = /^\s*([A-Za-z_][\w.-]*)\s*(?:=|:|\s)\s*(.*?)\s*$/.exec(line);
+    if (!match) return null;
+    const value = Number(match[2]);
+    found[match[1]!] = match[2] !== "" && Number.isFinite(value) ? value : match[2];
+  }
+  return found;
+}
+
+/** One run of a feed; three failures in a row stop it, and the chat says why. */
+async function tick(running: Running): Promise<void> {
+  if (running.busy || !ui.has(running.feed.id)) return;
+  running.busy = true;
+  const result = await runOnce(running.feed);
+  running.busy = false;
+  if (result.ok) {
+    running.failures = 0;
+    return;
+  }
+  if (++running.failures < 3) return;
+  stopFeed(`${running.feed.id}:${running.feed.name}`);
+  const title = made.get(running.feed.id)?.title ?? running.feed.id;
+  publish({ id: nextId("m"), role: "event", parts: [{ type: "text", text: `Stopped updating ${title}: ${result.error}` }] });
+}
+
+// Last, once everything it uses is defined, and before the client connects.
+load();

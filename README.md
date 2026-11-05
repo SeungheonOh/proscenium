@@ -77,7 +77,8 @@ fetches its art first).
 - [docs/GUIDE.md](docs/GUIDE.md): writing worlds, the SDK, animation, shaders,
   input, web pages, rendering and energy.
 - [docs/PROTOCOL.md](docs/PROTOCOL.md): the director protocol.
-- [docs/GENUI.md](docs/GENUI.md): generated interfaces, the UI socket programs use, and the assistant.
+- [docs/GENUI.md](docs/GENUI.md): generated interfaces, the UI socket programs use, and the assistant;
+  [docs/GENUI-DESIGN.md](docs/GENUI-DESIGN.md) goes over their design.
 - [docs/SHADERS.md](docs/SHADERS.md): shaders as the only decoration (design under review).
 - [docs/MOTION.md](docs/MOTION.md): every motion as two response curves (proposed, not implemented).
 - [docs/DESIGN.md](docs/DESIGN.md): threads, modules, style and performance rules.

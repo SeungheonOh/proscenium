@@ -4,7 +4,7 @@
 // note of where it went, with a way to bring it back.
 
 import { memo, useContext, useEffect, useRef, useState } from "react";
-import { Box, Group, Rect, Text } from "proscenium";
+import { Box, Group, Rect, Text, usePersistentState } from "proscenium";
 import { MarkdownView } from "proscenium/genui";
 import { Icon, IconButton, Label, makeStyles, Pressable, ScrollView, StyleSheet, Surface, TextField,
   type ScrollViewHandle } from "proscenium/ui";
@@ -76,7 +76,8 @@ export interface ChatPanelProps {
 /** The chat beside the screen's right edge. */
 export function ChatPanel({ host, chat, surfaces, area, onClose }: ChatPanelProps) {
   const styles = useStyles();
-  const [draft, setDraft] = useState("");
+  // Kept with the chat's open state, so it survives putting the chat away and reloads.
+  const [draft, setDraft] = usePersistentState("genui.draft", "");
   const [waiting, setWaiting] = useState<string | null>(null);
   const scroll = useRef<ScrollViewHandle>(null);
 

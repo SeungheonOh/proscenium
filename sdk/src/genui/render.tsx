@@ -793,13 +793,24 @@ function Caption({ label }: { label: unknown }) {
   return <Text style={styles.label} maxLines={1}>{text(label)}</Text>;
 }
 
-/** A value bound to state, or kept here when the spec binds it to nothing. */
+/**
+ * Where the renderer keeps an element's own state inside its interface's state:
+ * the value of an input the spec binds to nothing, a countdown's clock. There it
+ * outlives the element's node (moves between modes, reloads), and reaches the
+ * interface's owner with its actions and state like any other value.
+ */
+export function ownStatePath(name: string, part: string): string {
+  return `/_ui/${name.replace(/~/g, "~0").replace(/\//g, "~1")}/${part}`;
+}
+
+/** A value bound to state, or kept in the interface's own state when the spec binds it to nothing. */
 function useValue<T>(rendered: Rendered, prop: string, fallback: T): [T, (value: T) => void] {
   const bound = rendered.bound(prop);
   const given = rendered.props[prop] as T | undefined | null;
-  const [local, setLocal] = useState<T>(given ?? fallback);
   if (bound) return [given ?? fallback, bound as (value: T) => void];
-  return [local, setLocal];
+  const path = ownStatePath(rendered.name, prop);
+  const own = rendered.store.get(path) as T | undefined;
+  return [own ?? given ?? fallback, (value) => rendered.store.set(path, value)];
 }
 
 function TextFieldElement(rendered: Rendered) {
@@ -897,7 +908,7 @@ function Countdown({ props, emit, name, store }: Rendered) {
     : typeof props.until === "number" ? props.until : Date.parse(text(props.until));
   const seconds = number(props.seconds, 0);
   const running = props.running !== false;
-  const path = `/_clock/${name.replace(/~/g, "~0").replace(/\//g, "~1")}`;
+  const path = ownStatePath(name, "clock");
   const kept = store.get(path) as Clock | undefined;
   const clock: Clock = kept && kept.from === seconds ? kept
     : { from: seconds, left: seconds, endsAt: running ? Date.now() + seconds * 1000 : null };

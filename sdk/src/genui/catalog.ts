@@ -39,6 +39,7 @@ export const schema = defineSchema((s) => ({
     'CRITICAL: "visible", "repeat", "on" and "watch" go on the ELEMENT object, NOT inside "props".',
     "When the UI displays data, include a state field with the real data you have (or realistic sample data when asked for a mock-up), and read it with $state / $item rather than repeating it in props.",
     "Use repeat on a container for lists backed by a state array; never hand-write one element per item.",
+    "Bind every input you need to read with $bindState to a path you name. The interface keeps its own state under /_ui (inputs bound to nothing, countdown clocks): read it if you must, never write it.",
     "Interfaces are small panels on a desktop, about 360 px wide unless told otherwise: keep them compact and focused, a clear title, few words, no filler.",
   ],
 });

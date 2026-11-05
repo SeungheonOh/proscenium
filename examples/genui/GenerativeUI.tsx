@@ -14,7 +14,7 @@
  * a dialog. The person drags them between modes by their title bars.
  */
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Group, Shortcut, spring, useOutputs, usePersistentState } from "proscenium";
 import { barLayout } from "../components/bar/layout.js";
 import assistantMain from "./agent/main.ts?url";
@@ -44,10 +44,18 @@ export function GenerativeUI() {
   host.output = output?.name;
 
   const [chatOpen, setChatOpen] = usePersistentState("genui.chat", false);
-  // A program already serving the chat (an assistant of the person's own) keeps it.
+  // Whether an assistant was here: one that leaves is replaced after a moment, not at once.
+  const wasConnected = useRef(false);
+  if (chat.connected) wasConnected.current = true;
+  // While the chat is open it has an assistant: the built-in one, unless another
+  // program already serves it (an assistant of the person's own), or once that one leaves.
   useEffect(() => {
-    if (chatOpen && !host.agentConnected) startAssistant(runner, assistantMain, path);
-  }, [chatOpen]);
+    if (!chatOpen || chat.connected) return;
+    const timer = setTimeout(() => {
+      if (!host.agentConnected) startAssistant(runner, assistantMain, path);
+    }, wasConnected.current ? 1500 : 0);
+    return () => clearTimeout(timer);
+  }, [chatOpen, chat.connected]);
 
   const rightDock = surfaces.filter((entry) => entry.mode === "dock" && entry.place.side === "right")
     .reduce((most, entry) => Math.max(most, entry.width + margin), 0);

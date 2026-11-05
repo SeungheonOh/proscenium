@@ -9,7 +9,7 @@
 // model is still writing it. The shell runs only once the person allows it, on
 // a card in the chat.
 
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { Type } from "typebox";
@@ -47,11 +47,83 @@ let engine: Engine | null = null;
 let session: AgentSession | null = null;
 let starting: Promise<AgentSession> | null = null;
 let catalog = "";
-/** Interfaces this chat made, and where they are: what ui_read and the prompt can say. */
-const made = new Map<string, { title?: string; mode: Mode; message: string }>();
+/** An interface this chat made, and where it is: what ui_read and the prompt can say. */
+interface Made {
+  title?: string;
+  mode: Mode;
+  /** The chat message it lives in; none once New chat left it outside the chat. */
+  message?: string;
+  /** For a shell command's approval card: whether it still waits for an answer. */
+  approval?: "pending" | "decided";
+}
+const made = new Map<string, Made>();
 /** Commands the person allowed for the rest of this chat. */
 let allowAll = false;
-const approvals = new Map<string, (answer: "run" | "always" | "deny") => void>();
+type Answer = "run" | "always" | "deny";
+/** Approval cards awaiting an answer; closing one is an answer too (CLOSED, no card to mark). */
+const approvals = new Map<string, (answer: Answer, closed?: boolean) => void>();
+
+// The chat outlives this process: its transcript, the interfaces it made (as the
+// client keeps them, to open again), the Pi session's file and what the person
+// allowed are saved in chat.json and restored when the assistant starts again,
+// as after the compositor restarts.
+const savedFile = join(state, "chat.json");
+const sessionDir = join(state, "sessions");
+let sessionFile: string | undefined;
+
+interface Saved {
+  messages: ChatMessage[];
+  made: [string, Made][];
+  records: ReturnType<UIClient["records"]>;
+  session?: string;
+  allowAll?: boolean;
+}
+
+function load(): void {
+  let saved: Saved;
+  try {
+    saved = JSON.parse(readFileSync(savedFile, "utf8")) as Saved;
+  } catch {
+    return;
+  }
+  // A reply cut off when the assistant stopped stays cut off.
+  messages = (saved.messages ?? []).map((message) =>
+    message.streaming ? { ...message, streaming: false, error: message.error ?? "Interrupted." } : message);
+  for (const [id, known] of saved.made ?? []) made.set(id, known);
+  sessionFile = saved.session;
+  allowAll = saved.allowAll === true;
+  ui.restore(saved.records ?? {});
+  // Nothing waits on an approval from before any more: it is marked not run.
+  for (const [id, known] of made) {
+    if (known.approval !== "pending") continue;
+    known.approval = "decided";
+    void ui.patch(id, [decision("deny")]);
+  }
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | undefined;
+
+/** Save soon: something the chat keeps changed. */
+function changed(): void {
+  saveTimer ??= setTimeout(save, 500);
+}
+
+function save(): void {
+  clearTimeout(saveTimer);
+  saveTimer = undefined;
+  const saved: Saved = { messages, made: [...made], records: ui.records(), session: sessionFile, allowAll };
+  writeFileSync(`${savedFile}.new`, JSON.stringify(saved));
+  renameSync(`${savedFile}.new`, savedFile);
+}
+
+load();
+
+// The model is known from the start, so the chat can name it before the first question.
+const engineReady = makeEngine(state);
+engineReady.then((made) => {
+  engine = made;
+  ui.send({ op: "status", busy, model: made.label });
+}, (error) => console.error(`[assistant] ${error instanceof Error ? error.message : error}`));
 
 ui.on("connect", () => {
   ui.send({ op: "chat", messages });
@@ -66,11 +138,20 @@ ui.on("disconnect", () => {
 ui.on("prompt", (text) => void ask(text, { role: "user", parts: [{ type: "text", text }] }));
 ui.on("abort", () => void session?.abort());
 ui.on("reset", () => void reset());
-ui.on("closed", ({ id }) => made.delete(id));
+ui.on("closed", ({ id }) => {
+  // Closing an approval card is declining it.
+  approvals.get(id)?.("deny", true);
+  made.delete(id);
+  changed();
+});
 ui.on("placed", ({ id, mode }) => {
   const known = made.get(id);
   if (known) known.mode = mode;
+  changed();
 });
+ui.on("state", () => changed());
+// A newer assistant took the chat: this one is done.
+ui.on("fatal", () => process.exit(0));
 
 ui.on("action", ({ id, action, params, state: values }) => {
   const approval = approvals.get(id);
@@ -89,6 +170,7 @@ ui.on("action", ({ id, action, params, state: values }) => {
 });
 
 process.on("SIGTERM", () => process.exit(0));
+process.on("exit", () => save());
 process.on("unhandledRejection", (error) => console.error("[assistant]", error));
 
 function publish(message: ChatMessage): void {
@@ -98,6 +180,7 @@ function publish(message: ChatMessage): void {
   if (at >= 0) messages[at] = message;
   else messages.push(message);
   ui.send({ op: "message", message });
+  changed();
 }
 
 let flushTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,16 +205,29 @@ function setBusy(value: boolean, error?: string | null): void {
   ui.send({ op: "status", busy, model: engine?.label, error });
 }
 
-async function reset(): Promise<void> {
+/** A New chat in progress, which whatever the person says next waits for. */
+let resetting: Promise<void> | null = null;
+
+function reset(): Promise<void> {
+  resetting ??= clear().finally(() => { resetting = null; });
+  return resetting;
+}
+
+async function clear(): Promise<void> {
   await session?.abort();
   session?.dispose();
   session = null;
   starting = null;
-  // Interfaces still in the chat go with it; ones the person moved out stay where they are.
+  sessionFile = undefined;
+  // Interfaces still in the chat go with it; ones the person moved out stay where
+  // they are, with no chat message to go back to.
   for (const [id, known] of made) {
     if (known.mode === "inline") {
       ui.close(id);
       made.delete(id);
+    } else if (known.message) {
+      known.message = undefined;
+      ui.update(id, { message: null });
     }
   }
   allowAll = false;
@@ -139,10 +235,13 @@ async function reset(): Promise<void> {
   reply = null;
   ui.send({ op: "chat", messages });
   setBusy(false, null);
+  changed();
 }
 
 /** Say TEXT to the model, showing SHOWN in the chat; queued after the current run if one is going. */
 async function ask(text: string, shown: Omit<ChatMessage, "id">): Promise<void> {
+  // Said just after New chat: it belongs to the new chat, so wait for the old one to be gone.
+  if (resetting) await resetting;
   publish({ ...shown, id: nextId("m") });
   let current: AgentSession;
   try {
@@ -185,7 +284,7 @@ async function run(current: AgentSession, text: string, retry: boolean): Promise
 function open(): Promise<AgentSession> {
   if (session) return Promise.resolve(session);
   starting ??= (async () => {
-    engine ??= await makeEngine(state);
+    engine ??= await engineReady;
     if (!catalog) catalog = (await ui.catalog()).prompt ?? "";
     const created = await createAgentSession({
       cwd: home, agentDir: join(state, "pi"), model: engine.model, modelRuntime: engine.runtime,
@@ -193,10 +292,12 @@ function open(): Promise<AgentSession> {
       resourceLoader: resources(systemPrompt()),
       noTools: "builtin",
       customTools: tools(),
-      sessionManager: SessionManager.inMemory(home),
+      sessionManager: openSession(),
       settingsManager: SettingsManager.inMemory({ compaction: { enabled: true }, retry: { enabled: true, maxRetries: 2 } }),
     });
     const fresh = created.session;
+    sessionFile = fresh.sessionManager.getSessionFile();
+    changed();
     if (engine.payload) fresh.agent.onPayload = engine.payload as never;
     fresh.subscribe(listen);
     session = fresh;
@@ -204,6 +305,19 @@ function open(): Promise<AgentSession> {
     return fresh;
   })();
   return starting;
+}
+
+/** The chat's Pi session: the one it had before a restart, or a new one. */
+function openSession(): SessionManager {
+  mkdirSync(sessionDir, { recursive: true });
+  if (sessionFile && existsSync(sessionFile)) {
+    try {
+      return SessionManager.open(sessionFile, sessionDir);
+    } catch (error) {
+      console.error(`[assistant] could not reopen ${sessionFile}: ${error instanceof Error ? error.message : error}`);
+    }
+  }
+  return SessionManager.create(home, sessionDir);
 }
 
 function resources(prompt: string): ResourceLoader {
@@ -250,6 +364,8 @@ interface Rendering {
   sent: number;
   opened: boolean;
   mode?: Mode;
+  /** It changed an interface already open and asked for another mode, which only ui_place gives. */
+  stays?: boolean;
 }
 
 const renderings = new Map<string, Rendering>();
@@ -333,14 +449,20 @@ function stream(callId: string, args: Record<string, unknown>, ended: boolean): 
   if (!rendering.opened) {
     rendering.opened = true;
     const known = made.get(id);
-    const mode = (typeof args.mode === "string" ? args.mode : known?.mode ?? "inline") as Mode;
-    rendering.mode = mode;
-    if (!known) made.set(id, { title: str(args.title), mode, message: reply!.id });
-    void ui.open(id, {
-      mode: known && !args.mode ? undefined : mode, place: placeOf(args), title: str(args.title) ?? known?.title,
-      width: typeof args.width === "number" ? args.width : undefined, theme: args.theme === "dark" ? "dark" : undefined,
-      message: known ? undefined : reply!.id,
-    });
+    const width = typeof args.width === "number" ? args.width : undefined;
+    const theme = args.theme === "dark" ? "dark" : args.theme === "light" ? "light" : undefined;
+    if (known) {
+      // Changing an interface never moves it: where it is may be where the person put it.
+      rendering.mode = known.mode;
+      rendering.stays = typeof args.mode === "string" && args.mode !== known.mode;
+      if (str(args.title)) known.title = str(args.title);
+      void ui.open(id, { title: str(args.title), width, theme });
+    } else {
+      const mode = (typeof args.mode === "string" ? args.mode : "inline") as Mode;
+      rendering.mode = mode;
+      made.set(id, { title: str(args.title), mode, message: reply!.id });
+      void ui.open(id, { mode, place: placeOf(args), title: str(args.title), width, theme, message: reply!.id });
+    }
   }
   if (rendering.opened && ready > rendering.sent) {
     void ui.patch(id, patches.slice(rendering.sent, ready));
@@ -392,7 +514,7 @@ function tools(): ToolDefinition[] {
   const render = defineTool({
     name: "ui_render",
     label: "Interface",
-    description: "Make a native interface on the desktop from json-render patches (see UI FORMAT), or change one you made by its id. Returns what is wrong with the spec, if anything.",
+    description: "Make a native interface on the desktop from json-render patches (see UI FORMAT), or change one you made by its id, where it is (mode applies only when it is new; ui_place moves one). Returns what is wrong with the spec, if anything.",
     parameters: Type.Object({
       id: Type.String({ description: "Short id, e.g. \"timer\". The same id changes that interface." }),
       mode: Type.Optional(modeType),
@@ -417,9 +539,10 @@ function tools(): ToolDefinition[] {
       if (!result.ok) return text(`Could not show it: ${result.error}`);
       const problems = result.problems ?? [];
       const where = made.get(params.id)?.mode || rendering.mode || "inline";
+      const stays = rendering.stays ? ` It stays where it is (${where}); ui_place moves it.` : "";
       return text(problems.length
-        ? `Shown (${where}), with problems to fix by another ui_render call with id "${params.id}":\n- ${problems.join("\n- ")}`
-        : `Shown (${where}). Don't describe it again in words.`);
+        ? `Shown (${where}), with problems to fix by another ui_render call with id "${params.id}":\n- ${problems.join("\n- ")}${stays}`
+        : `Shown (${where}). Don't describe it again in words.${stays}`);
     },
   });
   const place = defineTool({
@@ -465,7 +588,7 @@ function tools(): ToolDefinition[] {
     ...bash,
     async execute(callId, params, signal, onUpdate, context) {
       const command = String((params as { command?: unknown }).command ?? "");
-      const answer = allowAll ? "run" : await approve(command, signal);
+      const answer: Answer = allowAll ? "run" : await approve(command, signal);
       if (answer === "deny") return text("The person did not allow this command. Ask them, or do without it.");
       if (answer === "always") allowAll = true;
       return bash.execute(callId, params as never, signal, onUpdate as never, context);
@@ -475,14 +598,21 @@ function tools(): ToolDefinition[] {
           createGrepToolDefinition(home), createFindToolDefinition(home)] as ToolDefinition[];
 }
 
-/** Ask the person, on a card in the chat, whether COMMAND may run. */
-function approve(command: string, signal: AbortSignal | undefined): Promise<"run" | "always" | "deny"> {
+/** The approval card's buttons, once ANSWER is given: what was decided, in their place. */
+function decision(answer: Answer): JsonPatch {
+  return { op: "replace", path: "/elements/buttons", value: { type: "Text", children: [], props: {
+    text: answer === "deny" ? "Not run." : answer === "always" ? "Ran · commands run freely for the rest of this chat." : "Ran.",
+    tone: answer === "deny" ? "muted" : "success", size: "sm" } } };
+}
+
+/** Ask the person, on a card in the chat, whether COMMAND may run. Closing the card, or stopping, declines. */
+function approve(command: string, signal: AbortSignal | undefined): Promise<Answer> {
   const id = nextId("approve-");
   const message = reply?.id;
   if (!message) return Promise.resolve("deny");
   settledParts = [...settledParts, { type: "ui", id }];
   reply = { ...reply!, parts: settledParts };
-  made.set(id, { title: "Run a command?", mode: "inline", message });
+  made.set(id, { title: "Run a command?", mode: "inline", message, approval: "pending" });
   void ui.open(id, {
     mode: "inline", title: "Run a command?", message,
     spec: {
@@ -501,15 +631,14 @@ function approve(command: string, signal: AbortSignal | undefined): Promise<"run
   });
   publishReply(true);
   return new Promise((resolve) => {
-    const settle = (answer: "run" | "always" | "deny") => {
+    const settle = (answer: Answer, closed = false) => {
       approvals.delete(id);
       signal?.removeEventListener("abort", aborted);
-      // The card stays as a record of what was decided.
-      void ui.patch(id, [
-        { op: "replace", path: "/elements/buttons", value: { type: "Text", children: [], props: {
-          text: answer === "deny" ? "Not run." : answer === "always" ? "Ran · commands run freely for the rest of this chat." : "Ran.",
-          tone: answer === "deny" ? "muted" : "success", size: "sm" } } },
-      ]);
+      const known = made.get(id);
+      if (known) known.approval = "decided";
+      // The card stays as a record of what was decided, unless the person closed it.
+      if (!closed) void ui.patch(id, [decision(answer)]);
+      changed();
       resolve(answer);
     };
     const aborted = () => settle("deny");

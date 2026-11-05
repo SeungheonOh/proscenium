@@ -51,11 +51,17 @@ function readSpec(source: string): Pick<OpenOptions, "spec" | "patches"> {
   }
 }
 
-const ui = new UIClient({ name: flag("name") ?? "proscenium-ui", reconnect: false });
+// A world that reloads comes back, and this program's interface with it; one that
+// stays away for ten seconds is gone.
+const ui = new UIClient({ name: flag("name") ?? "proscenium-ui" });
+let away: ReturnType<typeof setTimeout> | undefined;
 ui.on("disconnect", () => {
-  console.error("proscenium-ui: the world went away");
-  process.exit(3);
+  away = setTimeout(() => {
+    console.error("proscenium-ui: the world went away");
+    process.exit(3);
+  }, 10_000);
 });
+ui.on("connect", () => clearTimeout(away));
 
 async function opened(id: string, options: OpenOptions): Promise<void> {
   await new Promise<void>((resolve, reject) => {

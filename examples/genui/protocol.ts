@@ -55,7 +55,8 @@ export type ClientMessage =
       spec?: Partial<Spec>; patches?: JsonPatch[]; message?: string; request?: number }
   | { op: "patch"; id: string; patches: JsonPatch[]; request?: number }
   | { op: "state"; id: string; set: Record<string, unknown> }
-  | { op: "update"; id: string; title?: string; width?: number; theme?: "light" | "dark" }
+  /** `message: null` unlinks an interface from the chat message that made it (the assistant's). */
+  | { op: "update"; id: string; title?: string; width?: number; theme?: "light" | "dark"; message?: string | null }
   | { op: "place"; id: string; mode: Mode; place?: Place }
   | { op: "close"; id: string }
   | { op: "get"; id: string; request: number }
@@ -76,7 +77,8 @@ export type HostMessage =
   | { type: "closed"; id: string; by: "person" | "program" }
   | { type: "result"; request: number; ok: boolean; problems?: string[]; error?: string;
       spec?: Spec; mode?: Mode; place?: Place; prompt?: string; components?: string[] }
-  | { type: "error"; message: string }
+  /** A fatal error ends the connection for good: a newer assistant took the chat. */
+  | { type: "error"; message: string; fatal?: boolean }
   // To the assistant.
   | { type: "prompt"; text: string }
   | { type: "abort" }

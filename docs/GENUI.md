@@ -94,7 +94,7 @@ Program to world:
 | `open` | `id`, `mode?`, `place?`, `title?`, `width?`, `theme?` (`light`, `dark`), `spec?`, `patches?`, `request?` | Opens interface `id`, or changes it if it is open. |
 | `patch` | `id`, `patches`, `request?` | json-render patches (RFC 6902, paths under `/root`, `/elements`, `/state`). |
 | `state` | `id`, `set` | Values by JSON pointer: `{"/load": 0.4}`. The cheapest change: no layout is redone that the values do not touch. |
-| `update` | `id`, `title?`, `width?`, `theme?` | |
+| `update` | `id`, `title?`, `width?`, `theme?`, `message?` | `message: null` unlinks the assistant's interface from its chat message. |
 | `place` | `id`, `mode`, `place?` | Moves it. |
 | `close` | `id` | |
 | `get` | `id`, `request` | Answered with its spec and state, mode and place. |
@@ -113,10 +113,46 @@ World to program:
 | `state` | `id`, `state` | The person changed its state (typed, toggled, dragged), at most every 120 ms. |
 | `placed` | `id`, `mode`, `place` | The person moved it. |
 | `closed` | `id`, `by` | |
+| `error` | `message`, `fatal?` | A fatal one ends the connection for good: a newer assistant took the chat. |
 
 A program's interfaces close when its connection does. A world that reloads
 starts a new socket; `client.ts` reconnects and opens its interfaces again as
 they were, with what the person last changed in them and where they put them.
+
+## Who owns what
+
+| State | Owner | Copies | Changed by |
+| --- | --- | --- | --- |
+| Spec | The program | The world's `Surface`, which is drawn; the program's replay log | The program |
+| State | The world's `Surface` is the live one | The program's replay log, kept current by `state` events | The program (patches, `state`), the person (inputs, `setState`…), the renderer under `/_ui` |
+| Mode and place | Both; the last move wins | The world's record; the replay log, kept current by `placed` | The program (`open` of a new interface, `place`), the person (dragging) |
+| Title, width, theme | The program | The world's record | The program |
+| The chat message an inline interface lives in | The assistant | The world's record | The assistant; New chat unlinks (`message: null`) |
+| Chat transcript, busy, model | The assistant | The world's copy, which it draws | The assistant |
+| Chat open, composer draft | The world | Its persistent state | The person |
+
+- **Replay.** `client.ts` keeps each interface as the spec it opened with and a
+  log of every change since, in order: its own patches and state, and the
+  person's state as the world reports it. A new world gets the spec, then the
+  changes in that order, so the latest change wins whoever made it.
+  Consecutive state changes merge; past 48 changes the log is folded into the
+  world's copy (`get`), so it stays short however long the interface lives.
+- **`/_ui`.** The renderer keeps an element's own state inside the interface's:
+  an input the spec binds to nothing (`/_ui/<element>/value`), a countdown's
+  clock (`/_ui/<element>/clock`). So it survives moves and reloads like any
+  other state, and the owner sees it in `state` events and actions. Models are
+  told to read it, never write it.
+- **Moving.** Opening an interface that is already open changes it where it is;
+  only `place` (or the person) moves it.
+- **One assistant.** A program saying `hello` with `agent: true` takes the chat;
+  the one before is told with a fatal error and its interfaces close. The
+  built-in assistant starts whenever the chat is open with no assistant, and
+  again after a crash (1 s, doubling to 30 s); one that exits cleanly, stopped
+  or replaced, stays stopped.
+- **Restarts.** World reload: everything comes back from the programs.
+  Compositor restart: programs started outside the session come back by
+  themselves, and the built-in assistant restores its chat from disk (below).
+  `proscenium-ui` waits ten seconds for a world before giving up.
 
 ```sh
 # A card for ten seconds, from anything that can write to a socket:
@@ -134,8 +170,14 @@ protocol, which also keeps the chat (`chat`, `message` and `status` ops; the
 world sends it `prompt`, `abort` and `reset`).
 
 - **Harness.** Pi's `createAgentSession` (`@earendil-works/pi-coding-agent`),
-  in memory, with Pi's read, ls, grep and find, its bash behind an approval card,
-  and four tools of its own: `ui_render`, `ui_place`, `ui_close`, `ui_read`.
+  with Pi's read, ls, grep and find, its bash behind an approval card, and four
+  tools of its own: `ui_render`, `ui_place`, `ui_close`, `ui_read`.
+- **Memory.** `$XDG_STATE_HOME/proscenium/assistant/chat.json` keeps the
+  transcript, its interfaces (as the client keeps them, to open again), what
+  the person allowed, and the Pi session's file under `sessions/`, which Pi
+  reopens: after a restart the chat, its cards and the conversation are back.
+  A reply cut off by the restart says so, and approvals that were waiting are
+  marked not run. New chat starts a new Pi session.
 - **Model.** `$PROSCENIUM_ASSISTANT_MODEL` as `provider/model` with the
   provider's usual key variable (`anthropic/claude-sonnet-5-5` with
   `ANTHROPIC_API_KEY`), else Codex Luna 6 at its priority tier on the ChatGPT
@@ -155,7 +197,8 @@ world sends it `prompt`, `abort` and `reset`).
   interface's whole state to act on, usually ending in a `ui_render` that
   patches the same interface.
 - **Shell.** Each command waits for Run, Allow all in this chat, or Don't run on
-  a card in the chat; the card stays as a record of what was decided.
+  a card in the chat; the card stays as a record of what was decided. Closing
+  the card, or Stop, is Don't run.
 - `$PROSCENIUM_ASSISTANT_LOG=FILE` logs what Pi says, a line per event.
 
 ## From the shell

@@ -121,6 +121,13 @@ export class UIHost {
     this.changed();
   }
 
+  private move(found: HostSurface, mode: Mode, place: Place): void {
+    found.mode = mode;
+    found.place = this.defaultPlace(mode, place, found.width);
+    found.raised = ++raises;
+    found.placed++;
+  }
+
   /** Bring an interface to the top of its layer. */
   raise(key: string): void {
     const found = this.surfaces.get(key);
@@ -221,8 +228,16 @@ export class UIHost {
       case "hello":
         client.name = String(message.name || "program").slice(0, 60);
         if (message.agent) {
+          // One assistant keeps the chat; a newer one replaces it, as a newer director does.
+          const older = this.agent();
+          if (older && older !== client) {
+            this.send(older.id, { type: "error", message: "Another assistant took the chat.", fatal: true });
+            older.socket.end();
+            this.drop(older);
+          }
           client.agent = true;
-          this.chat = { ...this.chat, connected: true };
+          // Nothing of the one before is this one's: it says its own model and chat.
+          this.chat = { connected: true, messages: [], busy: false };
           this.changed();
         }
         return;
@@ -251,6 +266,13 @@ export class UIHost {
         if (message.title !== undefined) found.title = String(message.title);
         if (message.width !== undefined) found.width = clampWidth(message.width);
         if (message.theme !== undefined) found.theme = message.theme === "dark" ? "dark" : "light";
+        if (message.message === null) {
+          found.message = undefined;
+          // Nothing in the chat shows it any more: it floats instead.
+          if (found.mode === "inline") this.move(found, "floating", {});
+        } else if (message.message !== undefined && client.agent) {
+          found.message = String(message.message);
+        }
         this.changed();
         return;
       }
@@ -480,27 +502,56 @@ function clampWidth(width: unknown): number {
 interface Kept {
   child?: ChildProcess;
   exitHooked?: boolean;
+  /** Started by this director and not stopped: a crash starts it again. */
+  wanted?: boolean;
+  /** Seconds before the next start after a crash, doubling to a limit, and when the last one started. */
+  backoff?: number;
+  startedAt?: number;
+  restart?: ReturnType<typeof setTimeout>;
 }
 
 const kept = ((globalThis as Record<string, unknown>).__prosceniumAssistant ??= {}) as Kept;
 
-/** Start the assistant (PROGRAM, through RUNNER under node) unless it is running. */
+/**
+ * Start the assistant (PROGRAM, through RUNNER under node) unless it is running.
+ * It belongs to this director: it stops when the director exits, and starts
+ * again if it crashes. An assistant that exits cleanly (stopped, or replaced by
+ * another that took the chat) is left stopped.
+ */
 export function startAssistant(runner: string, program: string, socket: string): void {
+  kept.wanted = true;
   if (kept.child && kept.child.exitCode === null && kept.child.signalCode === null) return;
+  clearTimeout(kept.restart);
   const child = spawn(process.execPath, [runner, program], {
     stdio: ["ignore", "inherit", "inherit"],
     env: { ...process.env, PROSCENIUM_UI_SOCKET: socket, NODE_ENV: "production" },
   });
   child.on("error", (error) => console.error(`[genui] assistant: ${error.message}`));
+  child.on("exit", (code, signal) => {
+    if (kept.child === child) kept.child = undefined;
+    const crashed = code !== 0 && signal !== "SIGTERM";
+    if (!crashed || !kept.wanted) return;
+    // A run that lasted a minute was not a crash loop: start again soon.
+    const lasted = Date.now() - (kept.startedAt ?? 0);
+    kept.backoff = lasted > 60_000 ? 1 : Math.min((kept.backoff ?? 0.5) * 2, 30);
+    console.error(`[genui] the assistant stopped (${signal ?? `exit ${code}`}); starting it again in ${kept.backoff} s`);
+    kept.restart = setTimeout(() => startAssistant(runner, program, socket), kept.backoff * 1000);
+  });
   kept.child = child;
+  kept.startedAt = Date.now();
   if (!kept.exitHooked) {
     kept.exitHooked = true;
-    process.on("exit", () => kept.child?.kill());
+    process.on("exit", () => {
+      kept.wanted = false;
+      kept.child?.kill();
+    });
   }
 }
 
-/** Stop the assistant this director started. */
+/** Stop the assistant this director started, for good. */
 export function stopAssistant(): void {
+  kept.wanted = false;
+  clearTimeout(kept.restart);
   kept.child?.kill();
   kept.child = undefined;
 }

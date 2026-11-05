@@ -17,6 +17,10 @@
       "types": "./dist/ui/index.d.ts",
       "import": "./dist/ui/index.js"
     },
+    "./genui": {
+      "types": "./dist/genui/index.d.ts",
+      "import": "./dist/genui/index.js"
+    },
     "./runtime": {
       "types": "./dist/runtime.d.ts",
       "import": "./dist/runtime.js"
@@ -33,11 +37,13 @@
     "test": "rm -rf dist && tsc -p . && node --test test/*.test.mjs"
   },
   "dependencies": {
+    "@json-render/core": "0.22.0",
     "esbuild": "0.28.2",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-reconciler": "0.34.0",
-    "yoga-layout": "3.2.1"
+    "yoga-layout": "3.2.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@types/node": "26.6.4",

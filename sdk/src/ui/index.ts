@@ -21,9 +21,13 @@ export type { BadgeProps, BadgeTone, DividerProps, IconProps, LabelProps, LabelV
   SurfaceVariant, Tone } from "./views.js";
 export { Pressable } from "./Pressable.js";
 export type { PressableProps, PressState } from "./Pressable.js";
-export { Button, IconButton, SegmentedControl, Slider, Switch } from "./controls.js";
-export type { ButtonProps, ButtonVariant, ControlState, IconButtonProps, SegmentedControlProps, SliderProps,
-  SliderState, SwitchProps, SwitchState } from "./controls.js";
+export { Button, Checkbox, IconButton, ProgressBar, SegmentedControl, Slider, Switch } from "./controls.js";
+export type { ButtonProps, ButtonVariant, CheckboxProps, CheckboxState, ControlState, IconButtonProps, ProgressBarProps,
+  SegmentedControlProps, SliderProps, SliderState, SwitchProps, SwitchState } from "./controls.js";
+export { blurTextFields, TextField } from "./TextField.js";
+export type { TextFieldHandle, TextFieldProps, TextFieldState } from "./TextField.js";
+export { ScrollView } from "./ScrollView.js";
+export type { ScrollViewHandle, ScrollViewProps } from "./ScrollView.js";
 export { Toast, useRetained, useToast } from "./Toast.js";
 export type { ToastMessage, ToastProps } from "./Toast.js";
 export { Spacer } from "../components.js";

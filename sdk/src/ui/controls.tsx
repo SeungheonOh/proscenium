@@ -1,5 +1,5 @@
 import { memo, useRef, useState, type ReactNode } from "react";
-import { Box, Group, Rect } from "../components.js";
+import { Box, Group, Rect, Text } from "../components.js";
 import type { Color } from "../color.js";
 import type { StagePointerEvent } from "../events.js";
 import type { LayoutBox } from "../layout.js";
@@ -350,6 +350,97 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
         onPointerMove={dragging ? pick : undefined}
         onPointerUp={() => setDragging(false)}
       />
+    </Box>
+  );
+});
+
+/** A checkbox's state, as its style functions see it. */
+export interface CheckboxState extends PressState {
+  value: boolean;
+  disabled: boolean;
+}
+
+const useCheckbox = makeStyles(({ colors, motion }) => ({
+  ...StyleSheet.create({
+    row: { flexDirection: "row", alignItems: "center", gap: 8 },
+    disabled: { opacity: 0.4 },
+    mark: { size: 12, weight: 800, color: colors.onAccent, align: "center", transition: motion.pop },
+  }),
+  box: variants({
+    base: { width: 18, height: 18, radius: 5, alignItems: "center", justifyContent: "center", transition: motion.pop },
+    variants: {
+      value: { true: { fill: colors.accent, border: { width: 1, color: colors.accent } },
+               false: { fill: colors.clear, border: { width: 1.5, color: colors.control } } },
+      hovered: { true: {}, false: {} },
+    },
+    defaults: { value: false, hovered: false },
+    compound: [{ when: { value: false, hovered: true }, style: { border: { width: 1.5, color: colors.controlHover } } }],
+  }),
+}));
+
+export interface CheckboxProps {
+  value: boolean;
+  onValueChange?: (value: boolean) => void;
+  /** Words after the box, which take presses too. */
+  label?: string;
+  disabled?: boolean;
+  style?: StateStyle<BoxProps, CheckboxState>;
+  boxStyle?: StateStyle<BoxProps, CheckboxState>;
+  labelStyle?: StateStyle<TextProps, CheckboxState>;
+}
+
+/** A box ticked on and off, with an optional label: `<Checkbox value={done} onValueChange={setDone} label="Done" />`. */
+export const Checkbox = memo(function Checkbox({ value, onValueChange, label, disabled = false, style, boxStyle,
+                                                 labelStyle }: CheckboxProps) {
+  const styles = useCheckbox();
+  return (
+    <Pressable disabled={disabled} onPress={() => onValueChange?.(!value)}
+               style={(press) => [styles.row, disabled && styles.disabled, resolveStyle(style, { ...press, value, disabled })]}>
+      {(press) => {
+        const state = { ...press, value, disabled };
+        return (
+          <>
+            <Box style={[styles.box({ value, hovered: press.hovered }), resolveStyle(boxStyle, state)]}>
+              <Text style={styles.mark} opacity={value ? 1 : 0}>✓</Text>
+            </Box>
+            {label !== undefined && <Label style={resolveStyle(labelStyle, state)}>{label}</Label>}
+          </>
+        );
+      }}
+    </Pressable>
+  );
+});
+
+export interface ProgressBarProps {
+  /** How far along, from 0 to 1; null for work of unknown length, which sweeps. */
+  value: number | null;
+  /** Pixels, or a percentage of its Box; defaults to filling it. */
+  width?: BoxProps["width"];
+  /** The bar's color; the accent by default. */
+  color?: Color;
+  style?: Style<BoxProps>;
+  fillStyle?: Style<RectProps>;
+}
+
+const useProgress = makeStyles(({ colors, motion }) => ({
+  ...StyleSheet.create({
+    track: { height: 6, radius: 3, fill: colors.track, clip: true, alignSelf: "stretch" },
+    fill: { position: "absolute", x: 0, y: 0, height: 6, radius: 3, transition: motion.glide },
+  }),
+  colors,
+}));
+
+/** Work of unknown length: the whole bar breathes. */
+const pulse = { opacity: [0.25, 0.9, 0.25], duration: 1.4, iterations: Infinity };
+
+/** How much of something is done, as a filling bar. Its fill glides to each new value. */
+export const ProgressBar = memo(function ProgressBar({ value, width, color, style, fillStyle }: ProgressBarProps) {
+  const styles = useProgress();
+  const fraction = value === null ? 1 : Math.min(Math.max(value, 0), 1);
+  return (
+    <Box style={[styles.track, style]} width={width}>
+      <Rect style={[styles.fill, fillStyle]} fill={color ?? styles.colors.accent} width={`${fraction * 100}%`}
+            animate={value === null ? pulse : undefined} />
     </Box>
   );
 });

@@ -76,6 +76,7 @@ const shared: Record<string, string> = {
   "react/jsx-runtime": import.meta.resolve("react/jsx-runtime"),
   "proscenium": new URL("./index.js", import.meta.url).href,
   "proscenium/ui": new URL("./ui/index.js", import.meta.url).href,
+  "proscenium/genui": new URL("./genui/index.js", import.meta.url).href,
 };
 
 export async function run(options: RunOptions): Promise<void> {
@@ -138,7 +139,7 @@ export async function run(options: RunOptions): Promise<void> {
     plugins: [{
       name: "stage-runtime",
       setup(build) {
-        build.onResolve({ filter: /^(react|react\/jsx-runtime|proscenium|proscenium\/ui)$/ },
+        build.onResolve({ filter: /^(react|react\/jsx-runtime|proscenium|proscenium\/ui|proscenium\/genui)$/ },
                         (args) => ({ path: shared[args.path]!, external: true }));
         // `import photo from "./photo.jpg"` and `import page from "./page.tsx?url"`
         // yield the file's absolute path, for <Image src> and <Web src>. Images

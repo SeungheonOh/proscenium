@@ -1,0 +1,4 @@
+#!/bin/sh
+# Interfaces from the shell: proscenium-ui show|ask|notify|catalog … (see examples/genui/cli.ts).
+here=$(cd "$(dirname "$0")/.." && pwd)
+exec node "$here/examples/genui/run.mjs" "$here/examples/genui/cli.ts" "$@"

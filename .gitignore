@@ -5,3 +5,4 @@ gmon.out
 examples/persona/assets/
 node_modules/
 .claude/worktrees/
+examples/genui/.build/

@@ -1,5 +1,6 @@
 import type { ComponentType } from "react";
 import type { OutputInfo } from "proscenium";
+import { GenerativeUI } from "../genui/GenerativeUI.js";
 import { Bar } from "./bar/Bar.js";
 import { MediaKeys } from "./MediaKeys.js";
 import { Screenshots } from "./Screenshots.js";
@@ -12,7 +13,10 @@ interface DesktopProps {
   windowTitle?: boolean;
 }
 
-/** What every example world shares: the bar, media keys, screen sharing and screenshots. */
+/**
+ * What every example world shares: the bar, media keys, screen sharing, screenshots,
+ * and generated interfaces with the assistant's chat (Super+A).
+ */
 export function Desktop({ barStart, windowTitle = true }: DesktopProps) {
   return (
     <>
@@ -20,6 +24,7 @@ export function Desktop({ barStart, windowTitle = true }: DesktopProps) {
       <MediaKeys />
       <ShareChooser />
       <Screenshots />
+      <GenerativeUI />
     </>
   );
 }

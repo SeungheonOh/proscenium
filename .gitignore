@@ -4,3 +4,4 @@ __pycache__/
 gmon.out
 examples/persona/assets/
 node_modules/
+.claude/worktrees/

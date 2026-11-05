@@ -44,8 +44,9 @@ export function GenerativeUI() {
   host.output = output?.name;
 
   const [chatOpen, setChatOpen] = usePersistentState("genui.chat", false);
+  // A program already serving the chat (an assistant of the person's own) keeps it.
   useEffect(() => {
-    if (chatOpen) startAssistant(runner, assistantMain, path);
+    if (chatOpen && !host.agentConnected) startAssistant(runner, assistantMain, path);
   }, [chatOpen]);
 
   const rightDock = surfaces.filter((entry) => entry.mode === "dock" && entry.place.side === "right")

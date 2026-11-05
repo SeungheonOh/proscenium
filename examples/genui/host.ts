@@ -416,11 +416,12 @@ export class UIHost {
     const { width: screenWidth, height: screenHeight } = this.screen;
     const count = [...this.surfaces.values()].filter((surface) => surface.mode === mode).length % 6;
     switch (mode) {
+      // Whole pixels, so a card's text is sharp wherever a program puts it.
       case "floating":
-        return { x: place.x ?? Math.round((screenWidth - width) / 2 + 28 * count),
-                 y: place.y ?? Math.round(screenHeight * 0.2 + 28 * count) };
+        return { x: Math.round(place.x ?? (screenWidth - width) / 2 + 28 * count),
+                 y: Math.round(place.y ?? screenHeight * 0.2 + 28 * count) };
       case "canvas": {
-        if (place.x !== undefined && place.y !== undefined) return { x: place.x, y: place.y };
+        if (place.x !== undefined && place.y !== undefined) return { x: Math.round(place.x), y: Math.round(place.y) };
         const camera = getCamera(this.output);
         return { x: Math.round((camera?.x ?? screenWidth / 2) - width / 2 + 28 * count),
                  y: Math.round((camera?.y ?? screenHeight / 2) - 120 + 28 * count) };

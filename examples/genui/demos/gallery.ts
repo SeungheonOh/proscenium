@@ -1,7 +1,7 @@
 // Every component the catalog has, in interfaces across the modes: a gallery
 // for seeing how generated interfaces look, and a test of each mode.
 //
-//     node examples/genui/run.mjs examples/genui/demos/gallery.ts [floating|dock|canvas|dialog|all]
+//     node examples/genui/run.mjs examples/genui/demos/gallery.ts [floating|parts|dock|canvas|dialog|all]
 
 import { UIClient, type Spec } from "../client.js";
 
@@ -66,6 +66,48 @@ const people: Partial<Spec> = {
   },
 };
 
+const parts: Partial<Spec> = {
+  root: "root",
+  elements: {
+    root: { type: "Stack", props: { gap: "lg" }, children: ["h1", "h2", "h3", "texts", "badges", "people", "inner", "tinted", "ink", "bars", "spark", "busy", "count"] },
+    h1: { type: "Heading", props: { text: "Heading one", level: 1 }, children: [] },
+    h2: { type: "Heading", props: { text: "Heading two", level: 2 }, children: [] },
+    h3: { type: "Heading", props: { text: "Heading three", level: 3 }, children: [] },
+    texts: { type: "Stack", props: { gap: "xs" }, children: ["t1", "t2", "t3", "t4"] },
+    t1: { type: "Text", props: { text: "Body text that wraps onto a second line when the card is narrow enough." }, children: [] },
+    t2: { type: "Text", props: { text: "Muted, small", tone: "muted", size: "sm" }, children: [] },
+    t3: { type: "Text", props: { text: "Large and bold, in the accent", tone: "accent", size: "lg", weight: "bold" }, children: [] },
+    t4: { type: "Text", props: { text: "mono 12:04:59", mono: true }, children: [] },
+    badges: { type: "Stack", props: { direction: "horizontal", gap: "sm", wrap: true }, children: ["b1", "b2", "b3", "b4", "b5"] },
+    b1: { type: "Badge", props: { text: "Default" }, children: [] },
+    b2: { type: "Badge", props: { text: "Success", tone: "success" }, children: [] },
+    b3: { type: "Badge", props: { text: "Warning", tone: "warning" }, children: [] },
+    b4: { type: "Badge", props: { text: "Danger", tone: "danger" }, children: [] },
+    b5: { type: "Badge", props: { text: 12, tone: "muted" }, children: [] },
+    people: { type: "Stack", props: { direction: "horizontal", gap: "md" }, children: ["av1", "av2", "who", "spacer", "when"] },
+    av1: { type: "Avatar", props: { name: "Ada Lovelace" }, children: [] },
+    av2: { type: "Avatar", props: { name: "Grace Hopper", size: 28 }, children: [] },
+    who: { type: "Text", props: { text: "Ada and Grace" }, children: [] },
+    spacer: { type: "Spacer", props: {}, children: [] },
+    when: { type: "Text", props: { text: "2m", tone: "muted", size: "sm" }, children: [] },
+    inner: { type: "Card", props: { title: "A card in a card", subtitle: "With a subtitle" }, children: ["kv1", "kv2"] },
+    kv1: { type: "KeyValue", props: { label: "Plan", value: "Pro" }, children: [] },
+    kv2: { type: "KeyValue", props: { label: "Renews", value: "Dec 1", tone: "warning" }, children: [] },
+    tinted: { type: "Card", props: { title: "Tinted", variant: "tinted" }, children: ["tintedText"] },
+    tintedText: { type: "Text", props: { text: "A soft accent behind it." }, children: [] },
+    ink: { type: "Card", props: { title: "Ink", variant: "ink" }, children: ["inkText", "inkDivider", "inkButton"] },
+    inkText: { type: "Text", props: { text: "Light text on a dark card." }, children: [] },
+    inkDivider: { type: "Divider", props: {}, children: [] },
+    inkButton: { type: "Button", props: { label: "On ink", variant: "tinted", size: "small" }, children: [] },
+    bars: { type: "BarChart", props: { data: [{ label: "Mail", value: 42 }, { label: "Chat", value: 18.5 }, { label: "Docs", value: 7 }], unit: "min" }, children: [] },
+    spark: { type: "Stack", props: { direction: "horizontal", gap: "md", align: "end" }, children: ["sparkValue", "sparkline"] },
+    sparkValue: { type: "Metric", props: { label: "Requests", value: "1.2k", unit: "/s" }, children: [] },
+    sparkline: { type: "Sparkline", props: { values: [3, 5, 4, 8, 6, 9, 7, 12, 10, 14], height: 36 }, children: [] },
+    busy: { type: "ProgressBar", props: { value: null, label: "Indexing…" }, children: [] },
+    count: { type: "Countdown", props: { seconds: 90, running: false, size: "md" }, children: [] },
+  },
+};
+
 const question: Partial<Spec> = {
   root: "ask",
   elements: {
@@ -80,6 +122,7 @@ const question: Partial<Spec> = {
 if (which === "all" || which === "floating") void ui.open("showcase", { mode: "floating", place: { x: 380, y: 70 }, title: "Today", spec: showcase });
 if (which === "all" || which === "dock") void ui.open("notes", { mode: "dock", place: { side: "left" }, title: "Release notes", spec: reading });
 if (which === "all" || which === "canvas") void ui.open("people", { mode: "canvas", title: "Activity", spec: people });
+if (which === "all" || which === "parts") void ui.open("parts", { mode: "floating", place: { x: 760, y: 60 }, title: "Parts", width: 340, spec: parts });
 if (which === "dialog") void ui.open("question", { mode: "dialog", title: "Restart?", spec: question });
 
 ui.on("action", (event) => console.log(JSON.stringify(event)));

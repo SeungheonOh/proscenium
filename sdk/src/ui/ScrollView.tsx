@@ -49,7 +49,7 @@ export function ScrollView({ children, stickToEnd = false, contentStyle, style, 
   const [moving, setMoving] = useState(false);
   const idle = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const height = viewport?.height ?? 0;
-  const max = Math.max(0, contentHeight - height);
+  const max = Math.max(0, Math.round(contentHeight - height));
   const clamped = Math.min(Math.max(offset, 0), max);
 
   useEffect(() => {
@@ -59,7 +59,8 @@ export function ScrollView({ children, stickToEnd = false, contentStyle, style, 
   useEffect(() => () => clearTimeout(idle.current), []);
 
   const scrollTo = (next: number) => {
-    const to = Math.min(Math.max(next, 0), max);
+    // Whole pixels: content resting between pixels draws its text blurred.
+    const to = Math.round(Math.min(Math.max(next, 0), max));
     atEnd.current = to >= max - 2;
     setOffset(to);
   };

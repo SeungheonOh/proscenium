@@ -195,9 +195,10 @@ export const catalog = defineCatalog(schema, {
         variant: z.enum(["plain", "tinted", "filled", "danger"]).nullable(),
         size: z.enum(["small", "medium"]).nullable(),
         disabled: z.boolean().nullable(),
+        block: z.boolean().nullable(),
       }),
       slots: [],
-      description: "A button. Emits press.",
+      description: "A button as wide as its label, or filling the width with block: true. Emits press.",
     },
     TextField: {
       props: z.object({

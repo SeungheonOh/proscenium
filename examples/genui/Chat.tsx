@@ -35,26 +35,31 @@ const modeNames: Record<Mode, string> = {
 const useStyles = makeStyles(({ colors, type, radii, motion }) => ({
   ...StyleSheet.create({
     panel: { flexDirection: "column", radius: 18, clip: true },
-    header: { flexDirection: "row", alignItems: "center", gap: 8, height: 46, paddingLeft: 14, paddingRight: 6,
+    // Words and marks line up with the messages: 14 in from each side.
+    header: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, paddingLeft: 14, paddingRight: 7,
               alignSelf: "stretch" },
     rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
     content: { paddingX: 14, paddingY: 14, gap: 14 },
-    composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, padding: 10, alignSelf: "stretch" },
-    send: { width: 34, height: 34, radius: 17, alignItems: "center", justifyContent: "center", transition: motion.pop },
+    composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingX: 14, paddingTop: 8, paddingBottom: 14,
+                alignSelf: "stretch" },
+    // As tall as a one-line field, so the two sit level.
+    send: { width: 32, height: 32, radius: 16, alignItems: "center", justifyContent: "center", transition: motion.pop },
     user: { maxWidth: "86%", paddingX: 12, paddingY: 8, radius: 14, fill: colors.accent, flexDirection: "column" },
     userText: { ...type.body, color: colors.onAccent, lineHeight: 1.2 },
     assistant: { flexDirection: "column", gap: 10, alignSelf: "stretch" },
-    event: { ...type.caption, color: colors.faint, align: "center" },
-    tool: { flexDirection: "row", alignItems: "center", gap: 7, height: 26, paddingX: 9, radius: 13,
+    // Centred by layout, which keeps it on whole pixels; Pango centring could blur it.
+    event: { ...type.caption, color: colors.faint, alignSelf: "center" },
+    tool: { flexDirection: "row", alignItems: "center", gap: 6, height: 26, paddingX: 10, radius: 13,
             fill: colors.hover, alignSelf: "flex-start", maxWidth: "100%" },
     toolLabel: { ...type.caption, color: colors.muted, flexShrink: 1, maxLines: 1 },
     thinking: { ...type.body, color: colors.faint, italic: true, maxLines: 2 },
-    moved: { flexDirection: "row", alignItems: "center", gap: 8, paddingX: 12, paddingY: 9, radius: radii.md,
+    moved: { flexDirection: "row", alignItems: "center", gap: 8, paddingX: 14, paddingY: 9, radius: radii.md,
              border: { width: 1, color: colors.line }, alignSelf: "stretch" },
     suggestion: { paddingX: 12, paddingY: 8, radius: radii.md, border: { width: 1, color: colors.line },
                   alignSelf: "stretch", transition: motion.pop },
     dot: { width: 6, height: 6, radius: 3, fill: colors.faint },
     status: { ...type.caption, color: colors.muted, paddingX: 14, paddingTop: 6 },
+    title: { ...type.title, color: colors.ink },
   }),
   colors,
   motion,
@@ -100,10 +105,12 @@ export function ChatPanel({ host, chat, surfaces, area, onClose }: ChatPanelProp
              height={area.height}>
       <Box style={styles.header}>
         <Icon src={sparkleIcon} size={16} tone="accent" />
-        <Label variant="title">Assistant</Label>
-        {chat.model && <Label tone="faint" flexShrink={1}>{chat.model}</Label>}
-        <Box flexGrow={1} />
-        <IconButton icon={plusIcon} size={30} iconSize={16} onPress={() => host.resetChat()} />
+        {/* The model's name is part of the title's line, so the two share a baseline. */}
+        <Text style={styles.title} flexGrow={1} flexShrink={1} maxLines={1}>
+          Assistant
+          {chat.model && <Text size={13} weight={500} color={styles.colors.faint}>{`  ${chat.model}`}</Text>}
+        </Text>
+        <IconButton icon={plusIcon} size={30} iconSize={15} onPress={() => host.resetChat()} />
         <IconButton icon={closeIcon} size={30} iconSize={15} onPress={onClose} />
       </Box>
       <Rect style={styles.rule} />
@@ -169,7 +176,7 @@ const MessageView = memo(function MessageView({ message, surfaces, host }: { mes
   }
   if (message.role === "event") {
     const words = message.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
-    return <Text style={styles.event} width="100%">{words}</Text>;
+    return <Text style={styles.event}>{words}</Text>;
   }
   const last = message.parts.at(-1);
   return (

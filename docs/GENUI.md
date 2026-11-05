@@ -66,7 +66,7 @@ the renderer draws:
 - Layout: `Stack`, `Card`, `Grid`, `List`, `Divider`, `Spacer`.
 - Content: `Heading`, `Text`, `Markdown`, `Badge`, `Metric`, `KeyValue`, `ListItem`, `Table`, `Code`, `Avatar`, `Image` (a file path or an https URL, fetched once).
 - Charts: `BarChart` (horizontal or vertical), `Sparkline`, `ProgressBar`.
-- Input: `Button`, `TextField`, `Switch`, `Checkbox`, `Slider`, `Tabs`.
+- Input: `Button` (as wide as its label, or `block`), `TextField`, `Switch`, `Checkbox`, `Slider`, `Tabs`.
 - Live: `Countdown`, whose clock is kept in the interface's state so it runs on wherever the interface moves.
 
 Everything json-render specs can say works: `$state`, `$bindState`, `$item`,
@@ -196,6 +196,18 @@ gallery open and a pan).
   patches in a text fence. A tool keeps prose and interfaces apart, gives the
   model the spec's problems back to fix, and carries the mode and id; Pi
   streams tool arguments, so nothing is lost in progress.
+- **Text on whole pixels.** The compositor draws text where its node is, so text
+  at a fractional position, or aligned by Pango inside a box, lands between
+  pixels and blurs (a half pixel across costs about half its sharp strokes).
+  Text is aligned by layout, which rounds to whole pixels; Pango aligns only
+  the lines of long text that wraps; scroll offsets and positions programs
+  give are rounded. Text that shares a line with other text is part of the
+  same Text node (a Metric's unit, the chat's model name), so the two share a
+  baseline.
+- **One spacing scale.** 14 px inside and around cards, title bars and the chat,
+  so titles, content and close marks line up on the same edges; 6 px between a
+  label and its control; labels at 12 px; list rows padded alike whatever they
+  hold.
 - **Pi directly, not through the AI SDK.** `@ai-sdk/harness-pi` adapts Pi to
   the AI SDK's harness interface, which would put a layer between the chat and
   Pi's events and needs a sandbox session; the chat needs Pi's events as they

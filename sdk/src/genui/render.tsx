@@ -272,32 +272,44 @@ function toneColor(theme: Theme, tone: unknown): string | undefined {
   }
 }
 
+// One scale of space and type for every component, so interfaces line up however
+// they are composed: 14 around and inside cards, 6 between a label and its control,
+// 8 between things in a row; labels at 12, everything that shares a line with
+// something else at that something's size.
+export const pad = 14;
+const labelGap = 6;
+const rowGap = 8;
+
 const useStyles = makeStyles((theme) => {
   const { colors, type, radii, motion } = theme;
   return {
     theme,
     ...StyleSheet.create({
-      card: { flexDirection: "column", radius: radii.md, padding: 14, gap: 8, alignSelf: "stretch" },
-      plain: { flexDirection: "column", gap: 8, alignSelf: "stretch" },
-      tinted: { flexDirection: "column", radius: radii.md, padding: 14, gap: 8, fill: colors.accentSoft, alignSelf: "stretch" },
-      ink: { flexDirection: "column", radius: radii.md, padding: 14, gap: 8, fill: "#1f1f24", alignSelf: "stretch" },
+      card: { flexDirection: "column", radius: radii.md, padding: pad, gap: rowGap, alignSelf: "stretch" },
+      plain: { flexDirection: "column", gap: rowGap, alignSelf: "stretch" },
+      tinted: { flexDirection: "column", radius: radii.md, padding: pad, gap: rowGap, fill: colors.accentSoft, alignSelf: "stretch" },
+      ink: { flexDirection: "column", radius: radii.md, padding: pad, gap: rowGap, fill: "#1f1f24", alignSelf: "stretch" },
+      head: { flexDirection: "column", gap: 2, alignSelf: "stretch" },
       cardTitle: { ...type.title, color: colors.ink },
       cardSubtitle: { ...type.body, color: colors.muted, maxLines: 2 },
-      row: { flexDirection: "row", alignItems: "center", gap: 8, alignSelf: "stretch" },
+      row: { flexDirection: "row", alignItems: "center", gap: rowGap, alignSelf: "stretch" },
+      labelled: { flexDirection: "column", gap: labelGap, alignSelf: "stretch" },
       column: { flexDirection: "column", gap: 2, alignSelf: "stretch" },
       body: { ...type.body, color: colors.soft, lineHeight: 1.2 },
-      caption: { font: type.body.font, size: 11, weight: 650, color: colors.muted },
+      label: { font: type.body.font, size: 12, weight: 600, color: colors.muted },
+      value: { ...type.body, color: colors.muted },
       metricValue: { font: type.title.font, size: 26, weight: 700, color: colors.ink },
-      unit: { ...type.body, color: colors.muted },
       badge: { flexDirection: "row", alignItems: "center", height: 20, paddingX: 8, radius: 10, alignSelf: "flex-start",
                flexShrink: 0 },
       badgeText: { font: type.body.font, size: 11, weight: 650 },
-      track: { flexGrow: 1, height: 12, radius: 4, fill: colors.track, clip: true },
-      bar: { position: "absolute", x: 0, y: 0, height: 12, radius: 4, transition: motion.glide },
-      code: { flexDirection: "column", radius: radii.sm, padding: 10, fill: colors.hover, alignSelf: "stretch" },
-      mono: { font: "Noto Sans Mono, monospace", size: 12, color: colors.soft, lineHeight: 1.2 },
-      item: { flexDirection: "row", alignItems: "center", gap: 10, paddingY: 7, paddingX: 6, radius: radii.sm,
-              alignSelf: "stretch", transition: motion.pop },
+      track: { flexGrow: 1, height: 10, radius: 5, fill: colors.track, clip: true },
+      bar: { position: "absolute", x: 0, y: 0, height: 10, radius: 5, transition: motion.glide },
+      code: { flexDirection: "column", radius: radii.sm, paddingX: 10, paddingY: 8, fill: colors.hover, alignSelf: "stretch" },
+      mono: { font: "Noto Sans Mono, monospace", size: 12, color: colors.soft, lineHeight: 1.25 },
+      // A row of a list reaches past the content's edges by its own padding, so its words line up with the rest.
+      item: { flexDirection: "row", alignItems: "center", gap: 10, paddingY: 5, paddingX: 6, marginX: -6, radius: radii.sm,
+              transition: motion.pop },
+      listRow: { flexDirection: "column", paddingY: 5, alignSelf: "stretch" },
       cell: { flexGrow: 1, flexBasis: 0, flexDirection: "column" },
       quoteBar: { width: 3, radius: 1.5, fill: colors.accentLine, alignSelf: "stretch" },
     }),
@@ -328,28 +340,37 @@ function Card({ props, children, root }: Rendered) {
   const styles = useStyles();
   // At the root, the frame around the interface is the card already.
   const variant = root && (props.variant ?? "card") === "card" ? "plain" : text(props.variant, "card");
-  const padding = props.padding ? gapOf(props.padding, 14) : undefined;
-  const head = Boolean(props.title || props.subtitle) && (
-    <Box style={styles.column}>
-      {props.title !== undefined && props.title !== null && <Text style={styles.cardTitle}>{text(props.title)}</Text>}
-      {props.subtitle !== undefined && props.subtitle !== null && <Text style={styles.cardSubtitle}>{text(props.subtitle)}</Text>}
-    </Box>
-  );
+  const padding = props.padding ? gapOf(props.padding, pad) : undefined;
+  const content = <><CardHead title={props.title} subtitle={props.subtitle} />{children}</>;
   if (variant === "ink") {
     return (
       <Box style={styles.ink} padding={padding}>
-        <ThemeProvider theme={darkTheme}><Inner>{head}{children}</Inner></ThemeProvider>
+        <ThemeProvider theme={darkTheme}><Inner>{content}</Inner></ThemeProvider>
       </Box>
     );
   }
-  if (variant === "plain") return <Box style={styles.plain} padding={padding}>{head}{children}</Box>;
-  if (variant === "tinted") return <Box style={styles.tinted} padding={padding}>{head}{children}</Box>;
-  return <Panel variant="card" style={styles.card} padding={padding}>{head}{children}</Panel>;
+  if (variant === "plain") return <Box style={styles.plain} padding={padding}>{content}</Box>;
+  if (variant === "tinted") return <Box style={styles.tinted} padding={padding}>{content}</Box>;
+  return <Panel variant="card" style={styles.card} padding={padding}>{content}</Panel>;
+}
+
+/** A card's title and subtitle, drawn in the theme of the card they head. */
+function CardHead({ title, subtitle }: { title: unknown; subtitle: unknown }) {
+  const styles = useStyles();
+  const hasTitle = title !== undefined && title !== null && title !== "";
+  const hasSubtitle = subtitle !== undefined && subtitle !== null && subtitle !== "";
+  if (!hasTitle && !hasSubtitle) return null;
+  return (
+    <Box style={styles.head}>
+      {hasTitle && <Text style={styles.cardTitle}>{text(title)}</Text>}
+      {hasSubtitle && <Text style={styles.cardSubtitle}>{text(subtitle)}</Text>}
+    </Box>
+  );
 }
 
 /** Children in a column: what a themed part of a card holds. */
 function Inner({ children }: { children?: ReactNode }) {
-  return <Box flexDirection="column" gap={8} alignSelf="stretch">{children}</Box>;
+  return <Box flexDirection="column" gap={rowGap} alignSelf="stretch">{children}</Box>;
 }
 
 function Grid({ props, children }: Rendered) {
@@ -382,16 +403,24 @@ function Heading({ props }: Rendered) {
 }
 
 const textSizes: Record<string, number> = { sm: 12, md: 13, lg: 15, xl: 19 };
+
+// Text is placed by layout, which keeps it on whole pixels, rather than aligned
+// inside its box by Pango, which can leave its glyphs between pixels and blurred.
+// Pango's alignment is left for long text, whose lines wrap: a box sized by layout
+// is rounded up to a whole pixel, and aligning within it shifts by the remainder.
+const selfAlign: Record<string, TextProps["alignSelf"]> = { center: "center", end: "flex-end" };
 const weights: Record<string, number> = { regular: 450, medium: 600, bold: 700 };
 
 function TextElement({ props }: Rendered) {
   const styles = useStyles();
   const color = toneColor(styles.theme, props.tone);
   const lines = props.maxLines === undefined || props.maxLines === null ? undefined : number(props.maxLines, 1);
+  const words = text(props.text);
   return (
     <Text style={[props.mono ? styles.mono : styles.body]} color={color} size={textSizes[text(props.size)]}
-          weight={weights[text(props.weight)]} align={props.align as TextProps["align"]} maxLines={lines}>
-      {text(props.text)}
+          weight={weights[text(props.weight)]} maxLines={lines} alignSelf={selfAlign[text(props.align)]}
+          align={words.length > 48 && lines !== 1 ? props.align as TextProps["align"] : undefined}>
+      {words}
     </Text>
   );
 }
@@ -458,21 +487,24 @@ function Badge({ props }: Rendered) {
 
 function Metric({ props }: Rendered) {
   const styles = useStyles();
+  const { colors } = styles.theme;
   const trend = text(props.trend);
   const trendColor = toneColor(styles.theme, trend === "up" ? "success" : trend === "down" ? "danger" : "muted");
+  const unit = props.unit === undefined || props.unit === null || props.unit === "" ? null : text(props.unit);
   return (
     <Box style={styles.column}>
-      <Text style={styles.caption} maxLines={1}>{text(props.label)}</Text>
-      <Box flexDirection="row" alignItems="baseline" gap={4}>
-        <Text style={styles.metricValue}>{text(props.value)}</Text>
-        {props.unit !== undefined && props.unit !== null && <Text style={styles.unit}>{text(props.unit)}</Text>}
-      </Box>
+      <Text style={styles.label} maxLines={1}>{text(props.label)}</Text>
+      {/* The unit is part of the value's line, so it sits on its baseline. */}
+      <Text style={styles.metricValue} maxLines={1}>
+        {text(props.value)}
+        {unit !== null && <Text size={14} weight={600} color={colors.muted}>{` ${unit}`}</Text>}
+      </Text>
       {props.delta !== undefined && props.delta !== null && (
-        <Text style={styles.caption} color={trendColor}>
+        <Text style={styles.label} color={trendColor} maxLines={1}>
           {`${trend === "up" ? "▲ " : trend === "down" ? "▼ " : ""}${text(props.delta)}`}
         </Text>
       )}
-      {props.caption !== undefined && props.caption !== null && <Text style={styles.caption}>{text(props.caption)}</Text>}
+      {props.caption !== undefined && props.caption !== null && <Text style={styles.label}>{text(props.caption)}</Text>}
     </Box>
   );
 }
@@ -492,12 +524,14 @@ function ProgressBar({ props }: Rendered) {
   const styles = useStyles();
   const raw = props.value === null || props.value === undefined ? null : number(props.value, 0);
   const value = raw === null ? null : raw > 1 ? raw / 100 : raw;
+  const label = props.label === undefined || props.label === null ? "" : text(props.label);
+  const percent = props.showValue === true && value !== null ? `${Math.round(value * 100)}%` : "";
   return (
-    <Box style={styles.column} gap={5}>
-      {Boolean(props.label || props.showValue) && (
+    <Box style={styles.labelled}>
+      {Boolean(label || percent) && (
         <Box style={styles.row} justifyContent="space-between">
-          <Text style={styles.body} maxLines={1} flexShrink={1}>{text(props.label)}</Text>
-          {props.showValue === true && value !== null && <Text style={styles.caption}>{`${Math.round(value * 100)}%`}</Text>}
+          <Text style={styles.body} maxLines={1} flexShrink={1}>{label}</Text>
+          {percent && <Text style={styles.value}>{percent}</Text>}
         </Box>
       )}
       <Progress value={value} color={toneColor(styles.theme, props.tone)} />
@@ -506,13 +540,14 @@ function ProgressBar({ props }: Rendered) {
 }
 
 function List({ props, children }: Rendered) {
+  const styles = useStyles();
   const items = Children.toArray(children);
   return (
     <Box flexDirection="column" alignSelf="stretch">
       {items.map((item, index) => (
         <Box key={index} flexDirection="column" alignSelf="stretch">
           {index > 0 && props.dividers !== false && <Hairline style={{ marginY: 0 }} />}
-          {item}
+          <Box style={styles.listRow}>{item}</Box>
         </Box>
       ))}
     </Box>
@@ -547,7 +582,7 @@ function ListItem({ props, emit, listens }: Rendered) {
         )}
       </Box>
       {props.trailing !== undefined && props.trailing !== null && (
-        <Text style={styles.body} size={12} color={styles.theme.colors.muted} maxLines={1}>{text(props.trailing)}</Text>
+        <Text style={styles.value} size={12} maxLines={1}>{text(props.trailing)}</Text>
       )}
     </>
   );
@@ -581,10 +616,10 @@ function Table({ props }: Rendered) {
     column.align === "end" || (rows.length > 0 && rows.every((row) => typeof row[index] === "number")));
   return (
     <Box flexDirection="column" alignSelf="stretch">
-      <Box style={styles.row} paddingY={4}>
+      <Box style={styles.row} paddingBottom={6}>
         {columns.map((column, index) => (
           <Box key={index} style={styles.cell}>
-            <Text style={styles.caption} align={numeric[index] ? "end" : "start"} maxLines={1}>{column.label}</Text>
+            <Text style={styles.label} maxLines={1} alignSelf={numeric[index] ? "flex-end" : undefined}>{column.label}</Text>
           </Box>
         ))}
       </Box>
@@ -594,7 +629,7 @@ function Table({ props }: Rendered) {
           <Box style={styles.row} paddingY={6}>
             {columns.map((_, at) => (
               <Box key={at} style={styles.cell}>
-                <Text style={styles.body} align={numeric[at] ? "end" : "start"} maxLines={2}>{text(row[at])}</Text>
+                <Text style={styles.body} maxLines={2} alignSelf={numeric[at] ? "flex-end" : undefined}>{text(row[at])}</Text>
               </Box>
             ))}
           </Box>
@@ -628,7 +663,7 @@ function BarChart({ props }: Rendered) {
         <Box flexDirection="row" gap={6}>
           {data.map((datum, index) => (
             <Box key={index} flexGrow={1} flexBasis={0}>
-              <Text style={styles.caption} align="center" maxLines={1}>{datum.label}</Text>
+              <Text style={styles.label} maxLines={1} alignSelf="center">{datum.label}</Text>
             </Box>
           ))}
         </Box>
@@ -643,7 +678,9 @@ function BarChart({ props }: Rendered) {
           <Box style={styles.track}>
             <Rect style={styles.bar} fill={datum.color ?? accent} width={`${Math.max(2, (Math.abs(datum.value) / most) * 100)}%`} />
           </Box>
-          <Text style={styles.caption} align="end" maxLines={1} width={64}>{`${formatNumber(datum.value)}${unit}`}</Text>
+          <Box width={64} flexDirection="row" justifyContent="flex-end">
+            <Text style={styles.label} maxLines={1}>{`${formatNumber(datum.value)}${unit}`}</Text>
+          </Box>
         </Box>
       ))}
     </Box>
@@ -663,8 +700,9 @@ function Sparkline({ props }: Rendered) {
   const high = Math.max(...values, 0);
   const span = high - low || 1;
   const color = toneColor(styles.theme, props.tone ?? "accent");
+  // It takes the room it is given, in a row as in a column.
   return (
-    <Box flexDirection="row" height={height} gap={2} alignItems="flex-end" alignSelf="stretch">
+    <Box flexDirection="row" height={height} gap={2} alignItems="flex-end" alignSelf="stretch" flexGrow={1} minWidth={60}>
       {values.map((value, index) => (
         <Rect key={index} flexGrow={1} flexBasis={0} radius={1.5} fill={color}
               opacity={index === values.length - 1 ? 1 : 0.55} height={Math.max(2, ((value - low) / span) * height)} />
@@ -739,16 +777,20 @@ function ButtonElement({ props, emit }: Rendered) {
   const { colors } = useTheme();
   const danger = props.variant === "danger";
   const variant = danger ? "filled" : props.variant === "filled" || props.variant === "tinted" ? props.variant : "plain";
-  return <Button label={text(props.label)} variant={variant} size={props.size === "small" ? "small" : "medium"}
-                 disabled={props.disabled === true} onPress={() => emit("press")}
-                 style={danger ? ({ hovered, pressed }) => ({ fill: colors.danger, opacity: pressed ? 0.8 : hovered ? 0.92 : 1 }) : undefined} />;
+  const button = (
+    <Button label={text(props.label)} variant={variant} size={props.size === "small" ? "small" : "medium"}
+            disabled={props.disabled === true} onPress={() => emit("press")} flexGrow={props.block === true ? 1 : undefined}
+            style={danger ? ({ hovered, pressed }) => ({ fill: colors.danger, opacity: pressed ? 0.8 : hovered ? 0.92 : 1 }) : undefined} />
+  );
+  // As wide as its words, in a column as in a row, unless it is a block.
+  return <Box flexDirection="row" alignSelf={props.block === true ? "stretch" : undefined}>{button}</Box>;
 }
 
 /** A labelled control's caption above it. */
 function Caption({ label }: { label: unknown }) {
   const styles = useStyles();
   if (label === undefined || label === null || label === "") return null;
-  return <Text style={styles.caption} maxLines={1}>{text(label)}</Text>;
+  return <Text style={styles.label} maxLines={1}>{text(label)}</Text>;
 }
 
 /** A value bound to state, or kept here when the spec binds it to nothing. */
@@ -761,10 +803,11 @@ function useValue<T>(rendered: Rendered, prop: string, fallback: T): [T, (value:
 }
 
 function TextFieldElement(rendered: Rendered) {
+  const styles = useStyles();
   const { props, emit } = rendered;
   const [value, setValue] = useValue(rendered, "value", "");
   return (
-    <Box flexDirection="column" gap={4} alignSelf="stretch">
+    <Box style={styles.labelled}>
       <Caption label={props.label} />
       <Field value={text(value)} placeholder={props.placeholder ? text(props.placeholder) : undefined}
              multiline={props.multiline === true}
@@ -800,11 +843,11 @@ function SliderElement(rendered: Rendered) {
   const [box, setBox] = useState<LayoutBox | null>(null);
   const step = props.step === null || props.step === undefined ? undefined : number(props.step, 0) || undefined;
   return (
-    <Box flexDirection="column" gap={4} alignSelf="stretch" onLayout={setBox}>
+    <Box style={styles.labelled} onLayout={setBox}>
       {Boolean(props.label || props.showValue !== false) && (
         <Box style={styles.row} justifyContent="space-between">
           <Text style={styles.body} maxLines={1} flexShrink={1}>{text(props.label)}</Text>
-          {props.showValue !== false && <Text style={styles.caption}>{formatNumber(number(value, min))}</Text>}
+          {props.showValue !== false && <Text style={styles.value}>{formatNumber(number(value, min))}</Text>}
         </Box>
       )}
       <SliderControl value={number(value, min)} min={min} max={max} step={step} width={Math.max(60, box?.width ?? 200)}

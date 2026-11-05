@@ -7,7 +7,6 @@ import { GeneratedView } from "proscenium/genui";
 import { darkTheme, Icon, Label, lightTheme, makeStyles, Pressable, ProgressBar, StyleSheet, Surface,
   ThemeProvider } from "proscenium/ui";
 import closeIcon from "./icons/close.svg";
-import gripIcon from "./icons/grip.svg";
 import type { HostSurface, UIHost } from "./host.js";
 
 /** Starts dragging an interface by its title bar; the drag itself lives in Surfaces.tsx. */
@@ -24,22 +23,28 @@ export const HostContext = createContext<UIHost | null>(null);
 
 export type Chrome = "full" | "slim" | "none";
 
+// The frame's words and buttons line up with the interface's edges: 14 in from
+// each side, the close button's mark included.
+const inset = 14;
+
 const useStyles = makeStyles(({ colors, motion }) => StyleSheet.create({
   card: { flexDirection: "column", radius: 14, clip: true, transition: motion.pop },
-  bar: { flexDirection: "row", alignItems: "center", gap: 6, height: 32, paddingLeft: 8, paddingRight: 4,
+  // Tall enough that the title sits as far from the top as the content does from the sides.
+  bar: { flexDirection: "row", alignItems: "center", gap: 6, height: 34, paddingLeft: inset, paddingRight: inset - 6,
          alignSelf: "stretch" },
-  slimBar: { flexDirection: "row", alignItems: "center", gap: 6, height: 24, paddingLeft: 6, paddingRight: 2,
+  slimBar: { flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingLeft: inset, paddingRight: inset - 6,
              alignSelf: "stretch" },
   title: { flexShrink: 1 },
   owner: { flexShrink: 0 },
-  body: { flexDirection: "column", paddingX: 14, paddingTop: 2, paddingBottom: 14, alignSelf: "stretch" },
-  bareBody: { flexDirection: "column", padding: 12, alignSelf: "stretch" },
+  body: { flexDirection: "column", paddingX: inset, paddingBottom: inset, alignSelf: "stretch" },
+  bareBody: { flexDirection: "column", padding: inset, alignSelf: "stretch" },
   close: { width: 24, height: 24, radius: 7, alignItems: "center", justifyContent: "center", transition: motion.pop },
   building: { flexDirection: "column", gap: 8, paddingY: 6, alignSelf: "stretch" },
   rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
 }));
 
 const useColors = makeStyles(({ colors }) => colors);
+const useType = makeStyles(({ type }) => type);
 
 /** Where and how the card's frame sits and moves, set on its own node so a Box can lay it out. */
 export interface Frame {
@@ -91,6 +96,7 @@ function shallowSame(a: object, b: object): boolean {
 function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<SurfaceCardProps>) {
   const styles = useStyles();
   const colors = useColors();
+  const type = useType();
   const host = useContext(HostContext)!;
   const grabbing = useContext(GrabContext);
   const grip = grabbing && entry.mode !== "dialog" ? {
@@ -104,7 +110,7 @@ function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<Surface
   const close = (
     <Pressable onPress={() => host.dismiss(entry.key)}
                style={({ hovered, pressed }) => [styles.close, { fill: pressed ? colors.press : hovered ? colors.hover : colors.clear }]}>
-      <Icon src={closeIcon} size={14} tone="muted" />
+      <Icon src={closeIcon} size={12} tone="muted" />
     </Pressable>
   );
   const view = (
@@ -112,21 +118,23 @@ function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<Surface
                    fallback={<Building />} />
   );
   return (
-    <Surface variant="card" style={styles.card} width={width} {...frame} opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)}>
+    <Surface variant="card" style={styles.card} width={width} {...frame} fill={entry.theme === "dark" ? "#26262b" : "#ffffff"}
+             opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)}>
       {chrome === "full" && (
         <Box style={styles.bar} cursor="grab" {...grip}>
-          <Icon src={gripIcon} size={14} tone="faint" />
-          <Label variant="strong" style={styles.title}>{entry.title ?? entry.id}</Label>
-          <Label tone="faint" style={styles.owner}>{entry.agent ? "" : entry.owner}</Label>
-          <Box flexGrow={1} />
+          {/* Title and owner on one line, so they share a baseline. */}
+          <Text font={type.strong.font} size={type.strong.size} weight={type.strong.weight} color={colors.ink} maxLines={1}
+                flexShrink={1} flexGrow={1}>
+            {entry.title ?? entry.id}
+            {!entry.agent && <Text weight={500} color={colors.faint}>{`  ${entry.owner}`}</Text>}
+          </Text>
           {close}
         </Box>
       )}
       {chrome === "slim" && (
         <Box style={styles.slimBar} cursor="grab" {...grip}>
-          <Icon src={gripIcon} size={12} tone="faint" />
-          <Text size={11} weight={650} color={colors.muted} maxLines={1} flexShrink={1}>{entry.title ?? entry.id}</Text>
-          <Box flexGrow={1} />
+          <Text font={type.caption.font} size={12} weight={650} color={colors.muted} maxLines={1} flexShrink={1}
+                flexGrow={1}>{entry.title ?? entry.id}</Text>
           {close}
         </Box>
       )}

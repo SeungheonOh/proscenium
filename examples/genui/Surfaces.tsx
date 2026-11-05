@@ -97,7 +97,7 @@ function zoneAt(x: number, y: number, screen: Screenful, chat: Area | null, entr
 }
 
 function canvasTarget(screen: Screenful): Area {
-  return { x: screen.width / 2 - 110, y: screen.height - 88, width: 220, height: 52 };
+  return { x: Math.round(screen.width / 2 - 110), y: screen.height - 88, width: 220, height: 52 };
 }
 
 function inside(x: number, y: number, area: Area): boolean {
@@ -321,7 +321,7 @@ function DropZones({ grab, screen }: { grab: ReturnType<typeof useGrabbing>; scr
         <Text style={styles.zoneLabel} color={onCanvas ? "#ffffff" : undefined}>Pin to canvas</Text>
       </Surface>
       <SurfaceCard entry={entry} chrome="full"
-                   frame={{ layoutId: `genui:${entry.key}`, x: drag.x - drag.grabX, y: drag.y - drag.grabY,
+                   frame={{ layoutId: `genui:${entry.key}`, x: Math.round(drag.x - drag.grabX), y: Math.round(drag.y - drag.grabY),
                             transform: scale(1.02), opacity: 0.94, interactive: false }} />
     </>
   );

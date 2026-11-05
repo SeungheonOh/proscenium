@@ -132,7 +132,9 @@ const useStyles = makeStyles(({ colors, type, radii, motion }) => ({
     text: { ...type.body, color: colors.ink, lineHeight: 1.15 },
     placeholder: { ...type.body, color: colors.faint, lineHeight: 1.15 },
     // The compositor draws no text that is wholly clear, so the copy is all but clear.
-    caret: { position: "absolute", x: 0, y: 0, width: "100%", ...type.body, lineHeight: 1.15, color: "#00000001" },
+    // The caret glyph's own side bearing would put it into the next letter; a whole
+    // pixel back keeps it on the pixel grid, where it stays sharp.
+    caret: { position: "absolute", x: -1, y: 0, width: "100%", ...type.body, lineHeight: 1.15, color: "#00000001" },
     hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
   }),
   colors,

@@ -1,5 +1,6 @@
 import { memo, useRef, useState, type ReactNode } from "react";
-import { Box, Group, Rect, Text } from "../components.js";
+import { Box, Group, Rect } from "../components.js";
+import { rotate } from "../transform.js";
 import type { Color } from "../color.js";
 import type { StagePointerEvent } from "../events.js";
 import type { LayoutBox } from "../layout.js";
@@ -364,7 +365,10 @@ const useCheckbox = makeStyles(({ colors, motion }) => ({
   ...StyleSheet.create({
     row: { flexDirection: "row", alignItems: "center", gap: 8 },
     disabled: { opacity: 0.4 },
-    mark: { size: 12, weight: 800, color: colors.onAccent, align: "center", transition: motion.pop },
+    // The tick's two strokes, drawn rather than typed: a "✓" comes from whichever font has
+    // one, with metrics of its own, and never sits in the middle of the box.
+    arm: { position: "absolute", height: 2, radius: 1, fill: colors.onAccent },
+    tick: { position: "absolute", x: 0, y: 0, width: 18, height: 18, transition: motion.pop },
   }),
   box: variants({
     base: { width: 18, height: 18, radius: 5, alignItems: "center", justifyContent: "center", transition: motion.pop },
@@ -401,7 +405,7 @@ export const Checkbox = memo(function Checkbox({ value, onValueChange, label, di
         return (
           <>
             <Box style={[styles.box({ value, hovered: press.hovered }), resolveStyle(boxStyle, state)]}>
-              <Text style={styles.mark} opacity={value ? 1 : 0}>✓</Text>
+              <Tick shown={value} />
             </Box>
             {label !== undefined && <Label style={resolveStyle(labelStyle, state)}>{label}</Label>}
           </>
@@ -410,6 +414,20 @@ export const Checkbox = memo(function Checkbox({ value, onValueChange, label, di
     </Pressable>
   );
 });
+
+/** A tick drawn in an 18-pixel box, centred on it. */
+function Tick({ shown }: { shown: boolean }) {
+  const styles = useCheckbox();
+  return (
+    <Group style={styles.tick} opacity={shown ? 1 : 0}>
+      <Rect style={styles.arm} x={3.9} y={10.1} width={4.8} transform={tickShort} />
+      <Rect style={styles.arm} x={5.4} y={7.9} width={9.4} transform={tickLong} />
+    </Group>
+  );
+}
+
+const tickShort = rotate(45);
+const tickLong = rotate(-47);
 
 export interface ProgressBarProps {
   /** How far along, from 0 to 1; null for work of unknown length, which sweeps. */

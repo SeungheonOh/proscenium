@@ -1,0 +1,4 @@
+{
+  "title": "Timer",
+  "description": "A countdown with presets that alerts over everything when the time is up, keeps counting with its card closed, and survives restarts."
+}

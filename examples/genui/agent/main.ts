@@ -8,6 +8,11 @@
 // to the world as soon as it is complete and the interface builds up while the
 // model is still writing it. The shell runs only once the person allows it, on
 // a card in the chat.
+//
+// For anything with logic of its own (a timer that alerts, a tracker that
+// saves) it writes an app instead: a TypeScript program using app.ts, which the
+// world runs as a process of its own that owns its interfaces (apps.ts). The
+// person allows each app's code once, as with a command.
 
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -17,8 +22,9 @@ import { Type } from "typebox";
 import { createAgentSession, createBashToolDefinition, createExtensionRuntime, createFindToolDefinition,
   createGrepToolDefinition, createLsToolDefinition, createReadToolDefinition, defineTool, SessionManager,
   SettingsManager, type AgentSession, type ResourceLoader, type ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { UIClient, type JsonPatch } from "../client.js";
-import type { ChatMessage, ChatPart, Mode, Place } from "../protocol.js";
+import { appLog, trashApp } from "../apps.js";
+import { UIClient, type JsonPatch, type Result } from "../client.js";
+import { appName, appsFolder, type ChatMessage, type ChatPart, type Mode, type Place } from "../protocol.js";
 import { makeEngine, renewSignIn, signInExpired, type Engine } from "./models.js";
 
 const home = userInfo().homedir;
@@ -58,6 +64,8 @@ interface Made {
   approval?: "pending" | "decided";
 }
 const made = new Map<string, Made>();
+/** The titles of apps this assistant wrote or saw, by name, for its chips and labels. */
+const knownApps = new Map<string, string>();
 /** Commands the person allowed for the rest of this chat. */
 let allowAll = false;
 type Answer = "run" | "always" | "deny";
@@ -360,6 +368,28 @@ INTERFACES
 - Interfaces work on their own with setState/pushState/removeState (tabs, toggles, adding and ticking items). For anything that needs you (searching, computing, fetching, deciding), bind a button to {"action":"ask","params":{"text":"what to do"}}: you then get a message with the interface's whole state, and can update it.
 - Keep interfaces compact (about 360 px wide), with a clear title and few words. One root element (usually a Card or Stack).
 
+APPS
+- An app is a program of its own that owns its interfaces and runs their logic: the world starts it as its own process, it keeps running when you stop or the chat is reset, it starts again after a restart, and it can do anything a Node program can (keep time, alert, save data, read files, run commands, fetch). Write one when the person asks for an app, or when an interface needs logic that setState and ui_feed can't give: a timer that alerts and survives restarts, a pomodoro with rounds, a stopwatch with laps, a tracker or journal that saves entries, a game, a watcher that notifies. For a plain card, a ui_render interface is simpler.
+- app_write saves main.ts and starts it (again, for a name used before). Its result says what it showed, what is wrong with each spec and its log: fix and write it again until it is clean. app_control starts (an app already running shows itself), stops, restarts or deletes one; app_list lists them and gives an app's main.ts path, to read before you change it. An app's interfaces are its own: you can't ui_render, ui_feed or ui_close them. Change the code.
+- main.ts runs under Node 22. Import only node: modules and "proscenium-app", the app library:
+  import { app, type View } from "proscenium-app";
+  const ui = app();                                   // connects; it quits once it shows nothing (the person closed its last interface)
+  const view = ui.open("main", { mode: "floating", title: "Timer", width: 300, spec: { root: "root", state: { left: "25:00" }, elements: { ... } } });
+  view.on("start", (params, view) => { ... });       // an element's on.press: { action: "start", params: { ... } } calls it
+  view.set({ left: "24:59", running: true });         // state keys, or JSON pointers: view.set("/items/0/done", true)
+  view.get("/text"); view.state;                      // the state now, with what the person typed or toggled
+  view.onChange((state) => { ... });                  // the person changed state (typing, switches, tabs)
+  view.element("label", { type: "Text", props: { text: "Hi" }, children: [] }); view.patch([...]);  // change the spec
+  view.update({ title: "Done" }); view.place("overlay", { anchor: "top-right" }); view.close(); view.onClose(() => { ... });
+  ui.notify("Time's up", { title: "Timer", seconds: 10 });      // a note over everything, in a corner
+  const data = ui.load({ entries: [] as string[] }); ui.save(data);   // its own data, kept across restarts
+  ui.background = true;                               // keep running with nothing open (a timer that still alerts, a watcher that only notifies)
+  ui.onShow(() => { if (!view.open) ... });           // asked for again while running: open what it shows
+  setInterval(tick, 250); Date.now() for time; plain console.error goes to its log.
+- In an app's specs, setState, pushState, removeState, close and copy still run in the world at once; every other action goes to the app's view.on handler, with its params (ask has no assistant behind it in an app). Bind what changes to state and set it from the app; compute display text (e.g. "04:59") in the app. Keep the state small, and set it when it changes, not on every tick.
+- Give the spec's state every value it shows from the start (the clock's first face too): a path nothing set yet shows as nothing. Open the interface in a function, so ui.onShow can open it again after the person closed it while the app ran in the background.
+- The person reads the code before allowing it: write it plainly, one statement a line, with a comment where it helps, in one go (types, the spec, the handlers, saving), under about 200 lines.
+
 ${catalog}`;
 }
 
@@ -407,7 +437,7 @@ function listen(event: Parameters<Parameters<AgentSession["subscribe"]>[0]>[0]):
       const done = event.type === "tool_execution_end";
       const failed = done && (event as { isError?: boolean }).isError === true;
       settledParts = settledParts.map((part) =>
-        part.type === "tool" && part.id === event.toolCallId
+        (part.type === "tool" || part.type === "app") && part.id === event.toolCallId
           ? { ...part, status: done ? (failed ? "error" : "done") : "running" } : part);
       reply = { ...reply, parts: settledParts };
       publishReply(true);
@@ -435,6 +465,14 @@ function partsOf(content: unknown[], ended: boolean): ChatPart[] {
         const known = id ? made.get(id) : undefined;
         if (id && (!known || known.message === reply?.id)) parts.push({ type: "ui", id });
         else if (id) parts.push({ type: "tool", id: call.id, name: call.name, label: `Updating ${known?.title ?? id}`, status: "running" });
+      } else if (call.name === "app_write" || call.name === "app_control" && appStarts(call.arguments ?? {})) {
+        // Its arguments are whole once the model's message has ended; until then only the label shows.
+        const args = call.arguments ?? {};
+        const name = ended ? str(args.name) : undefined;
+        const title = ended ? str(args.title) ?? (name && knownApps.get(name)) ?? name : undefined;
+        const label = call.name === "app_write" ? (title ? `Writing the ${title} app` : "Writing an app")
+          : `${args.action === "restart" ? "Restarting" : "Starting"} ${title ?? "an app"}`;
+        parts.push({ type: "app", id: call.id, name, title, label, status: "running" });
       } else {
         parts.push({ type: "tool", id: call.id, name: call.name, label: toolLabel(call.name, call.arguments ?? {}), status: "running" });
       }
@@ -483,6 +521,11 @@ function stream(callId: string, args: Record<string, unknown>, ended: boolean): 
   return id;
 }
 
+/** An app_control call that starts its app, which shows as the app's chip once done. */
+function appStarts(args: Record<string, unknown>): boolean {
+  return args.action === "start" || args.action === "restart";
+}
+
 function placeOf(args: Record<string, unknown>): Place | undefined {
   const place: Place = {};
   if (typeof args.anchor === "string") place.anchor = args.anchor as Place["anchor"];
@@ -510,6 +553,8 @@ function toolLabel(name: string, args: Record<string, unknown>): string {
     case "ui_read": return `Reading ${made.get(String(args.id))?.title ?? args.id}`;
     case "ui_feed": return args.stop ? `Stopping live data for ${made.get(String(args.id))?.title ?? args.id}`
       : `Live data for ${made.get(String(args.id))?.title ?? args.id}${args.every ? ` every ${args.every} s` : ""}`;
+    case "app_list": return args.name ? `Looking at ${knownApps.get(String(args.name)) ?? args.name}` : "Listing apps";
+    case "app_control": return `${args.action === "delete" ? "Deleting" : "Stopping"} ${knownApps.get(String(args.name)) ?? args.name ?? "an app"}`;
     default: return name;
   }
 }
@@ -603,7 +648,7 @@ function tools(): ToolDefinition[] {
     ...bash,
     async execute(callId, params, signal, onUpdate, context) {
       const command = String((params as { command?: unknown }).command ?? "");
-      const answer: Answer = allowAll ? "run" : await approve(command, signal);
+      const answer: Answer = allowAll ? "run" : await approve({ heading: "Run a command?", code: command }, signal);
       if (answer === "deny") return text("The person did not allow this command. Ask them, or do without it.");
       if (answer === "always") allowAll = true;
       return bash.execute(callId, params as never, signal, onUpdate as never, context);
@@ -634,7 +679,7 @@ function tools(): ToolDefinition[] {
       if (!params.command) return text("A feed needs a command.");
       const every = Math.min(Math.max(Math.round(params.every ?? 2), 1), 3600);
       const title = made.get(params.id)?.title ?? params.id;
-      const answer: Answer = allowAll ? "run" : await approve(params.command, signal, `Update ${title} every ${every} s?`);
+      const answer: Answer = allowAll ? "run" : await approve({ heading: `Update ${title} every ${every} s?`, code: params.command }, signal);
       if (answer === "deny") return text("The person did not allow this command.");
       if (answer === "always") allowAll = true;
       const feed: Feed = { id: params.id, name, command: params.command, every, into: params.into || "/value",
@@ -650,8 +695,113 @@ function tools(): ToolDefinition[] {
       return text(`Live: ${title} updates every ${every} s. First value: ${JSON.stringify(first.value).slice(0, 400)}`);
     },
   });
-  return [render, place, close, read, feed, askedBash, createReadToolDefinition(home), createLsToolDefinition(home),
-          createGrepToolDefinition(home), createFindToolDefinition(home)] as ToolDefinition[];
+  const writeApp = defineTool({
+    name: "app_write",
+    label: "Write app",
+    description: "Write an app (see APPS): a TypeScript program that owns its interfaces and runs their logic as a process of its own, apart from you and the chat. Saves it as main.ts in the person's apps folder and starts it, or with a name used before, replaces it and starts it again. The person allows its code first. Returns what it showed, what is wrong with each spec and its log.",
+    parameters: Type.Object({
+      name: Type.String({ description: "Its folder name: lower case letters, digits and dashes, e.g. \"focus-timer\"." }),
+      title: Type.String({ description: "What it is called, e.g. \"Focus timer\"." }),
+      description: Type.String({ description: "One sentence on what it does, shown to the person before it runs." }),
+      source: Type.String({ description: "The whole of main.ts." }),
+    }),
+    async execute(_, params, signal) {
+      const name = params.name.trim();
+      if (!appName.test(name)) return failed("Name it with lower case letters, digits and dashes, e.g. focus-timer.");
+      const dir = join(appsFolder(), name);
+      const file = join(dir, "main.ts");
+      const lines = params.source.split("\n").length;
+      // Writing over an app already there, or putting one of the person's over Proscenium's own of that name.
+      const replacing = existsSync(file) || (await ui.apps()).apps?.some((app) => app.name === name);
+      const answer: Answer = allowAll ? "run" : await approve({
+        heading: `${replacing ? "Replace" : "Run"} the ${params.title} app?`, note: params.description, code: params.source, fold: true,
+        where: `${file.replace(home, "~")} · ${lines} lines · runs on its own until it ends or is stopped`,
+      }, signal);
+      if (answer === "deny") return failed("The person did not allow this app. Ask them what to change.");
+      if (answer === "always") allowAll = true;
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(file, params.source.endsWith("\n") ? params.source : `${params.source}\n`);
+      writeFileSync(join(dir, "app.json"), `${JSON.stringify({ title: params.title, description: params.description }, null, 2)}\n`);
+      knownApps.set(name, params.title);
+      return launched(await ui.launch(name, { restart: true }), file);
+    },
+  });
+  const controlApp = defineTool({
+    name: "app_control",
+    label: "Control app",
+    description: "Start an app (one already running shows itself again), stop it, start it again, or delete one of the person's.",
+    parameters: Type.Object({
+      name: Type.String(),
+      action: Type.Union([Type.Literal("start"), Type.Literal("stop"), Type.Literal("restart"), Type.Literal("delete")]),
+    }),
+    async execute(_, params) {
+      const { apps = [] } = await ui.apps();
+      const app = apps.find((each) => each.name === params.name);
+      if (!app) return failed(`No app "${params.name}". app_list lists them.`);
+      knownApps.set(app.name, app.title);
+      if (params.action === "start" || params.action === "restart") {
+        return launched(await ui.launch(app.name, { restart: params.action === "restart" }), join(app.dir, "main.ts"));
+      }
+      if (params.action === "delete" && app.builtin) return failed("That app ships with Proscenium: it can be stopped, not deleted.");
+      const stopped = await ui.stopApp(app.name);
+      if (!stopped.ok) return failed(`Could not stop it: ${stopped.error}`);
+      if (params.action === "stop") return text("Stopped.");
+      // Deleted apps, and their data, go to a trash folder rather than away for good.
+      try {
+        return text(`Deleted; its folder and data are kept in ${trashApp(app.name).replace(home, "~")}.`);
+      } catch (error) {
+        return failed(`Could not delete it: ${error instanceof Error ? error.message : error}`);
+      }
+    },
+  });
+  const listApps = defineTool({
+    name: "app_list",
+    label: "Apps",
+    description: "List the apps there are (the person's and Proscenium's), whether each runs and what it shows. With a name: that app's folder, its main.ts path (read it before changing it) and its log.",
+    parameters: Type.Object({ name: Type.Optional(Type.String()) }),
+    async execute(_, params) {
+      const { apps = [] } = await ui.apps();
+      for (const app of apps) knownApps.set(app.name, app.title);
+      if (!params.name) {
+        if (!apps.length) return text("No apps yet.");
+        return text(apps.map((app) => `- ${app.name}: ${app.title}${app.builtin ? " (ships with Proscenium)" : ""}, `
+          + `${app.running ? `running${app.interfaces.length ? `, showing ${app.interfaces.map((each) => each.title ?? each.id).join(", ")}` : " with nothing open"}` : "stopped"}`
+          + `${app.description ? `. ${app.description}` : ""}`).join("\n"));
+      }
+      const app = apps.find((each) => each.name === params.name);
+      if (!app) return failed(`No app "${params.name}".`);
+      const log = appLog(app.name, 2500);
+      return text([
+        `${app.title} (${app.name})${app.builtin ? ", ships with Proscenium" : ""}: ${app.running ? `running, pid ${app.pid}` : app.ended ?? "stopped"}.`,
+        `Folder: ${app.dir}${existsSync(join(app.dir, "main.ts")) ? ` (main.ts: ${join(app.dir, "main.ts")})` : ""}`,
+        ...app.interfaces.map((each) => `Shows ${each.title ?? each.id} (${each.mode})${each.problems.length ? `: ${each.problems.join("; ")}` : ""}`),
+        log ? `Log of its last run:\n${log}` : "Its log is empty.",
+      ].join("\n"));
+    },
+  });
+  return [render, place, close, read, feed, writeApp, controlApp, listApps, askedBash, createReadToolDefinition(home),
+          createLsToolDefinition(home), createGrepToolDefinition(home), createFindToolDefinition(home)] as ToolDefinition[];
+}
+
+function failed(words: string) {
+  return { ...text(words), isError: true };
+}
+
+/** What starting an app came to, for the model: whether it runs, what it shows and what to fix. FILE is its code. */
+function launched(result: Result, file: string) {
+  const app = result.app;
+  const log = result.log?.trim();
+  if (!result.ok || !app?.running) {
+    return failed(`It did not keep running: ${result.error ?? "it ended"}.${log ? `\nIts log:\n${log}` : ""}\nFix ${file} and write it again.`);
+  }
+  const problems = app.interfaces.flatMap((each) => each.problems.map((problem) => `${each.title ?? each.id}: ${problem}`));
+  const shows = app.interfaces.length
+    ? `showing ${app.interfaces.map((each) => `${each.title ?? each.id} (${each.mode})`).join(", ")}` : "showing nothing yet";
+  const lines = [`Running as a program of its own (pid ${app.pid}), ${shows}.`];
+  if (problems.length) lines.push(`Its interfaces are broken:\n- ${problems.join("\n- ")}\nFix the specs in ${file} and write it again now.`);
+  if (log) lines.push(`Its log:\n${log}`);
+  if (!problems.length) lines.push("It owns what it shows: change it by writing it again, never with ui_render. Don't describe it again in words.");
+  return problems.length ? failed(lines.join("\n")) : text(lines.join("\n"));
 }
 
 /** The approval card's buttons, once ANSWER is given: what was decided, in their place. */
@@ -661,8 +811,18 @@ function decision(answer: Answer): JsonPatch {
     tone: answer === "deny" ? "muted" : "success", size: "sm" } } };
 }
 
-/** Ask the person, on a card in the chat, whether COMMAND may run. Closing the card, or stopping, declines. */
-function approve(command: string, signal: AbortSignal | undefined, heading = "Run a command?"): Promise<Answer> {
+/** What an approval card asks about: a command, or an app's code (folded away under a button, with a NOTE and WHERE). */
+interface Asking {
+  heading: string;
+  code: string;
+  note?: string;
+  where?: string;
+  fold?: boolean;
+}
+
+/** Ask the person, on a card in the chat, whether code may run. Closing the card, or stopping, declines. */
+function approve(asking: Asking, signal: AbortSignal | undefined): Promise<Answer> {
+  const { heading, code, note, where, fold } = asking;
   const id = nextId("approve-");
   const message = reply?.id;
   if (!message) return Promise.resolve("deny");
@@ -672,10 +832,16 @@ function approve(command: string, signal: AbortSignal | undefined, heading = "Ru
   void ui.open(id, {
     mode: "inline", title: heading, message,
     spec: {
-      root: "card", state: {},
+      root: "card", state: { code: false },
       elements: {
-        card: { type: "Stack", props: { gap: "md" }, children: ["code", "buttons"] },
-        code: { type: "Code", props: { text: command }, children: [] },
+        card: { type: "Stack", props: { gap: "md" },
+                children: [...(note ? ["note"] : []), ...(where ? ["where"] : []), ...(fold ? ["show"] : []), "code", "buttons"] },
+        note: { type: "Text", props: { text: note ?? "" }, children: [] },
+        where: { type: "Text", props: { text: where ?? "", tone: "muted", size: "sm" }, children: [] },
+        show: { type: "Button", props: { label: "Show the code", size: "small" }, children: [],
+                visible: { $state: "/code", not: true },
+                on: { press: { action: "setState", params: { statePath: "/code", value: true } } } },
+        code: { type: "Code", props: { text: code }, children: [], ...(fold ? { visible: { $state: "/code" } } : {}) },
         buttons: { type: "Stack", props: { direction: "horizontal", gap: "sm" }, children: ["run", "always", "deny"] },
         run: { type: "Button", props: { label: "Run", variant: "filled", size: "small" }, children: [],
                on: { press: { action: "run" } } },

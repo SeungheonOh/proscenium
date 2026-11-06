@@ -7,18 +7,22 @@
  * programs that want interfaces: they send json-render specs and patches, get
  * the person's actions back, and own what they open until they disconnect. The
  * assistant (agent/) is one such program, a Pi agent started when the chat
- * first opens, which makes interfaces as it answers.
+ * first opens, which makes interfaces as it answers. Apps (apps.ts) are others,
+ * which the world starts and keeps running: the ones running when it last
+ * stopped start again with it.
  *
  * Interfaces live in modes (Surfaces.tsx): in the chat, floating on the screen,
  * pinned over everything in a corner, docked along an edge, on the canvas, or as
  * a dialog. The person drags them between modes by their title bars.
  */
 
+import { dirname, join } from "node:path";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Group, Shortcut, spring, useOutputs, usePersistentState } from "proscenium";
 import { barLayout } from "../components/bar/layout.js";
 import assistantMain from "./agent/main.ts?url";
 import runner from "./run.mjs?url";
+import { configureApps } from "./apps.js";
 import { ChatPanel } from "./Chat.js";
 import { startAssistant, UIHost } from "./host.js";
 import { socketPath } from "./protocol.js";
@@ -34,9 +38,10 @@ export function GenerativeUI() {
   const path = socketPath();
   useEffect(() => {
     host.listen(path);
+    configureApps({ runner, socket: path, builtin: join(dirname(runner), "apps") });
     return () => host.close();
   }, [host, path]);
-  const { surfaces, chat } = useSyncExternalStore(host.subscribe, host.getSnapshot);
+  const { surfaces, chat, apps } = useSyncExternalStore(host.subscribe, host.getSnapshot);
   const output = useOutputs()[0];
   const screen: Screenful = { width: output?.width ?? 1280, height: output?.height ?? 720, top: barLayout.reserve,
                               output: output?.name };
@@ -67,7 +72,7 @@ export function GenerativeUI() {
 
   const panel = chatOpen && (
     <Group key="chat" initial={{ x: 40, opacity: 0 }} exit={{ x: 40, opacity: 0 }} transition={slide}>
-      <ChatPanel host={host} chat={chat} surfaces={surfaces} area={chatArea} onClose={() => setChatOpen(false)} />
+      <ChatPanel host={host} chat={chat} surfaces={surfaces} apps={apps} area={chatArea} onClose={() => setChatOpen(false)} />
     </Group>
   );
   return (

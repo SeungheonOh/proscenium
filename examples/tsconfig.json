@@ -30,6 +30,9 @@
       "proscenium/page": [
         "../sdk/src/page.ts"
       ],
+      "proscenium-app": [
+        "./genui/app.ts"
+      ],
       "react-dom/client": [
         "../sdk/node_modules/@types/react-dom/client"
       ],

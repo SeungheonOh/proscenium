@@ -4,13 +4,17 @@
 //
 // A program's interfaces close when it disconnects. A world reload starts a new
 // host; programs that reconnect send their interfaces again (client.ts does).
+// Apps (apps.ts) are programs too: the host starts and stops them when asked,
+// and knows which connection is which app by its hello.
 
 import { spawn, type ChildProcess } from "node:child_process";
 import { rmSync } from "node:fs";
 import { createServer, type Server, type Socket } from "node:net";
 import { copyData, getCamera } from "proscenium";
 import { catalogPrompt, componentNames, Surface, type JsonPatch } from "proscenium/genui";
-import { modes, protocolVersion, type ChatMessage, type ClientMessage, type HostMessage, type Mode,
+import { appEnded, appLog, appPid, appRunning, findApp, listApps, restartApp, runningApps, startApp, stopApp,
+  subscribeApps, type AppManifest } from "./apps.js";
+import { modes, protocolVersion, type AppInfo, type ChatMessage, type ClientMessage, type HostMessage, type Mode,
   type Place } from "./protocol.js";
 
 export interface HostSurface {
@@ -45,9 +49,17 @@ export interface ChatSnapshot {
   error?: string | null;
 }
 
+/** A running app, for the chat to show. */
+export interface AppStatus {
+  name: string;
+  interfaces: number;
+}
+
 export interface HostSnapshot {
   surfaces: readonly HostSurface[];
   chat: ChatSnapshot;
+  /** The apps running now. */
+  apps: readonly AppStatus[];
 }
 
 interface Client {
@@ -55,6 +67,13 @@ interface Client {
   socket: Socket;
   name: string;
   agent: boolean;
+  /** The app it is, and its process, as it said hello. */
+  app?: string;
+  pid?: number;
+  /** When it last opened or patched an interface: an app that just started has settled once this is a moment ago. */
+  changedAt: number;
+  /** Messages it has sent that were handled: a state event says how many it covers. */
+  received: number;
   surfaces: Set<string>;
 }
 
@@ -74,7 +93,8 @@ export class UIHost {
   /** While a program changes an interface's state, which is not news to it. */
   private quiet = false;
   private chat: ChatSnapshot = { connected: false, messages: [], busy: false };
-  private snapshot: HostSnapshot = { surfaces: [], chat: this.chat };
+  private snapshot: HostSnapshot = { surfaces: [], chat: this.chat, apps: [] };
+  private stopWatchingApps: (() => void) | null = null;
   private readonly listeners = new Set<() => void>();
   screen = { width: 1280, height: 720 };
   /** Output whose camera canvas cards open under. */
@@ -86,6 +106,7 @@ export class UIHost {
     this.server = createServer((socket) => this.serve(socket));
     this.server.on("error", (error) => console.error(`[genui] ${error.message}`));
     this.server.listen(path);
+    this.stopWatchingApps = subscribeApps(() => this.changed());
   }
 
   close(): void {
@@ -96,6 +117,7 @@ export class UIHost {
     if (this.path) rmSync(this.path, { force: true });
     for (const timer of this.pending.values()) clearTimeout(timer);
     for (const stop of this.unsubscribe.values()) stop();
+    this.stopWatchingApps?.();
   }
 
   subscribe = (listener: () => void): (() => void) => {
@@ -155,7 +177,8 @@ export class UIHost {
       return;
     }
     this.flushState(key);
-    this.send(found.client, { type: "action", id: found.id, action, params, state: found.surface.state.getSnapshot() });
+    this.send(found.client, { type: "action", id: found.id, action, params, state: found.surface.state.getSnapshot(),
+                              seen: this.clients.get(found.client)?.received ?? 0 });
   }
 
   prompt(text: string): void {
@@ -177,6 +200,80 @@ export class UIHost {
     return this.agent() !== undefined;
   }
 
+  /** Start app NAME, as the person asked, or have it show itself if it runs. */
+  startApp(name: string): void {
+    const app = appRunning(name) ? this.appClient(name) : undefined;
+    if (app) return this.send(app.id, { type: "show" });
+    const started = startApp(name);
+    if (!started.ok) console.error(`[genui] ${name}: ${started.error}`);
+  }
+
+  /** Stop app NAME, as the person asked. */
+  stopApp(name: string): void {
+    void stopApp(name);
+  }
+
+  // Apps.
+
+  private appInfo(manifest: AppManifest): AppInfo {
+    const interfaces: AppInfo["interfaces"] = [];
+    for (const client of this.clients.values()) {
+      if (client.app !== manifest.name) continue;
+      for (const key of client.surfaces) {
+        const found = this.surfaces.get(key);
+        if (found) interfaces.push({ id: found.id, title: found.title, mode: found.mode,
+                                     problems: found.surface.problems(componentNames) });
+      }
+    }
+    return { name: manifest.name, title: manifest.title, description: manifest.description, builtin: manifest.builtin,
+             dir: manifest.dir, running: appRunning(manifest.name), pid: appPid(manifest.name), interfaces,
+             ended: appEnded(manifest.name) };
+  }
+
+  /**
+   * The connection of app NAME's current process, once it has said hello; or
+   * the latest by that name, for an app whose program is not the process
+   * started (`sh -c`, `npm start`).
+   */
+  private appClient(name: string): Client | undefined {
+    const pid = appPid(name);
+    let named: Client | undefined;
+    for (const client of this.clients.values()) {
+      if (client.app !== name) continue;
+      if (pid && client.pid === pid) return client;
+      named = client;
+    }
+    return named;
+  }
+
+  /**
+   * Start app NAME (again, with RESTART) and answer once it has shown what it
+   * shows at first: its interfaces have stopped changing for a moment, it ended,
+   * or six seconds went by (an app that shows nothing yet).
+   */
+  private async launch(client: Client, name: string, restart: boolean, request: number): Promise<void> {
+    const manifest = findApp(name);
+    if (!manifest) return this.send(client.id, { type: "result", request, ok: false, error: `No app "${name}"` });
+    // Asked for again while it runs: it shows itself, as it decides.
+    const wasRunning = appRunning(name);
+    if (wasRunning && !restart) {
+      const app = this.appClient(name);
+      if (app) this.send(app.id, { type: "show" });
+    }
+    const started = restart ? await restartApp(name) : startApp(name);
+    if (!started.ok) return this.send(client.id, { type: "result", request, ok: false, error: started.error });
+    const since = Date.now();
+    while (Date.now() - since < 6000) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (!appRunning(name)) break;
+      const app = this.appClient(name);
+      if (app && app.surfaces.size > 0 && Date.now() - app.changedAt > 600) break;
+    }
+    const info = this.appInfo(manifest);
+    this.send(client.id, { type: "result", request, ok: info.running, app: info, log: appLog(name),
+                           error: info.running ? undefined : `It ${info.ended ?? "ended"}` });
+  }
+
   // Programs.
 
   private agent(): Client | undefined {
@@ -185,7 +282,8 @@ export class UIHost {
   }
 
   private serve(socket: Socket): void {
-    const client: Client = { id: this.nextClient++, socket, name: "program", agent: false, surfaces: new Set() };
+    const client: Client = { id: this.nextClient++, socket, name: "program", agent: false, changedAt: 0, received: 0,
+                             surfaces: new Set() };
     this.clients.set(client.id, client);
     socket.setEncoding("utf8");
     let buffered = "";
@@ -197,6 +295,7 @@ export class UIHost {
         const line = buffered.slice(0, newline);
         buffered = buffered.slice(newline + 1);
         if (!line.trim()) continue;
+        client.received++;
         let message: ClientMessage;
         try {
           message = JSON.parse(line) as ClientMessage;
@@ -227,6 +326,8 @@ export class UIHost {
     switch (message.op) {
       case "hello":
         client.name = String(message.name || "program").slice(0, 60);
+        if (typeof message.app === "string" && message.app) client.app = message.app;
+        if (typeof message.pid === "number") client.pid = message.pid;
         if (message.agent) {
           // One assistant keeps the chat; a newer one replaces it, as a newer director does.
           const older = this.agent();
@@ -246,9 +347,29 @@ export class UIHost {
                                components: componentNames });
         return;
       case "open":
+        client.changedAt = Date.now();
         return this.open(client, message);
+      case "apps":
+        this.send(client.id, { type: "result", request: message.request, ok: true,
+                               apps: listApps().map((manifest) => this.appInfo(manifest)) });
+        return;
+      case "launch":
+        void this.launch(client, String(message.app ?? ""), message.restart === true, message.request)
+          .catch((error) => this.send(client.id, { type: "result", request: message.request, ok: false,
+                                                   error: error instanceof Error ? error.message : String(error) }));
+        return;
+      case "stop": {
+        const name = String(message.app ?? "");
+        // One whose folder went while it ran can still be stopped.
+        if (!findApp(name) && !appRunning(name)) {
+          return this.send(client.id, { type: "result", request: message.request, ok: false, error: `No app "${name}"` });
+        }
+        void stopApp(name).then(() => this.send(client.id, { type: "result", request: message.request, ok: true }));
+        return;
+      }
       case "patch": {
         const found = this.own(client, message.id);
+        client.changedAt = Date.now();
         const problems = this.patch(found, message.patches);
         if (message.request !== undefined) {
           this.send(client.id, { type: "result", request: message.request, ok: true,
@@ -419,7 +540,10 @@ export class UIHost {
     clearTimeout(timer);
     this.pending.delete(key);
     const found = this.surfaces.get(key);
-    if (found) this.send(found.client, { type: "state", id: found.id, state: found.surface.state.getSnapshot() });
+    if (found) {
+      this.send(found.client, { type: "state", id: found.id, state: found.surface.state.getSnapshot(),
+                                seen: this.clients.get(found.client)?.received ?? 0 });
+    }
   }
 
   private remove(key: string): void {
@@ -462,6 +586,19 @@ export class UIHost {
     if (socket && !socket.destroyed) socket.write(JSON.stringify(message) + "\n");
   }
 
+  /** The running apps and how many interfaces each shows: the same list as before while that holds. */
+  private appStatus(): readonly AppStatus[] {
+    const counts = new Map<string, number>(runningApps().map((name) => [name, 0]));
+    for (const client of this.clients.values()) {
+      if (client.app && counts.has(client.app)) counts.set(client.app, counts.get(client.app)! + client.surfaces.size);
+    }
+    const apps = [...counts].map(([name, interfaces]) => ({ name, interfaces })).sort((a, b) => a.name.localeCompare(b.name));
+    const before = this.snapshot.apps;
+    const same = before.length === apps.length
+      && apps.every((app, index) => app.name === before[index]!.name && app.interfaces === before[index]!.interfaces);
+    return same ? before : apps;
+  }
+
   /** The copies last shown, so an interface that did not change keeps its object and its card does not render. */
   private readonly shown = new Map<string, HostSurface>();
 
@@ -480,7 +617,7 @@ export class UIHost {
     }
     for (const key of this.shown.keys()) if (!this.surfaces.has(key)) this.shown.delete(key);
     same &&= surfaces.every((surface, index) => surface === this.snapshot.surfaces[index]);
-    this.snapshot = { surfaces: same ? this.snapshot.surfaces : surfaces, chat: this.chat };
+    this.snapshot = { surfaces: same ? this.snapshot.surfaces : surfaces, chat: this.chat, apps: this.appStatus() };
     for (const listener of [...this.listeners]) listener();
   }
 }

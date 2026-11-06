@@ -1,16 +1,14 @@
-// A program that owns a live interface without being a Wayland client: CPU,
-// memory and battery pinned over everything in the top right corner, sent as a
-// json-render spec once and then as state changes every two seconds.
+// Monitor: an app that owns a live interface without being a Wayland client.
+// CPU, memory and battery pinned over everything in the top right corner, sent
+// as a json-render spec once and then as state changes every two seconds.
 //
-//     node examples/genui/run.mjs examples/genui/demos/monitor.ts [--mode floating]
+//     proscenium-ui start monitor
+//     node examples/genui/run.mjs examples/genui/apps/monitor/main.ts   (by hand, unsupervised)
 
 import { readdirSync, readFileSync } from "node:fs";
-import { UIClient } from "../client.js";
-import type { Mode } from "../protocol.js";
+import { app } from "proscenium-app";
 
-const flag = process.argv.indexOf("--mode");
-const mode = (flag > 1 ? process.argv[flag + 1] : "overlay") as Mode;
-const ui = new UIClient({ name: "Monitor" });
+const ui = app({ name: "monitor", title: "Monitor" });
 
 function cpuTimes(): { idle: number; total: number } {
   const fields = readFileSync("/proc/stat", "utf8").split("\n")[0]!.trim().split(/\s+/).slice(1).map(Number);
@@ -37,7 +35,8 @@ function battery(): string | null {
   }
 }
 
-const history: number[] = [];
+// Thirty samples, a minute, from the start: the chart keeps its width as it fills.
+const history: number[] = Array(30).fill(0);
 let last = cpuTimes();
 
 function sample() {
@@ -57,8 +56,8 @@ function sample() {
   };
 }
 
-void ui.open("system", {
-  mode, place: { anchor: "top-right" }, title: "System", width: 260, theme: "dark",
+const view = ui.open("system", {
+  mode: "overlay", place: { anchor: "top-right" }, title: "System", width: 260, theme: "dark",
   spec: {
     root: "root",
     state: { cpu: "–", cpuLoad: 0, history: [], memory: "–", memoryUse: 0, battery: "–" },
@@ -67,13 +66,12 @@ void ui.open("system", {
       cpuRow: { type: "Stack", props: { direction: "horizontal", justify: "between" }, children: ["cpuLabel", "cpuValue"] },
       cpuLabel: { type: "Text", props: { text: "CPU", tone: "muted", size: "sm", weight: "bold" }, children: [] },
       cpuValue: { type: "Text", props: { text: { $state: "/cpu" }, weight: "bold", mono: true }, children: [] },
-      spark: { type: "Sparkline", props: { values: { $state: "/history" }, height: 28, tone: "accent" }, children: [] },
+      spark: { type: "Sparkline", props: { values: { $state: "/history" }, height: 28, tone: "accent", min: 0, max: 100 }, children: [] },
       mem: { type: "ProgressBar", props: { label: { $template: "Memory · ${/memory}" }, value: { $state: "/memoryUse" } }, children: [] },
       power: { type: "KeyValue", props: { label: "Battery", value: { $state: "/battery" } }, children: [] },
     },
   },
 });
 
-ui.on("connect", () => ui.state("system", sample()));
-setInterval(() => ui.state("system", sample()), 2000);
-ui.on("closed", () => process.exit(0));
+view.set(sample());
+setInterval(() => view.set(sample()), 2000);

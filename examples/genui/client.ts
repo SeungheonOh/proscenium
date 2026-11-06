@@ -11,10 +11,10 @@
 
 import { EventEmitter } from "node:events";
 import { createConnection, type Socket } from "node:net";
-import { socketPath, type ClientMessage, type HostMessage, type Mode, type Place } from "./protocol.js";
+import { socketPath, type AppInfo, type ClientMessage, type HostMessage, type Mode, type Place } from "./protocol.js";
 import type { JsonPatch, Spec } from "proscenium/genui";
 
-export type { JsonPatch, Mode, Place, Spec };
+export type { AppInfo, JsonPatch, Mode, Place, Spec };
 
 export interface OpenOptions {
   mode?: Mode;
@@ -40,10 +40,14 @@ export interface Result {
   place?: Place;
   prompt?: string;
   components?: string[];
+  apps?: AppInfo[];
+  app?: AppInfo;
+  /** An app's log, its last lines. */
+  log?: string;
 }
 
 /** A change since an interface was opened: the program's patches or state, or the person's state. */
-type Change = { patches: JsonPatch[] } | { set: Record<string, unknown> };
+export type Change = { patches: JsonPatch[] } | { set: Record<string, unknown> };
 
 /**
  * What a program keeps of an interface, to open it again as it was: the spec it
@@ -68,10 +72,13 @@ type Events = {
   connect: [];
   disconnect: [];
   welcome: [Extract<HostMessage, { type: "welcome" }>];
-  action: [Extract<HostMessage, { type: "action" }>];
-  state: [Extract<HostMessage, { type: "state" }>];
+  /** PENDING: this program's changes to the interface that its STATE does not have yet, in order. */
+  action: [Extract<HostMessage, { type: "action" }> & { pending: Change[] }];
+  state: [Extract<HostMessage, { type: "state" }> & { pending: Change[] }];
   placed: [Extract<HostMessage, { type: "placed" }>];
   closed: [Extract<HostMessage, { type: "closed" }>];
+  /** To an app: it was started again while it runs; it shows itself. */
+  show: [];
   prompt: [string];
   abort: [];
   reset: [];
@@ -84,6 +91,8 @@ export interface ClientOptions {
   name: string;
   /** This program is the assistant, which keeps the chat. */
   agent?: boolean;
+  /** The app this program is; $PROSCENIUM_APP, which the world sets when it starts one, by default. */
+  app?: string;
   socket?: string;
   /** Keep trying to connect when there is no world yet or it goes away (default true). */
   reconnect?: boolean;
@@ -98,6 +107,10 @@ export class UIClient extends EventEmitter<Events> {
   private nextRequest = 1;
   private readonly waiting = new Map<number, (result: Result) => void>();
   private readonly kept = new Map<string, Kept>();
+  /** Lines sent on this connection, which the world counts too. */
+  private sent = 0;
+  /** Changes sent lately, by line: the world's state events say which they cover. */
+  private inflight: { line: number; at: number; id: string; change: Change }[] = [];
   readonly name: string;
 
   constructor(private readonly options: ClientOptions) {
@@ -128,7 +141,9 @@ export class UIClient extends EventEmitter<Events> {
   patch(id: string, patches: JsonPatch[]): Promise<Result> {
     const kept = this.kept.get(id);
     if (kept && patches.length) this.record(id, kept, { patches });
-    return this.request({ op: "patch", id, patches });
+    const result = this.request({ op: "patch", id, patches });
+    this.sending(id, { patches });
+    return result;
   }
 
   /** Set values in ID's state, by JSON pointer: `{ "/load": 0.4 }`. */
@@ -136,6 +151,23 @@ export class UIClient extends EventEmitter<Events> {
     const kept = this.kept.get(id);
     if (kept) this.record(id, kept, { set });
     this.send({ op: "state", id, set });
+    this.sending(id, { set });
+  }
+
+  /** CHANGE to ID just went out, as the last line sent. */
+  private sending(id: string, change: Change): void {
+    if (!this.connected) return;
+    const now = Date.now();
+    // Long since handled: a state event would have covered them.
+    while (this.inflight.length && now - this.inflight[0]!.at > 5000) this.inflight.shift();
+    this.inflight.push({ line: this.sent, at: now, id, change });
+  }
+
+  /** ID's changes the world had not handled when it had seen SEEN lines, which drops the ones it had. */
+  private pendingAfter(id: string, seen: number | undefined): Change[] {
+    if (seen === undefined) return [];
+    this.inflight = this.inflight.filter((each) => each.line > seen);
+    return this.inflight.filter((each) => each.id === id).map((each) => each.change);
   }
 
   /** Move ID to another mode. */
@@ -216,6 +248,25 @@ export class UIClient extends EventEmitter<Events> {
     return this.request({ op: "catalog", request: 0 });
   }
 
+  /** The apps there are, the person's and Proscenium's, and which run. */
+  apps(): Promise<Result> {
+    return this.request({ op: "apps", request: 0 });
+  }
+
+  /**
+   * Start app NAME, or with restart, start it again (as after its code changed).
+   * The answer comes once it has shown what it shows at first, or ended: what it
+   * opened, what is wrong with each spec, and its log.
+   */
+  launch(name: string, options: { restart?: boolean } = {}): Promise<Result> {
+    return this.request({ op: "launch", app: name, restart: options.restart, request: 0 });
+  }
+
+  /** Stop app NAME; it stays stopped until something starts it again. */
+  stopApp(name: string): Promise<Result> {
+    return this.request({ op: "stop", app: name, request: 0 });
+  }
+
   /** Whether ID is open, as far as this program knows. */
   has(id: string): boolean {
     return this.kept.has(id);
@@ -223,7 +274,9 @@ export class UIClient extends EventEmitter<Events> {
 
   /** Send MESSAGE as it is (the assistant's chat messages). */
   send(message: ClientMessage): void {
-    if (this.connected) this.socket?.write(JSON.stringify(message) + "\n");
+    if (!this.connected) return;
+    this.socket?.write(JSON.stringify(message) + "\n");
+    this.sent++;
   }
 
   disconnect(): void {
@@ -247,7 +300,10 @@ export class UIClient extends EventEmitter<Events> {
     socket.on("connect", () => {
       this.connected = true;
       this.retry = 200;
-      this.send({ op: "hello", name: this.name, agent: this.options.agent });
+      this.sent = 0;
+      this.inflight = [];
+      this.send({ op: "hello", name: this.name, agent: this.options.agent,
+                  app: this.options.app ?? (process.env.PROSCENIUM_APP || undefined), pid: process.pid });
       // A new world knows none of this program's interfaces: open them again.
       for (const [id, kept] of this.kept) this.reopen(id, kept);
       this.emit("connect");
@@ -286,12 +342,17 @@ export class UIClient extends EventEmitter<Events> {
         return resolve?.(result);
       }
       case "action":
-        return void this.emit("action", message);
+        return void this.emit("action", { ...message, pending: this.pendingAfter(message.id, message.seen) });
       case "state": {
-        // Kept in order with the program's own changes, so the person's survive the world reloading.
+        const pending = this.pendingAfter(message.id, message.seen);
+        // Kept in order with the program's own changes, so the person's survive the world reloading; the
+        // program's that were on their way when the world sent this come after it.
         const kept = this.kept.get(message.id);
-        if (kept) this.record(message.id, kept, { set: { "": message.state } });
-        return void this.emit("state", message);
+        if (kept) {
+          this.record(message.id, kept, { set: { "": message.state } });
+          for (const change of pending) this.record(message.id, kept, change);
+        }
+        return void this.emit("state", { ...message, pending });
       }
       case "placed": {
         const kept = this.kept.get(message.id);
@@ -301,6 +362,8 @@ export class UIClient extends EventEmitter<Events> {
       case "closed":
         this.kept.delete(message.id);
         return void this.emit("closed", message);
+      case "show":
+        return void this.emit("show");
       case "prompt":
         return void this.emit("prompt", message.text);
       case "abort":

@@ -126,7 +126,8 @@ function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<Surface
           <Text font={type.strong.font} size={type.strong.size} weight={type.strong.weight} color={colors.ink} maxLines={1}
                 flexShrink={1} flexGrow={1}>
             {entry.title ?? entry.id}
-            {!entry.agent && <Text weight={500} color={colors.faint}>{`  ${entry.owner}`}</Text>}
+            {!entry.agent && entry.owner !== (entry.title ?? entry.id)
+              && <Text weight={500} color={colors.faint}>{`  ${entry.owner}`}</Text>}
           </Text>
           {close}
         </Box>

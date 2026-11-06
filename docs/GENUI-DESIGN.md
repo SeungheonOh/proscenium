@@ -12,7 +12,7 @@ components from a fixed catalog, with state, bindings and actions. The world,
 the React program that directs the compositor, draws it natively with
 `proscenium/ui`, as compositor nodes beside the windows.
 
-Three choices follow from that:
+Four choices follow from that:
 
 - **Programs own their interfaces; the world draws them.** A program needs no
   Wayland surface, buffer or toolkit. It sends JSON over a Unix socket and hears
@@ -23,13 +23,21 @@ Three choices follow from that:
 - **Nothing generated costs anything while it is still.** Looks animate in the
   compositor, state changes redraw only what changed, and nothing loops except
   while work is under way.
+- **Logic lives in programs, not in the world.** An interface's spec handles
+  what it can by itself (tabs, toggles, lists). Anything more belongs to the
+  program that owns it, which can be an app: a process the world starts and
+  keeps running, which the assistant can write.
 
 ```mermaid
 flowchart LR
     subgraph Programs
       A[Assistant<br/>Pi agent]
-      M[Monitor, scripts,<br/>proscenium-ui]
+      M[Scripts,<br/>proscenium-ui]
+      X[Apps<br/>timer, monitor, written ones]
     end
+    X -- JSON lines --> S
+    S -- actions, state, show --> X
+    A -- app_write, launch --> X
     A -- JSON lines --> S[UI socket<br/>host.ts]
     M -- JSON lines --> S
     S --> V[Surface: spec + state<br/>GeneratedView]
@@ -48,6 +56,9 @@ flowchart LR
 | Mode and place | Shared | The program picks it when the interface is new and may `place` it later; the person drags it. The last move wins, and the program hears about the person's. |
 | Chat transcript | The assistant | The world draws its copy. |
 | Chat open, composer draft | The world | Saved with the world's persistent state. |
+| An app's code | Its folder | The person's, or written by the assistant once the person allows it. |
+| Whether an app runs | The world | Started, stopped and restarted by the world, saved in `running.json`. |
+| An app's data | The app | Kept in its state folder, with where the person put its interfaces. |
 
 What makes this hold up:
 
@@ -67,7 +78,8 @@ What makes this hold up:
   and starts it whenever the chat is open with no assistant.
 - **Restarts.** The assistant saves its transcript, its interfaces and its Pi
   session, and restores them when it starts again. Programs started outside the
-  session reconnect by themselves.
+  session reconnect by themselves. Apps that were running start again with the
+  world.
 
 ## Modes
 
@@ -200,7 +212,7 @@ Notes on the ones with design decisions in them:
   at 14 px muted, then an optional delta (▲ green, ▼ red) and caption.
 - **BarChart.** Horizontal bars with labels at 28% of the width and values in a
   64 px column, right-aligned by layout. Vertical columns take a height.
-- **Sparkline.** Columns filling whatever width it gets, the latest one solid.
+- **Sparkline.** Columns filling whatever width it gets, the latest one solid, scaled to the series or to a fixed `min` and `max` (0 and 100 for a percentage).
 - **Countdown.** Its clock lives in the interface's state, so it keeps running
   wherever the card goes. `running` is meant to be bound to state, so Start and
   Pause are `setState` buttons. `resetTimer` puts it back to its seconds,
@@ -283,24 +295,91 @@ A Pi agent in its own process, a client of the same socket as any program:
 - **Prompt.** A short one about the desktop, the modes and real data, followed
   by json-render's own catalog prompt adapted to the tool.
 
+## Apps
+
+Some interfaces need logic: a timer that alerts when it's done and survives a
+restart, a pomodoro that counts rounds, a tracker that saves entries, a game.
+A spec can't hold that, and running it through the assistant would put a
+model in every button press. An app holds it: a small program that owns its
+interfaces and runs everything behind them.
+
+```mermaid
+sequenceDiagram
+    participant P as Person
+    participant As as Assistant
+    participant W as World (apps.ts, host.ts)
+    participant X as App process
+    P->>As: "a pomodoro app"
+    As->>P: Run the Pomodoro app? (code folded)
+    P->>As: Run
+    As->>W: writes main.ts, launch(restart)
+    W->>X: spawn (run.mjs main.ts)
+    X->>W: hello (app), open, state
+    W-->>As: what it shows, problems, log
+    P->>W: presses Start
+    W->>X: action "toggle"
+    X->>W: state, every second
+    X->>W: notify (an overlay note)
+```
+
+- **A process of its own.** The world starts it with `run.mjs`, which bundles
+  `main.ts` and resolves the app library. As a process it can crash, run a
+  bad loop or block without touching the desktop, and it can do anything a
+  program does: keep time, save files, run commands, fetch.
+- **Owned, not shared.** An app's interfaces are its own, keyed to its
+  connection like any program's. The assistant can't patch them. It changes an
+  app by writing its code again, which restarts it. So an app keeps working
+  with no model in the loop: after the chat is reset, with the assistant
+  stopped, or after a restart.
+- **The world supervises.** It starts apps, restarts crashed ones (after 1, 2,
+  4 and 8 s, left stopped after five quick crashes in a row) and brings
+  running ones back with the compositor. An app that ends by itself, as when
+  the person closes its last interface, stays stopped. Starting an app that
+  runs asks it to show itself again, which is how a timer counting in the
+  background gets its card back.
+- **Ending when it is closed.** An app quits once it shows nothing, so
+  closing what the person sees is how they're done with it. An alert it shows
+  counts: a timer that ran out with its card closed quits when the alert goes.
+  An app with work left (a timer still counting) sets `background` and stays.
+- **One library.** `proscenium-app` is a thin layer over the client: a view per
+  interface with handlers by action name, state kept in step with the
+  person's, `notify`, `load` and `save`. The assistant's prompt teaches it in a
+  dozen lines.
+- **Allowed once, like a command.** An app is code that runs on the person's
+  machine. Before it runs, the person sees its description, where it lives,
+  its length and, under Show the code, the code itself. Allow all in this chat
+  covers apps too.
+- **Checked like a spec.** The launch waits until the app's interfaces are
+  still, then reports what it shows, what's wrong with each spec and its log
+  (errors name lines of `main.ts`). The model writes the app again until it's
+  clean. The checks include values the spec reads from state that the state
+  lacks, which would show as nothing: the mistake the first apps the
+  assistant wrote made most.
+- **The chat keeps a chip.** The app isn't in the chat, but the message that
+  made it says whether it runs, with Stop or Start, and Open for one running
+  with nothing open.
+
+`examples/genui/apps/timer` is the reference app: presets, start and pause,
+a minute more, reset, an alert over everything when the time is up, counting
+on with its card closed, and the time kept across restarts, in about 140 lines.
+
 ## Live data
 
 Some interfaces show things that change by themselves: a system monitor, a
 download, a build. Two ways to keep them current, both through state updates
 (changing values re-renders that one interface and commits only what changed):
 
-**From any program.** Open once, then push values:
+**From any program.** Open once, then push values. As an app:
 
 ```ts
-const ui = new UIClient({ name: "Monitor" });
-ui.open("system", { mode: "overlay", place: { anchor: "top-right" }, title: "System", spec });
-setInterval(() => ui.state("system", { "/cpu": load(), "/memory": memory() }), 2000);
+const ui = app();
+const view = ui.open("system", { mode: "overlay", place: { anchor: "top-right" }, title: "System", spec });
+setInterval(() => view.set({ cpu: load(), memory: memory() }), 2000);
 ```
 
-`examples/genui/demos/monitor.ts` is the whole thing in 80 lines. From a
-language without the client, it's the same two JSON messages over the socket.
-The program can run as a user service; its interface returns whenever the world
-does.
+`examples/genui/apps/monitor` is the whole thing in 80 lines, and
+`proscenium-ui start monitor` runs it. From a language without the client, it's
+the same two JSON messages over the socket.
 
 **From the assistant.** `ui_feed` gives an interface a feed: a shell command
 run every few seconds whose output goes into the interface's state, after the
@@ -330,6 +409,9 @@ Measured on the headless rig:
 - A running countdown wakes once a second.
 - A feed costs a shell run per tick in the assistant's process, plus a state
   update for one interface.
+- An app costs a Node process, about 70 MB resident, and whatever it does.
+  The timer sends one state change a second while it counts and nothing
+  otherwise.
 - The chat streams at most 25 updates a second and skips ones that change
   nothing shown.
 
@@ -347,6 +429,8 @@ Measured on the headless rig:
   as the camera's position allows; after a fling it can rest between pixels,
   which softens windows too.
 - **First output only.** Interfaces show on the first output.
+- **Apps run as the person.** An app the person allowed can do whatever they
+  can. There's no sandbox, the same as for commands.
 - **Model reliability.** Codex Luna 6 at a low thinking level sometimes drops
   elements or fumbles deeply nested patches. The tool's feedback catches
   missing pieces; `PROSCENIUM_ASSISTANT_THINKING=medium` trades speed for fewer

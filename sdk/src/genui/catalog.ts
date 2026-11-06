@@ -82,14 +82,14 @@ export const catalog = defineCatalog(schema, {
       props: z.object({
         text: z.union([z.string(), z.number()]),
         tone: tone.nullable(),
-        size: z.enum(["sm", "md", "lg", "xl"]).nullable(),
+        size: z.enum(["sm", "md", "lg", "xl", "2xl", "3xl"]).nullable(),
         weight: z.enum(["regular", "medium", "bold"]).nullable(),
         align: z.enum(["start", "center", "end"]).nullable(),
         maxLines: z.number().nullable(),
         mono: z.boolean().nullable(),
       }),
       slots: [],
-      description: "Plain text that wraps. Emoji are fine.",
+      description: "Plain text that wraps. Emoji are fine. 2xl and 3xl are display sizes, for one big number or a clock face, bold. Digits all have one width, so a clock keeps still as it changes without mono (mono is for code).",
     },
     Markdown: {
       props: z.object({ text: z.string() }),
@@ -163,9 +163,15 @@ export const catalog = defineCatalog(schema, {
       description: "Bars comparing values: horizontal (default, labels left) or vertical columns.",
     },
     Sparkline: {
-      props: z.object({ values: z.array(z.number()), height: z.number().nullable(), tone: tone.nullable() }),
+      props: z.object({
+        values: z.array(z.number()),
+        height: z.number().nullable(),
+        tone: tone.nullable(),
+        min: z.number().nullable(),
+        max: z.number().nullable(),
+      }),
       slots: [],
-      description: "A tiny column chart of a series, for a trend beside a number.",
+      description: "A tiny column chart of a series, for a trend beside a number. It scales to the series unless min and max fix the scale (0 and 100 for a percentage).",
     },
     Image: {
       props: z.object({

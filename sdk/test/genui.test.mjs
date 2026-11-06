@@ -77,3 +77,17 @@ test("the catalog prompt teaches the tool's patch list and every component", () 
   assert.doesNotMatch(prompt, /Output ONLY JSONL/);
   for (const name of componentNames) assert.match(prompt, new RegExp(`- ${name}:`), name);
 });
+
+test("a value read from state that is not there is a problem, until it is set", () => {
+  const surface = new Surface({ root: "a", state: { running: false }, elements: {
+    a: { type: "Stack", props: {}, children: ["clock", "toggle", "field"] },
+    clock: { type: "Text", props: { text: { $state: "/clock" } }, children: [] },
+    toggle: { type: "Button", props: { label: { $cond: { $state: "/paused" }, $then: "Resume", $else: { $state: "/verb" } } },
+              children: [] },
+    field: { type: "TextField", props: { value: { $bindState: "/name" } }, children: [] } } });
+  const reads = surface.problems(componentNames).filter((problem) => problem.includes("its state does not have"));
+  assert.deepEqual(reads.map((problem) => problem.split(" ")[1]), ['"clock"', '"toggle"'],
+                   "a $cond's condition and an input's binding may be unset; shown values may not");
+  surface.state.update({ "/clock": "25:00", "/verb": "Start" });
+  assert.equal(surface.problems(componentNames).filter((problem) => problem.includes("its state does not have")).length, 0);
+});

@@ -419,7 +419,7 @@ function Heading({ props }: Rendered) {
   </Text>;
 }
 
-const textSizes: Record<string, number> = { sm: 12, md: 13, lg: 15, xl: 19 };
+const textSizes: Record<string, number> = { sm: 12, md: 13, lg: 15, xl: 19, "2xl": 30, "3xl": 46 };
 
 // Text is placed by layout, which keeps it on whole pixels, rather than aligned
 // inside its box by Pango, which can leave its glyphs between pixels and blurred.
@@ -430,7 +430,9 @@ const weights: Record<string, number> = { regular: 450, medium: 600, bold: 700 }
 
 function TextElement({ props }: Rendered) {
   const styles = useStyles();
-  const color = toneColor(styles.theme, props.tone);
+  // A display size is one big figure, in ink even when mono (whose small text is soft, like code).
+  const display = props.size === "2xl" || props.size === "3xl";
+  const color = toneColor(styles.theme, props.tone) ?? (display ? String(styles.theme.colors.ink) : undefined);
   const lines = props.maxLines === undefined || props.maxLines === null ? undefined : number(props.maxLines, 1);
   const words = text(props.text);
   return (
@@ -713,8 +715,9 @@ function Sparkline({ props }: Rendered) {
   const styles = useStyles();
   const values = (Array.isArray(props.values) ? props.values : []).map((value) => number(value, 0)).slice(-60);
   const height = number(props.height, 32);
-  const low = Math.min(...values, 0);
-  const high = Math.max(...values, 0);
+  // A fixed scale when given (a percentage's 0 to 100), else the series' own.
+  const low = props.min === null || props.min === undefined ? Math.min(...values, 0) : number(props.min, 0);
+  const high = props.max === null || props.max === undefined ? Math.max(...values, 0) : number(props.max, 1);
   const span = high - low || 1;
   const color = toneColor(styles.theme, props.tone ?? "accent");
   // It takes the room it is given, in a row as in a column.
@@ -722,7 +725,7 @@ function Sparkline({ props }: Rendered) {
     <Box flexDirection="row" height={height} gap={2} alignItems="flex-end" alignSelf="stretch" flexGrow={1} minWidth={60}>
       {values.map((value, index) => (
         <Rect key={index} flexGrow={1} flexBasis={0} radius={1.5} fill={color}
-              opacity={index === values.length - 1 ? 1 : 0.55} height={Math.max(2, ((value - low) / span) * height)} />
+              opacity={index === values.length - 1 ? 1 : 0.55} height={Math.max(2, Math.min(1, (value - low) / span) * height)} />
       ))}
     </Box>
   );

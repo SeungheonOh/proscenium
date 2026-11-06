@@ -164,10 +164,11 @@ export class Surface {
     return { ...this.spec, state: this.state.getSnapshot() };
   }
 
-  /** Words a model can check its work by: missing children, unknown types, an absent root. */
+  /** Words a model can check its work by: missing children, unknown types, an absent root, state it reads but lacks. */
   problems(known: readonly string[]): string[] {
     const found: string[] = [];
     const { root, elements } = this.spec;
+    const state = this.state.getSnapshot();
     if (!root) found.push("no /root yet");
     else if (!elements[root]) found.push(`root "${root}" has no element`);
     for (const [key, element] of Object.entries(elements)) {
@@ -179,6 +180,13 @@ export class Surface {
       for (const misplaced of ["visible", "on", "repeat", "watch"]) {
         if (props && misplaced in props) found.push(`element "${key}" has "${misplaced}" inside props; it goes on the element`);
       }
+      // A value read from state that is not there shows as nothing until something sets it.
+      const reads = new Set<string>();
+      stateReads(props, reads);
+      for (const path of reads) {
+        if (path.startsWith("/_ui") || getByPath(state, path) !== undefined) continue;
+        found.push(`element "${key}" shows ${path}, which its state does not have: it stays empty until something sets it`);
+      }
     }
     return found;
   }
@@ -186,6 +194,22 @@ export class Surface {
   private changed(): void {
     for (const listener of [...this.listeners]) listener();
   }
+}
+
+/** The paths VALUE reads from state as values, { "$state": path } alone; a $cond's condition may be unset (false). */
+function stateReads(value: unknown, found: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const each of value) stateReads(each, found);
+    return;
+  }
+  if (!value || typeof value !== "object") return;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (typeof record.$state === "string" && keys.length === 1) {
+    found.add(record.$state);
+    return;
+  }
+  for (const key of keys) if (key !== "$cond") stateReads(record[key], found);
 }
 
 /** An element as the renderer needs it: props an object and children a list, whatever arrived. */

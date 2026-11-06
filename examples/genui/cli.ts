@@ -9,10 +9,18 @@
 //       A note pinned over everything for a few seconds.
 //   proscenium-ui catalog
 //       Prints how to write specs for the components the world draws, for a model's prompt.
+//   proscenium-ui apps
+//       Lists the apps there are (apps.ts), and which run.
+//   proscenium-ui start|stop|restart NAME
+//       Starts an app (or has a running one show itself), stops one, or starts one again.
+//   proscenium-ui logs NAME
+//       Prints what an app printed in its last run.
 
-import { readFileSync } from "node:fs";
-import { UIClient, type JsonPatch, type OpenOptions, type Spec } from "./client.js";
-import type { Anchor, Mode } from "./protocol.js";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
+import { UIClient, type JsonPatch, type OpenOptions, type Result, type Spec } from "./client.js";
+import { appLog } from "./apps.js";
+import { appName, appStateFolder, type Anchor, type Mode } from "./protocol.js";
 
 const [command, ...rest] = process.argv.slice(2);
 const flags: Record<string, string | true> = {};
@@ -35,7 +43,10 @@ function usage(): never {
                                  [--title T] [--width N] [--theme light|dark] [--id ID]
   proscenium-ui ask "QUESTION" [--choices "Yes,No"] [--input] [--placeholder P] [--title T]
   proscenium-ui notify "TEXT" [--title T] [--seconds 5] [--anchor top-right]
-  proscenium-ui catalog`);
+  proscenium-ui catalog
+  proscenium-ui apps
+  proscenium-ui start|stop|restart NAME
+  proscenium-ui logs NAME`);
   process.exit(2);
 }
 
@@ -63,11 +74,30 @@ ui.on("disconnect", () => {
 });
 ui.on("connect", () => clearTimeout(away));
 
-async function opened(id: string, options: OpenOptions): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+function connected(): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
     ui.once("connect", resolve);
     setTimeout(() => reject(new Error("No world is listening (is Proscenium running?)")), 3000);
   });
+}
+
+/** What an app start says: whether it runs, what it shows, what is wrong. */
+function report(result: Result): never {
+  const app = result.app;
+  if (!result.ok) console.error(`proscenium-ui: ${result.error}`);
+  if (app?.running) {
+    console.log(`${app.name} runs (pid ${app.pid})${app.interfaces.length ? ", showing:" : ", showing nothing yet"}`);
+  }
+  for (const each of app?.interfaces ?? []) {
+    console.log(`  ${each.title ?? each.id} (${each.mode})`);
+    for (const problem of each.problems) console.log(`    ! ${problem}`);
+  }
+  if (!result.ok && result.log) console.error(result.log);
+  process.exit(result.ok ? 0 : 1);
+}
+
+async function opened(id: string, options: OpenOptions): Promise<void> {
+  await connected();
   const result = await ui.open(id, options);
   if (!result.ok) throw new Error(result.error);
   for (const problem of result.problems ?? []) console.error(`proscenium-ui: ${problem}`);
@@ -142,8 +172,40 @@ async function main(): Promise<void> {
       return;
     }
     case "catalog": {
-      await new Promise<void>((resolve) => ui.once("connect", resolve));
+      await connected();
       console.log((await ui.catalog()).prompt);
+      process.exit(0);
+    }
+    case "apps": {
+      await connected();
+      const { apps = [] } = await ui.apps();
+      for (const app of apps) {
+        const state = app.running ? `running, ${app.interfaces.length} open` : app.ended ?? "stopped";
+        console.log(`${app.name.padEnd(16)} ${app.title.padEnd(20)} ${state.padEnd(22)} ${app.builtin ? "built in" : app.dir}`);
+      }
+      process.exit(0);
+    }
+    case "start":
+    case "restart": {
+      if (!words[0]) usage();
+      await connected();
+      report(await ui.launch(words[0], { restart: command === "restart" }));
+    }
+    case "stop": {
+      if (!words[0]) usage();
+      await connected();
+      const result = await ui.stopApp(words[0]);
+      if (!result.ok) console.error(`proscenium-ui: ${result.error}`);
+      process.exit(result.ok ? 0 : 1);
+    }
+    case "logs": {
+      if (!words[0]) usage();
+      if (!appName.test(words[0]) || !existsSync(join(appStateFolder(words[0]), "log"))) {
+        console.error(`proscenium-ui: no log for "${words[0]}"`);
+        process.exit(1);
+      }
+      const log = appLog(words[0], Infinity);
+      if (log) console.log(log);
       process.exit(0);
     }
     default:

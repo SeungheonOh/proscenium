@@ -694,6 +694,34 @@ static bool scale_changing(struct emit *e, const struct node *node, double scale
     return changing;
 }
 
+/* VALUE to OUT as 0 or plus or minus SCALE, when it is one of those but for rounding. */
+static bool axis_factor(double value, double scale, double *out) {
+    double tolerance = 1e-6 * scale;
+    if (fabs(value) <= tolerance) *out = 0;
+    else if (fabs(fabs(value) - scale) <= tolerance) *out = copysign(scale, value);
+    else return false;
+    return true;
+}
+
+/*
+ * T with its final position rounded to whole pixels when it maps the node's axes
+ * onto the buffer's at SCALE, turned by quarter turns or flipped at most, so a text
+ * raster at SCALE lands texel for pixel; any other T as it is, resampled. Rounding
+ * where the text ends up, never its motion, keeps a moving text's pixels the same
+ * in every frame: it steps whole pixels instead of shimmering between resamplings.
+ */
+static struct mat3 pixel_aligned(struct mat3 t, double scale) {
+    double a, b, c, d;
+    if (t.g != 0 || t.h != 0 || t.i != 1 || !axis_factor(t.a, scale, &a) ||
+        !axis_factor(t.b, scale, &b) || !axis_factor(t.c, scale, &c) ||
+        !axis_factor(t.d, scale, &d))
+        return t;
+    bool straight = a != 0 && d != 0 && b == 0 && c == 0;
+    bool turned = b != 0 && c != 0 && a == 0 && d == 0;
+    if (!straight && !turned) return t;
+    return (struct mat3){a, b, c, d, floor(t.e + 0.5), floor(t.f + 0.5), 0, 0, 1};
+}
+
 static void emit_text(struct emit *e, struct node *node, struct mat3 t, double width, double height,
                       double opacity, const struct filter *filter, const struct mat3 *inverse,
                       const struct mat3 *parent_inverse) {
@@ -710,13 +738,14 @@ static void emit_text(struct emit *e, struct node *node, struct mat3 t, double w
         double exact;
         bool changing = scale_changing(e, node, scale, &exact);
         double raster_scale = content_raster_scale(exact, changing, fmax(box.width, box.height));
+        struct mat3 placed = pixel_aligned(t, raster_scale);
         uint64_t slot = key_of(1, node->id, 7, e->output->index);
-        struct item *item =
-            emit_item(e, node->id, 7, 0,
-                      mat3_box_bounds(t, (struct box){box.left, box.top, box.width, box.height}, 1),
-                      ITEM_TEXT);
+        struct item *item = emit_item(
+            e, node->id, 7, 0,
+            mat3_box_bounds(placed, (struct box){box.left, box.top, box.width, box.height}, 1),
+            ITEM_TEXT);
         if (item) {
-            item->text.transform = t;
+            item->text.transform = placed;
             item->text.slot = slot;
             item->text.key = content_text_key(layout, color, raster_scale);
             item->text.scale = raster_scale;

@@ -290,25 +290,26 @@ void media_text_layout_size(const struct media_text_layout *layout, double *widt
     *height = layout->metrics.height;
 }
 
-static int pixel_count(double length) {
-    double pixels = ceil(length);
+static int pixel_count(double pixels) {
     /* Cairo refuses far smaller rasters; the bound keeps the conversion defined. */
     return pixels >= 1 ? (int)MIN(pixels, 1 << 20) : 1;
 }
 
 struct media_text_box media_text_raster_box(const struct media_text_metrics *metrics,
                                             double scale) {
-    /* One device pixel of padding keeps antialiased edges off the texture border. */
-    double pad = 1 / scale;
-    struct media_text_box box = {
-        .left = metrics->left - pad,
-        .top = metrics->top - pad,
-        .width = metrics->right - metrics->left + 2 * pad,
-        .height = metrics->bottom - metrics->top + 2 * pad,
+    /* Whole device pixels from the layout's origin, so a raster drawn at its scale with
+     * the origin on a pixel corner puts each texel on one pixel. At least one pixel of
+     * padding keeps antialiased edges off the texture border. */
+    double left = floor(metrics->left * scale) - 1, top = floor(metrics->top * scale) - 1;
+    double right = ceil(metrics->right * scale) + 1, bottom = ceil(metrics->bottom * scale) + 1;
+    return (struct media_text_box){
+        .left = left / scale,
+        .top = top / scale,
+        .width = (right - left) / scale,
+        .height = (bottom - top) / scale,
+        .pixel_width = pixel_count(right - left),
+        .pixel_height = pixel_count(bottom - top),
     };
-    box.pixel_width = pixel_count(box.width * scale);
-    box.pixel_height = pixel_count(box.height * scale);
-    return box;
 }
 
 static bool render_text(PangoContext *context, const struct media_text_style *style,
@@ -332,8 +333,9 @@ static bool render_text(PangoContext *context, const struct media_text_style *st
         return false;
     }
     cairo_t *cairo = cairo_create(surface);
+    /* The box's corner lies whole pixels from the origin; taken in pixels, it stays exact. */
+    cairo_translate(cairo, -rint(box.left * scale), -rint(box.top * scale));
     cairo_scale(cairo, scale, scale);
-    cairo_translate(cairo, -box.left, -box.top);
     cairo_set_source_rgba(cairo, color.r, color.g, color.b, color.a);
     /* Pango lays out at the logical size and Cairo scales the outlines. Told the
      * scale, Pango would look the font up again for each one, which takes

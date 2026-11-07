@@ -151,7 +151,8 @@ void media_text_layout_finish(struct media_text_layout *layout);
 void media_text_layout_size(const struct media_text_layout *layout, double *width, double *height);
 /*
  * The rectangle a raster of METRICS at SCALE covers: the ink and logical union
- * with one device pixel of padding, and its pixel size, at least 1x1.
+ * grown to whole device pixels from the layout's origin, with at least one pixel
+ * of padding, and its pixel size, at least 1x1.
  */
 struct media_text_box media_text_raster_box(const struct media_text_metrics *metrics, double scale);
 /*

@@ -83,6 +83,7 @@ export class Session {
         this.screenshots.clear();
       },
       orphaned: () => this.onRejected("The compositor exited."),
+      drained: () => this.container.resume(),
     }, options.parentPid);
   }
 

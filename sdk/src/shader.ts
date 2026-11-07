@@ -233,7 +233,7 @@ export function wireUniform(value: UniformValue): WireValue {
 
 export function wireUniforms(uniforms: Record<string, UniformValue>): WireProps {
   const out: WireProps = {};
-  for (const [name, value] of Object.entries(uniforms)) out[name] = wireUniform(value);
+  for (const name of Object.keys(uniforms)) out[name] = wireUniform(uniforms[name]!);
   return out;
 }
 

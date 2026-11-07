@@ -418,9 +418,23 @@ export type HostType =
 type Props = Record<string, unknown>;
 type Writer = (value: never, out: WireProps) => void;
 
+/**
+ * Writers whose one wire property depends on their value alone, and which write
+ * it for every value ACCEPTS takes: an update changing only such props can
+ * write them over the previous wire props instead of normalizing again.
+ */
+const plainWriters = new Map<Writer, { wire: string; accepts: (value: unknown) => boolean }>();
+
+function plain(wire: string, accepts: (value: unknown) => boolean, write: Writer): Writer {
+  plainWriters.set(write, { wire, accepts });
+  return write;
+}
+
+const isDefined = (value: unknown) => value !== undefined;
+const isNumber = (value: unknown) => typeof value === "number";
 
 function number(name: string): Writer {
-  return (value: number, out) => { out[name] = value; };
+  return plain(name, isDefined, (value: number, out) => { out[name] = value; });
 }
 
 function flag(name: string): Writer {
@@ -429,22 +443,25 @@ function flag(name: string): Writer {
 
 /** A size; percentages only mean something to layout. */
 function size(name: string): Writer {
-  return (value: Dimension, out) => {
+  return plain(name, isNumber, (value: Dimension, out) => {
     if (typeof value === "number") out[name] = value;
-  };
+  });
 }
 
 function text(name: string): Writer {
-  return (value: string, out) => { out[name] = value; };
+  return plain(name, isDefined, (value: string, out) => { out[name] = value; });
 }
 
-const color = (name: string): Writer => (value: Color, out) => { out[name] = toWireColor(value); };
+const color = (name: string): Writer =>
+  plain(name, isDefined, (value: Color, out) => { out[name] = toWireColor(value); });
 
 function isGradient(value: unknown): value is { from?: Color; to?: Color; angle?: number } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-const rotation: Writer = (value: number, out) => { out.rotation = value * radians; };
-const transformFunctions: Writer = (value: Transform, out) => { out.transform = wireTransform(value); };
+const rotation = plain("rotation", isDefined, (value: number, out) => { out.rotation = value * radians; });
+const transformFunctions = plain("transform", isDefined, (value: Transform, out) => {
+  out.transform = wireTransform(value);
+});
 
 const modifierNames: Record<string, string> = {
   super: "logo", logo: "logo", meta: "logo", shift: "shift", ctrl: "control", control: "control",
@@ -634,12 +651,19 @@ type Motions = Partial<Record<string, Motion>>;
 
 const clear = toWireColor("transparent");
 
+const fillNames = ["fill", "fillEnd", "fillAngle"] as const;
+const borderColorNames = ["borderColor", "borderColorEnd", "borderAngle"] as const;
+
 /** The uniforms of fill or border color VALUE as START, END and ANGLE; with COMPLETE, solid. */
-function paintUniforms(value: PaintValues | undefined, names: [string, string, string],
+function paintUniforms(value: PaintValues | undefined, names: readonly [string, string, string],
                        complete: boolean, out: Uniforms): void {
-  const [start, end, angle] = names;
+  const start = names[0], end = names[1], angle = names[2];
   if (value === undefined) {
-    if (complete) Object.assign(out, { [start]: clear, [end]: clear, [angle]: 0 });
+    if (complete) {
+      out[start] = clear;
+      out[end] = clear;
+      out[angle] = 0;
+    }
   } else if (!isGradient(value)) {
     out[start] = out[end] = toWireColor(value);
     if (complete) out[angle] = 0;
@@ -656,13 +680,13 @@ function boxUniforms(type: HostType, props: Props, complete: boolean): Uniforms 
   const out: Uniforms = {};
   const style = borders[type];
   paintUniforms(style === "inside" ? props.fill as PaintValues | undefined : undefined,
-                ["fill", "fillEnd", "fillAngle"], complete, out);
+                fillNames, complete, out);
   const border = props.border as { width?: number; color?: PaintValues } | undefined;
   if (border?.width !== undefined || complete) {
     out.border = border?.width ?? 0;
     out.outset = style === "frame" ? out.border : 0;
   }
-  paintUniforms(border?.color, ["borderColor", "borderColorEnd", "borderAngle"], complete, out);
+  paintUniforms(border?.color, borderColorNames, complete, out);
   return out;
 }
 
@@ -693,15 +717,29 @@ function planeUniforms(props: Props, complete: boolean): Uniforms {
   return out;
 }
 
-/** Motions by uniform: each of NAMES moves with its group's motion in GROUPS, unless absent. */
-function partMotions(groups: [Motion | undefined, readonly string[]][], fallback?: Motion):
-  Shading["transition"] {
-  const parts: Record<string, Motion> = {};
-  for (const [motion, names] of groups) if (motion) for (const name of names) parts[name] = motion;
-  if (!Object.keys(parts).length) return fallback;
+type Parts = Record<string, Motion>;
+
+/** PARTS with each of NAMES moving with MOTION, unless it is absent. */
+function addParts(parts: Parts | null, motion: Motion | undefined, names: readonly string[]): Parts | null {
+  if (!motion) return parts;
+  parts ??= {};
+  for (const name of names) parts[name] = motion;
+  return parts;
+}
+
+/** Motions by uniform from addParts, the rest moving with FALLBACK. */
+function partMotions(parts: Parts | null, fallback?: Motion): Shading["transition"] {
+  if (!parts) return fallback;
   if (fallback) parts.default = fallback;
   return parts;
 }
+
+const planeColorNames = ["color"] as const;
+const planeGridNames = ["gridColor", "spacing", "weight"] as const;
+const fillAngleNames = ["fillAngle"] as const;
+const borderNames = ["border", "borderColor", "borderColorEnd", "borderAngle", "outset"] as const;
+const borderAngleNames = ["borderAngle"] as const;
+const noShadings: readonly Shading[] = [];
 
 /**
  * The wire `shaders` of PROPS in the order they draw: the shadow, the backdrop
@@ -711,6 +749,10 @@ function partMotions(groups: [Motion | undefined, readonly string[]][], fallback
  * default.
  */
 function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
+  if (props.fill === undefined && props.grid === undefined && !props.shadow && typeof props.blur !== "number"
+      && props.border === undefined && props.shaders == null && typeof props.dim !== "number") {
+    return undefined;
+  }
   const transition = props.transition as Transition | undefined;
   const motions: Motions = transition && !isMotion(transition) ? transition as Motions : {};
   const fallback = motions.shaders;
@@ -718,8 +760,8 @@ function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
   const style = borders[type];
   if (type === "background" && (props.fill !== undefined || props.grid !== undefined)) {
     under.push({ id: "plane", shader: planePaint, uniforms: planeUniforms(props, true),
-                 transition: partMotions([[motions.fill, ["color"]],
-                                          [motions.grid, ["gridColor", "spacing", "weight"]]], fallback) });
+                 transition: partMotions(addParts(addParts(null, motions.fill, planeColorNames),
+                                                  motions.grid, planeGridNames), fallback) });
   }
   if (props.shadow && style)
     under.push({ id: "shadow", shader: boxShadow, uniforms: shadowUniforms(props.shadow as Shadow, true),
@@ -731,17 +773,16 @@ function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
   const box: Shading | null = decorated ? {
     id: "box", shader: boxPaint, uniforms: boxUniforms(type, props, true),
     layer: style === "over" ? "over" : "under",
-    transition: partMotions([
-      [motions.fill, ["fill", "fillEnd", "fillAngle"]], [motions.fillAngle, ["fillAngle"]],
-      [motions.border, ["border", "borderColor", "borderColorEnd", "borderAngle", "outset"]],
-      [motions.borderAngle, ["borderAngle"]],
-    ], fallback),
+    transition: partMotions(addParts(addParts(addParts(addParts(null,
+      motions.fill, fillNames), motions.fillAngle, fillAngleNames),
+      motions.border, borderNames), motions.borderAngle, borderAngleNames), fallback),
   } : null;
   // Own paints under the content go between what lies behind the box and its fill: a
   // frame's border lies outside the box, so the backdrop blur inside it comes last.
-  const own = (props.shaders as readonly Shading[] | undefined) ?? [];
-  const ownUnder = own.filter((shading) => shading.shader.stage === "paint" && shading.layer !== "over");
-  const rest = own.filter((shading) => !ownUnder.includes(shading));
+  const own = (props.shaders as readonly Shading[] | undefined) ?? noShadings;
+  const ownUnder = own.length === 0 ? noShadings
+    : own.filter((shading) => shading.shader.stage === "paint" && shading.layer !== "over");
+  const rest = own.length === 0 ? noShadings : own.filter((shading) => !ownUnder.includes(shading));
   if (style === "frame") {
     under.push(...ownUnder);
     if (box) under.push(box);
@@ -827,7 +868,8 @@ function wireTransition(transition: Transition): WireProps {
 
 function writeFields(type: HostType, props: Props, out: WireProps, only?: Set<string>): void {
   const accepted = fields[type];
-  for (const [name, value] of Object.entries(props)) {
+  for (const name in props) {
+    const value = props[name];
     if (value === undefined || (only && !only.has(name))) continue;
     const write = accepted[name];
     if (write) write(value as never, out);
@@ -885,7 +927,8 @@ export function normalizeProps(type: HostType, given: Props): Normalized {
   if (type === "text" && props.text === undefined && isTextContent(props.children)) {
     wire.text = textContent(props.children);
   }
-  for (const [name, value] of Object.entries(props)) {
+  for (const name in props) {
+    const value = props[name];
     if (value === undefined) continue;
     if (layoutKeys.has(name)) style[name] = value;
     const event = handlerEvents[name];
@@ -906,7 +949,8 @@ export function normalizeProps(type: HostType, given: Props): Normalized {
   for (const key of ["initial", "exit"] as const) {
     if (props[key]) {
       const values: WireProps = {};
-      writeFields(type, props[key] as Props, values, animatedNames);
+      // A copy: only its own props, as writeFields reads every enumerable one.
+      writeFields(type, { ...props[key] as Props }, values, animatedNames);
       const targets = wireShaderTargets(type, props[key] as Props);
       if (targets) values.shaders = targets;
       wire[key] = values;
@@ -925,10 +969,24 @@ function sameValue(left: WireValue | undefined, right: WireValue | undefined): b
   if (typeof left !== "object" || typeof right !== "object" || left === null || right === null) {
     return false;
   }
-  const leftKeys = Object.keys(left);
-  return leftKeys.length === Object.keys(right).length
-    && leftKeys.every((key) => sameValue((left as Record<string, WireValue>)[key],
-                                         (right as Record<string, WireValue>)[key]));
+  if (Array.isArray(left) && Array.isArray(right)) {
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index++) if (!sameValue(left[index], right[index])) return false;
+    return true;
+  }
+  const leftProps = left as Record<string, WireValue>, rightProps = right as Record<string, WireValue>;
+  let count = 0;
+  for (const key in leftProps) {
+    if (!sameValue(leftProps[key], rightProps[key])) return false;
+    count++;
+  }
+  return count === keyCount(rightProps);
+}
+
+function keyCount(object: object): number {
+  let count = 0;
+  for (const _ in object) count++;
+  return count;
 }
 
 /**
@@ -937,11 +995,223 @@ function sameValue(left: WireValue | undefined, right: WireValue | undefined): b
  */
 export function diffWire(previous: WireProps, next: WireProps): WireProps | null {
   let changes: WireProps | null = null;
-  for (const [key, value] of Object.entries(next)) {
-    if (key !== "initial" && !sameValue(previous[key], value)) (changes ??= {})[key] = value;
+  for (const key in next) {
+    if (key !== "initial" && !sameValue(previous[key], next[key])) (changes ??= {})[key] = next[key]!;
   }
-  for (const key of Object.keys(previous)) {
+  for (const key in previous) {
     if (key !== "initial" && !(key in next)) (changes ??= {})[key] = null;
   }
   return changes;
+}
+
+/** diffWire of NEXT and PREVIOUS where they can differ only in KEYS, which both have. */
+export function diffKeys(previous: WireProps, next: WireProps, keys: readonly string[]): WireProps | null {
+  let changes: WireProps | null = null;
+  if (keys.length === 1) {
+    const key = keys[0]!;
+    if (!sameValue(previous[key], next[key])) changes = { [key]: next[key]! };
+  } else if (keys.length > 1) {
+    // In the order diffWire would find them.
+    for (const key in next) {
+      if (keys.includes(key) && !sameValue(previous[key], next[key])) (changes ??= {})[key] = next[key]!;
+    }
+  }
+  return changes;
+}
+
+// Updates.
+//
+// An update mostly changes a few props, such as x and y every frame. When each
+// prop that changed writes a wire field of its own, or is read only by layout or
+// as a handler, the node's wire props with those fields written again are what
+// normalizeProps would make of its new props, and only those fields can differ:
+// fills, borders, shadows, shaders and motions are neither converted nor
+// compared again. As in React DOM, a prop holding the same object as before is
+// unchanged; one holding a new object is unchanged when it is equal in value,
+// with its keys in the same order.
+
+/** How a host type takes a change of one prop. */
+type Change =
+  /** It writes its own wire field, and is read by layout too with LAYOUT. */
+  | { kind: "field"; write: Writer; wire: string; accepts: (value: unknown) => boolean; layout: boolean }
+  /** Read only by layout. */
+  | { kind: "layout" }
+  | { kind: "handler"; event: string }
+  | { kind: "onLayout" }
+  /** A Text's string children, which are its text. */
+  | { kind: "content" }
+  /** Read in other ways: an update that changes its value normalizes the props again. */
+  | { kind: "other" };
+
+/** Props normalizeProps reads besides fields, layout props and handlers. */
+const derivedKeys = ["style", "transition", "fill", "border", "shadow", "blur", "grid", "dim", "shaders",
+                     "initial", "exit", "animate", "layoutId"];
+
+/** How TYPE takes a change of each prop it reads; the rest it ignores. */
+function changesOf(type: HostType): Map<string, Change> {
+  const changes = new Map<string, Change>();
+  const other: Change = { kind: "other" };
+  for (const name of derivedKeys) changes.set(name, other);
+  // `display: "none"` also hides the node.
+  for (const name of layoutKeys) changes.set(name, name === "display" ? other : { kind: "layout" });
+  for (const name in handlerEvents) changes.set(name, { kind: "handler", event: handlerEvents[name]! });
+  changes.set("onLayout", { kind: "onLayout" });
+  if (type === "text") changes.set("children", { kind: "content" });
+  for (const name in fields[type]) {
+    const write = fields[type][name]!;
+    const plain = plainWriters.get(write);
+    changes.set(name, plain ? { kind: "field", write, ...plain, layout: layoutKeys.has(name) } : other);
+  }
+  return changes;
+}
+
+const changeKinds = Object.fromEntries((Object.keys(fields) as HostType[])
+  .map((type) => [type, changesOf(type)])) as Record<HostType, Map<string, Change>>;
+
+/** How much of a prop's value sameInput looks at before calling it changed. */
+const inputBudget = 4096;
+const maxInputDepth = 12;
+let budget = 0;
+/** Keys of an object at each depth of sameInput, reused. */
+const inputKeys: string[][] = [];
+
+/**
+ * Whether prop values A and B normalize alike: equal primitives, functions by
+ * identity, and arrays and plain objects equal in their items, keys and key order.
+ */
+function sameInput(a: unknown, b: unknown, depth: number): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (depth === maxInputDepth || --budget < 0) return false;
+  if (Array.isArray(a)) {
+    if (!Array.isArray(b) || a.length !== b.length) return false;
+    for (let index = 0; index < a.length; index++) if (!sameInput(a[index], b[index], depth + 1)) return false;
+    return true;
+  }
+  const prototype = Object.getPrototypeOf(a);
+  if ((prototype !== Object.prototype && prototype !== null) || Object.getPrototypeOf(b) !== prototype) {
+    return false;
+  }
+  const left = a as Props, right = b as Props;
+  const keys = (inputKeys[depth] ??= []);
+  keys.length = 0;
+  for (const key in left) keys.push(key);
+  let index = 0;
+  for (const key in right) if (keys[index++] !== key) return false;
+  if (index !== keys.length) return false;
+  for (index = 0; index < keys.length; index++) {
+    if (!sameInput(left[keys[index]!], right[keys[index]!], depth + 1)) return false;
+  }
+  return true;
+}
+
+/** What normalizeProps made of a node's props, as the node keeps it. */
+export interface NormalizedNode {
+  declared: WireProps;
+  handlers: Map<string, EventHandler>;
+  style: Props;
+  onLayout: ((layout: LayoutBox) => void) | null;
+  /**
+   * Whether `declared` holds a NaN, unknown until a patch asks. Normalizing
+   * makes such a value anew, unequal to itself, so every update sends it again;
+   * those updates keep normalizing to go on doing so.
+   */
+  holdsNaN: boolean | undefined;
+}
+
+/** Whether VALUE is or holds a NaN. */
+function holdsNaN(value: WireValue | undefined): boolean {
+  if (typeof value === "number") return value !== value;
+  if (typeof value !== "object" || value === null) return false;
+  if (Array.isArray(value)) {
+    for (const item of value) if (holdsNaN(item)) return true;
+    return false;
+  }
+  for (const key in value) if (holdsNaN(value[key])) return true;
+  return false;
+}
+
+/** Scratch lists of patchProps, reused so that an update allocates only what it keeps. */
+const previousKeys: string[] = [];
+const patched: string[] = [];
+const patchedWire: string[] = [];
+
+/**
+ * Brings NODE, normalized from PREVIOUS props, up to date with NEXT without
+ * normalizing again, when every prop that changed writes its own wire field, is
+ * read only by layout or is a handler. Returns the wire props that may have
+ * changed (a list valid until the next call), or null, leaving NODE as it was,
+ * when NEXT has to be normalized.
+ */
+export function patchProps(type: HostType, previous: Props, next: Props,
+                           node: NormalizedNode): readonly string[] | null {
+  node.holdsNaN ??= holdsNaN(node.declared);
+  if (node.holdsNaN) return null;
+  const changes = changeKinds[type];
+  previousKeys.length = 0;
+  for (const key in previous) previousKeys.push(key);
+  patched.length = 0;
+  budget = inputBudget;
+  let index = 0;
+  // The same props in the same order, so that what they make keeps its order too.
+  for (const key in next) {
+    if (previousKeys[index++] !== key) return null;
+    const value = next[key], before = previous[key];
+    if (value === before) continue;
+    const change = changes.get(key);
+    if (!change) continue;
+    switch (change.kind) {
+      case "field":
+        if (!change.accepts(value) || !change.accepts(before)) return null;
+        break;
+      case "layout":
+        if (value === undefined || before === undefined) return null;
+        break;
+      case "handler":
+      case "onLayout":
+        if (typeof value !== "function" || typeof before !== "function") return null;
+        break;
+      case "content": {
+        // Read only without `text`; `style` might hold that.
+        if (next.style) return null;
+        if (next.text !== undefined) continue;
+        const shown = isTextContent(value);
+        if (shown !== isTextContent(before)) return null;
+        if (!shown) continue;
+        break;
+      }
+      case "other":
+        if (!sameInput(before, value, 0)) return null;
+        continue;
+    }
+    patched.push(key);
+  }
+  if (index !== previousKeys.length) return null;
+
+  // What may throw comes first, so that NODE changes only once nothing can.
+  let declared = node.declared, style = node.style;
+  patchedWire.length = 0;
+  for (const key of patched) {
+    const change = changes.get(key)!;
+    const value = next[key];
+    if (change.kind === "field" || change.kind === "content") {
+      if (declared === node.declared) declared = { ...declared };
+      if (change.kind === "field") change.write(value as never, declared);
+      else declared.text = textContent(value as TextContent);
+      patchedWire.push(change.kind === "field" ? change.wire : "text");
+    }
+    if (change.kind === "layout" || (change.kind === "field" && change.layout)) {
+      if (style === node.style) style = { ...style };
+      style[key] = value;
+    }
+  }
+  for (const key of patched) {
+    const change = changes.get(key)!;
+    if (change.kind === "handler") node.handlers.set(change.event, next[key] as EventHandler);
+    else if (change.kind === "onLayout") node.onLayout = next[key] as (layout: LayoutBox) => void;
+  }
+  node.declared = declared;
+  node.style = style;
+  for (const key of patchedWire) if (holdsNaN(declared[key])) node.holdsNaN = true;
+  return patchedWire;
 }

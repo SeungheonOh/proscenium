@@ -254,6 +254,13 @@ nothing. A window is configured once with its target size, not on every frame;
 its content is stretched to the animated box in between, and a frame of the new
 size crossfades in over the previous one as the box gets there.
 
+A world may still render every frame itself, as a simulation does. An update
+that changes only plain props (positions, sizes, opacity, transforms, colors,
+text) costs the director little, as fills, borders, shadows and shaders that did
+not change are not converted again. While the compositor reads commits slower
+than the world makes them, they wait and merge into one, so it is always sent
+the latest scene and nothing piles up in between.
+
 Direct manipulation never waits for the director either. Panning the canvas,
 zooming around the pointer, moving and resizing windows and dragging nodes run
 in the compositor in the same frame as the input, then report where things
@@ -872,7 +879,9 @@ not have to:
 `cd sdk && npm test` runs the SDK tests: reconciler ops, prop normalization,
 handler dispatch and bubbling, flexbox layout with measured text, nested text,
 keyframes, shaders and decorations on the wire, replay after reconnect, tiling
-layouts. `meson test -C build/meson` runs
+layouts, updates that rewrite only the props that changed sending exactly what
+normalizing each update in full sends, over random scenes, and commits merging
+while the compositor reads slower than the world commits. `meson test -C build/meson` runs
 [`tests/test-render.c`](../tests/test-render.c), which draws paints (quads,
 rings and planes), backdrops, filters, effects, textures and mipmaps on a
 windowless EGL context and reads the pixels back, and

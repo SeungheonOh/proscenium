@@ -1,6 +1,8 @@
 // Director side of the Stage socket: newline-delimited JSON with automatic
 // reconnection. A timer exists only while disconnected; a connected, idle
-// director wakes for nothing but compositor messages.
+// director wakes for nothing but compositor messages. A send reports when the
+// socket holds more than it takes at once, so a director producing faster than
+// the compositor reads can wait for `drained` instead of queueing without end.
 
 import { connect, type Socket } from "node:net";
 import { PROTOCOL_VERSION, type ClientMessage, type ServerMessage } from "./protocol.js";
@@ -10,6 +12,8 @@ export interface ConnectionHandlers {
   closed(): void;
   /** The compositor that launched this director died, so it will never return. */
   orphaned(): void;
+  /** Everything sent has reached the socket, after a send that returned false. */
+  drained(): void;
 }
 
 const RETRY_MIN_MS = 100;
@@ -41,8 +45,13 @@ export class Connection {
     this.socket?.destroy();
   }
 
-  send(message: ClientMessage): void {
-    if (this.ready) this.socket!.write(JSON.stringify(message) + "\n");
+  /**
+   * Send MESSAGE, unless not connected. False when the socket already holds more
+   * than it takes at once: what follows waits in memory until `drained`.
+   */
+  send(message: ClientMessage): boolean {
+    if (!this.ready) return true;
+    return this.socket!.write(JSON.stringify(message) + "\n");
   }
 
   private open(): void {
@@ -63,6 +72,7 @@ export class Connection {
       socket.write(JSON.stringify(hello) + "\n");
     });
     socket.on("data", (chunk: string) => this.receive(chunk));
+    socket.on("drain", () => this.handlers.drained());
     socket.on("error", () => undefined);
     socket.on("close", () => {
       const wasReady = this.ready;

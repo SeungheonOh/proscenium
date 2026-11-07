@@ -4,7 +4,9 @@
 // layout, only when a commit attaches them, so work React abandons costs
 // nothing. As a browser paints once per task, the commits of one task,
 // including re-renders from layout effects and onLayout, become one `commit`
-// message once <Box> layout has placed their nodes. After a reconnect the
+// message once <Box> layout has placed their nodes. While the compositor reads
+// slower than the world commits, commits wait and merge into one, so that it
+// is sent the latest scene and the director holds no backlog. After a reconnect the
 // container replays its whole tree as one commit beginning with `reset`,
 // letting the compositor hand on-screen motion from the old scene to the new
 // one. Pointer events bubble through the tree here, as they do in the DOM.
@@ -21,8 +23,8 @@ import {
   type LayoutBox, type MeasureRequest,
 } from "./layout.js";
 import {
-  type EventHandler, type HostType, type SpanFont, diffWire, escapeMarkup, isTextContent,
-  normalizeProps, spanAttributes, textContent, wireType,
+  type EventHandler, type HostType, type SpanFont, diffKeys, diffWire, escapeMarkup, isTextContent,
+  normalizeProps, patchProps, spanAttributes, textContent, wireType,
 } from "./props.js";
 import type { Op, WireEvent, WireProps } from "./protocol.js";
 import { shaderOps } from "./shader.js";
@@ -31,8 +33,12 @@ export interface Instance extends StageElement {
   readonly id: number;
   readonly type: HostType;
   readonly container: Container;
+  /** The element's props as last committed. */
+  props: Record<string, unknown>;
   /** Wire props from the element's own props. */
   declared: WireProps;
+  /** Whether `declared` holds a NaN, once known; see patchProps. */
+  holdsNaN: boolean | undefined;
   /** What the compositor is sent: the declared props, text content and layout. */
   wire: WireProps;
   handlers: Map<string, EventHandler>;
@@ -68,12 +74,20 @@ const maxMeasureRounds = 3;
 const maxLayoutPasses = 3;
 
 export interface ContainerOptions {
-  /** Receives each frame's ops. */
-  send: (ops: Op[]) => void;
+  /**
+   * Receives each frame's ops; false when it can take no more for now, as a
+   * socket whose buffer is full: what is committed then waits for `resume()`.
+   */
+  send: (ops: Op[]) => boolean | void;
   /** Asks the compositor for text sizes, which arrive through receiveMeasurements. */
   measure?: (requests: MeasureRequest[]) => void;
   /** Reports what onLayout handlers throw. */
   onError?: (error: unknown) => void;
+  /**
+   * False normalizes every update's props in full, instead of writing only the
+   * fields of the props that changed when that is all they do; for tests.
+   */
+  patch?: boolean;
 }
 
 export class Container {
@@ -98,17 +112,21 @@ export class Container {
   /** This commit's `set` props by node, so a node changed twice sends one op. */
   private readonly sets = new Map<Instance, WireProps>();
   private resync = true;
+  /** Commits wait for `resume()`: the receiver has not taken the last one yet. */
+  private waiting = false;
   /** Shaders the compositor was sent since the last resync. */
   private readonly sentShaders = new Set<string>();
 
-  private readonly send: (ops: Op[]) => void;
+  private readonly send: (ops: Op[]) => boolean | void;
   private readonly measure?: (requests: MeasureRequest[]) => void;
   private readonly onError: (error: unknown) => void;
+  private readonly patch: boolean;
 
   constructor(options: ContainerOptions) {
     this.send = options.send;
     this.measure = options.measure;
     this.onError = options.onError ?? ((error) => { throw error; });
+    this.patch = options.patch ?? true;
   }
 
   create(type: HostType, props: Record<string, unknown>, inText = false): Instance {
@@ -118,8 +136,8 @@ export class Container {
     }
     const { wire, handlers, style, onLayout } = normalizeProps(type, props);
     return {
-      id: this.nextId++, type, container: this, declared: wire, wire, handlers, style, onLayout,
-      parent: null, children: [], yoga: null, layout: null, hidden: false, attached: false,
+      id: this.nextId++, type, container: this, props, declared: wire, holdsNaN: undefined, wire, handlers,
+      style, onLayout, parent: null, children: [], yoga: null, layout: null, hidden: false, attached: false,
       inline: null,
     };
   }
@@ -130,7 +148,8 @@ export class Container {
 
   private createInline(text: string | null, props: Record<string, unknown>): Instance {
     return {
-      id: this.nextId++, type: "text", container: this, declared: {}, wire: {}, handlers: new Map(),
+      id: this.nextId++, type: "text", container: this, props, declared: {}, holdsNaN: false, wire: {},
+      handlers: new Map(),
       style: {}, onLayout: null, parent: null, children: [], yoga: null, layout: null,
       hidden: false, attached: false, inline: { text, props },
     };
@@ -156,6 +175,15 @@ export class Container {
   /** Replace the next flush with a replay of the whole tree, e.g. after connecting. */
   requestResync(): void {
     this.resync = true;
+    // The replay is for a new connection, which has taken nothing yet.
+    this.waiting = false;
+  }
+
+  /** The receiver takes ops again: send what was committed while it could not. */
+  resume(): void {
+    if (!this.waiting) return;
+    this.waiting = false;
+    this.flush();
   }
 
   commit(): void {
@@ -171,11 +199,11 @@ export class Container {
     });
   }
 
-  /** Send what is committed, unless it waits for text to be measured. */
+  /** Send what is committed, unless it waits for text to be measured or for the receiver. */
   flush(): void {
     if (this.measureTimer) return;
     this.notifyLayout();
-    if (this.measureTimer) return;
+    if (this.measureTimer || this.waiting) return;
     if (this.resync) {
       this.resync = false;
       // A compositor met anew knows no shaders; one that does takes them again unchanged.
@@ -192,7 +220,10 @@ export class Container {
       this.ops = [];
       this.unsent.clear();
       this.sets.clear();
-      this.send([...shaderOps(ops, this.sentShaders), ...ops]);
+      const defines = shaderOps(ops, this.sentShaders);
+      // Until the receiver takes this, what follows merges into one commit: a
+      // node changed in several sends one set, with its latest values.
+      if (this.send(defines.length > 0 ? [...defines, ...ops] : ops) === false) this.waiting = true;
     }
   }
 
@@ -337,19 +368,33 @@ export class Container {
       return;
     }
     const previous = sent(instance);
-    const { wire, handlers, style, onLayout } = normalizeProps(instance.type, props);
-    instance.declared = wire;
+    const style = instance.style;
+    // Most updates change a few plain props, which need no normalizing of the rest.
+    const patched = this.patch ? patchProps(instance.type, instance.props, props, instance) : null;
+    if (!patched) {
+      const normalized = normalizeProps(instance.type, props);
+      instance.declared = normalized.wire;
+      instance.holdsNaN = undefined;
+      instance.handlers = normalized.handlers;
+      instance.style = normalized.style;
+      instance.onLayout = normalized.onLayout;
+    }
+    instance.props = props;
     instance.wire = this.compose(instance);
-    instance.handlers = handlers;
-    instance.onLayout = onLayout;
     if (instance.yoga) {
-      if (!sameStyle(instance.style, style)) {
-        applyLayoutStyle(instance.yoga, style, instance.type === "box");
+      if (instance.style !== style && !sameStyle(style, instance.style)) {
+        applyLayoutStyle(instance.yoga, instance.style, instance.type === "box");
       }
       if (instance.type === "text" && textChanged(previous, instance.wire)) instance.yoga.markDirty();
     }
-    instance.style = style;
-    this.sendChanges(instance, previous);
+    // Only the patched props can differ, unless the text inside a Text changed
+    // in this commit and was not composed yet, or a NaN from layout is sent again.
+    if (patched && !this.texts.has(instance) && !layoutHoldsNaN(instance)) {
+      const changes = diffKeys(previous, sent(instance), patched);
+      if (changes && instance.attached) this.queueSet(instance, changes);
+    } else {
+      this.sendChanges(instance, previous);
+    }
   }
 
   setHidden(instance: Instance, hidden: boolean): void {
@@ -394,7 +439,9 @@ export class Container {
     instance.attached = true;
     this.instances.set(instance.id, instance);
     if (!instance.yoga) this.placeInLayout(instance);
-    const props = sent(instance);
+    // Layout writes into these props until they are sent, so they are never the declared ones.
+    const wire = sent(instance);
+    const props = wire === instance.declared ? { ...wire } : wire;
     this.unsent.set(instance, props);
     this.ops.push({ op: "create", id: instance.id, type: wireType(instance.type), props });
     for (const child of instance.children) {
@@ -573,6 +620,12 @@ function composeText(root: Instance): WireProps {
   };
   const text = write(root, { weight: num(root.declared.fontWeight) || 400, italic: root.declared.italic === true });
   return styled ? { text, markup: true } : { text };
+}
+
+function layoutHoldsNaN(instance: Instance): boolean {
+  const box = instance.layout;
+  return box !== null && (box.x !== box.x || box.y !== box.y || box.width !== box.width
+                          || box.height !== box.height);
 }
 
 function num(value: unknown): number {

@@ -15,9 +15,14 @@
 //       Starts an app (or has a running one show itself), stops one, or starts one again.
 //   proscenium-ui logs NAME
 //       Prints what an app printed in its last run.
+//   proscenium-ui tell NAME JSON [--reply]
+//       Hands an app a message (starting it if it does not run); with --reply, prints its answer.
+//   proscenium-ui hooks claude|codex
+//       Prints the hook settings that show what a coding agent does, and asks, in the Agents app.
 
 import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { UIClient, type JsonPatch, type OpenOptions, type Result, type Spec } from "./client.js";
 import { appLog } from "./apps.js";
 import { appName, appStateFolder, type Anchor, type Mode } from "./protocol.js";
@@ -46,7 +51,9 @@ function usage(): never {
   proscenium-ui catalog
   proscenium-ui apps
   proscenium-ui start|stop|restart NAME
-  proscenium-ui logs NAME`);
+  proscenium-ui logs NAME
+  proscenium-ui tell NAME JSON [--reply]
+  proscenium-ui hooks claude|codex`);
   process.exit(2);
 }
 
@@ -206,6 +213,44 @@ async function main(): Promise<void> {
       }
       const log = appLog(words[0], Infinity);
       if (log) console.log(log);
+      process.exit(0);
+    }
+    case "tell": {
+      if (!words[0] || words[1] === undefined) usage();
+      let message: unknown;
+      try {
+        message = JSON.parse(words.slice(1).join(" "));
+      } catch {
+        message = words.slice(1).join(" ");
+      }
+      await connected();
+      const result = await ui.tell(words[0], message, { reply: flags.reply === true });
+      if (!result.ok) console.error(`proscenium-ui: ${result.error}`);
+      else if (result.value !== undefined) console.log(JSON.stringify(result.value, null, 2));
+      process.exit(result.ok ? 0 : 1);
+    }
+    case "hooks": {
+      const agent = words[0];
+      if (agent !== "claude" && agent !== "codex") usage();
+      // Beside the bundle run.mjs makes (.build/), or beside this file.
+      const here = dirname(fileURLToPath(import.meta.url));
+      const hook = [join(here, "../apps/agents/hook.mjs"), join(here, "apps/agents/hook.mjs")].find((path) => existsSync(path));
+      if (!hook) throw new Error("hook.mjs not found beside the Agents app");
+      const run = (timeout: number) => ({ type: "command", command: `${process.execPath} ${hook} ${agent}`, timeout });
+      // Quick for what only reports; long for what waits for the person (a permission, Claude's questions).
+      const hooks = {
+        SessionStart: [{ hooks: [run(10)] }],
+        UserPromptSubmit: [{ hooks: [run(10)] }],
+        PreToolUse: [{ matcher: "*", hooks: [run(86400)] }],
+        PostToolUse: [{ matcher: "TodoWrite|TaskCreate|TaskUpdate|mcp__proscenium__.*", hooks: [run(10)] }],
+        PermissionRequest: [{ matcher: "*", hooks: [run(86400)] }],
+        Stop: [{ hooks: [run(10)] }],
+        SessionEnd: [{ hooks: [run(10)] }],
+      };
+      console.error(agent === "claude"
+        ? "# For one session: claude --settings FILE; for all: merge \"hooks\" into ~/.claude/settings.json"
+        : "# Save as ~/.codex/hooks.json, or .codex/hooks.json in a project");
+      console.log(JSON.stringify({ hooks }, null, 2));
       process.exit(0);
     }
     default:

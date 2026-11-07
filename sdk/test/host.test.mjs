@@ -117,6 +117,23 @@ test("a Box lays out its children once their text is measured", () => {
   assert.deepEqual(layouts, [{ x: 42, y: 11, width: 150, height: 10 }]);
 });
 
+test("text measured after its commit went out lays the scene out again, its estimate never kept", async () => {
+  const requests = [];
+  const { container, commits, render } = mount((batch) => requests.push(...batch));
+  render(h(Box, { width: 100, flexDirection: "column" }, h(Text, { size: 10 }, "a long line that wraps")));
+  assert.equal(commits.length, 0, "the commit waits for its text");
+  // A slow compositor: the commit goes out with estimates, one line high.
+  await new Promise((resolve) => setTimeout(resolve, 260));
+  assert.equal(commits.length, 1);
+  const box = commits[0].find((op) => op.op === "create" && op.props.width === 100);
+  assert.equal(box.props.height, 13);
+  // The answers come late, and lay it out again: the text wraps to three lines.
+  container.receiveMeasurements(requests.splice(0).map((request) =>
+    ({ key: request.key, width: request.props.width ?? 160, height: request.props.width ? 39 : 13 })));
+  const height = commits.flat().filter((op) => op.id === box.id && op.props?.height !== undefined).at(-1).props.height;
+  assert.equal(height, 39);
+});
+
 test("pointer events bubble, and enter and leave reach only the nodes crossed", () => {
   const { container, render } = mount();
   const seen = [];

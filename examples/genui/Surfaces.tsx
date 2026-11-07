@@ -262,7 +262,7 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
                y={top} width={dockWidth(entries)} maxHeight={height - top - margin} transition={glide}>
             {entries.map((entry) => (
               <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" width={dockWidth(entries)}
-                           dimmed={dragging === entry.key}
+                           dimmed={dragging === entry.key} maxHeight={height - top - margin}
                            frame={{ layoutId: identity(entry, dragging), initial: arriving, exit: leaving, transition: glide }} />
             ))}
           </Box>
@@ -270,6 +270,7 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
         {middle}
         {surfaces.filter((entry) => entry.mode === "floating").map((entry) => (
           <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" dimmed={dragging === entry.key}
+                       maxHeight={Math.max(240, height - Math.max(top, entry.place.y ?? top) - margin)}
                        frame={{ layoutId: identity(entry, dragging), x: entry.place.x ?? 0, y: entry.place.y ?? 0,
                                 initial: arriving, exit: leaving, transition: glide }} />
         ))}
@@ -278,6 +279,7 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
                width={clearRight - clearLeft} height={height - top - margin} interactive={false} transition={glide}>
             {entries.map((entry) => (
               <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="slim" dimmed={dragging === entry.key}
+                           maxHeight={height - top - margin}
                            frame={{ layoutId: identity(entry, dragging), initial: arriving, exit: leaving, transition: glide }} />
             ))}
           </Box>
@@ -289,7 +291,7 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
                   transition={glide} onPointerDown={() => {}} />
             <Box style={styles.dialog} width={width} height={height} interactive={false}>
               {dialogs.map((entry) => (
-                <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full"
+                <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" maxHeight={height - top - 2 * margin}
                              frame={{ layoutId: `genui:${entry.key}`, initial: arriving, exit: leaving, transition: glide }} />
               ))}
             </Box>

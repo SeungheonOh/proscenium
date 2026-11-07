@@ -34,6 +34,16 @@ export interface ViewOptions extends Omit<OpenOptions, "spec" | "patches" | "mes
 
 export type ActionHandler = (params: Record<string, unknown>, view: View, action: string) => unknown;
 
+/** What a program told the app: who, and a signal that aborts if it leaves before the answer. */
+export interface Told {
+  from: string;
+  /** It waits for the answer: the handler's return value (or what its promise gives). */
+  reply: boolean;
+  signal: AbortSignal;
+}
+
+export type MessageHandler = (message: unknown, told: Told) => unknown;
+
 export interface AppOptions {
   /** Its name when run by hand; the world's name for it ($PROSCENIUM_APP) when the world started it. */
   name?: string;
@@ -69,6 +79,8 @@ export class App {
   private readonly views = new Map<string, View>();
   private readonly quits: (() => void)[] = [];
   private readonly shows: (() => unknown)[] = [];
+  private readonly messages: MessageHandler[] = [];
+  private readonly asked = new Map<number, AbortController>();
   private readonly places: Record<string, Remembered>;
   private notes = 0;
 
@@ -110,6 +122,11 @@ export class App {
     });
     this.client.on("show", () => {
       for (const show of this.shows) guard(this.name, show);
+    });
+    this.client.on("told", ({ ask, from, message, reply }) => void this.told(ask, from, message, reply));
+    this.client.on("untold", (ask) => {
+      this.asked.get(ask)?.abort();
+      this.asked.delete(ask);
     });
     this.client.on("error", (message) => console.error(`[${this.name}] ${message}`));
     this.client.on("disconnect", () => {
@@ -212,6 +229,36 @@ export class App {
   onShow(show: () => unknown): this {
     this.shows.push(show);
     return this;
+  }
+
+  /**
+   * Run HANDLER for what programs tell the app (`proscenium-ui tell NAME JSON`,
+   * or a client's tell()). What it returns, or its promise gives, is the answer
+   * a program that waits gets; told.signal aborts if that program leaves first.
+   */
+  onMessage(handler: MessageHandler): this {
+    this.messages.push(handler);
+    return this;
+  }
+
+  private async told(ask: number, from: string, message: unknown, reply: boolean): Promise<void> {
+    const controller = new AbortController();
+    if (reply) this.asked.set(ask, controller);
+    let value: unknown;
+    let error: string | undefined;
+    try {
+      for (const handler of this.messages) {
+        const answer = await handler(message, { from, reply, signal: controller.signal });
+        if (answer !== undefined) value = answer;
+      }
+      if (!this.messages.length) error = `${this.name} takes no messages`;
+    } catch (thrown) {
+      console.error(`[${this.name}]`, thrown);
+      error = thrown instanceof Error ? thrown.message : String(thrown);
+    }
+    if (!reply || controller.signal.aborted) return;
+    this.asked.delete(ask);
+    this.client.answer(ask, value, error);
   }
 
   /** Run QUIT when the app stops, however it stops; it must not wait for anything. */

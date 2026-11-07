@@ -506,20 +506,25 @@ export class Container {
   private requestMeasurements(): void {
     if (!this.textMetrics.hasPending()) return;
     const requests = this.textMetrics.takePending();
-    if (!this.measure || this.measureRounds >= maxMeasureRounds) {
-      // Without a compositor to ask, or after enough rounds, estimates stand.
+    if (!this.measure) {
+      // Without a compositor to ask, estimates stand.
       this.textMetrics.settle(requests);
       this.relayoutText();
       return;
     }
+    this.measure(requests);
+    // After enough rounds this commit goes out with estimates, and the sizes, still
+    // asked for, lay it out again when they come (receiveMeasurements). Estimates
+    // are never kept as sizes: a text wrapped to a width it was never measured at
+    // would keep a one-line estimate's height for good.
+    if (this.measureRounds >= maxMeasureRounds) return;
     this.measureRounds++;
     for (const request of requests) this.awaiting.set(request.key, request);
     this.measureTimer ??= setTimeout(() => {
-      this.textMetrics.settle([...this.awaiting.values()]);
+      // A slow compositor: go on with estimates, and lay out again when its answers come.
       this.awaiting.clear();
       this.measured();
     }, measureTimeoutMs);
-    this.measure(requests);
   }
 
   private measured(): void {

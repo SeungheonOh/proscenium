@@ -44,6 +44,8 @@ export interface Result {
   app?: AppInfo;
   /** An app's log, its last lines. */
   log?: string;
+  /** What an app answered (tell). */
+  value?: unknown;
 }
 
 /** A change since an interface was opened: the program's patches or state, or the person's state. */
@@ -79,6 +81,10 @@ type Events = {
   closed: [Extract<HostMessage, { type: "closed" }>];
   /** To an app: it was started again while it runs; it shows itself. */
   show: [];
+  /** To an app: a program told it something (tell); with reply, it answers with answer(). */
+  told: [Extract<HostMessage, { type: "told" }>];
+  /** To an app: the program that asked left, so no answer is wanted. */
+  untold: [number];
   prompt: [string];
   abort: [];
   reset: [];
@@ -267,6 +273,19 @@ export class UIClient extends EventEmitter<Events> {
     return this.request({ op: "stop", app: name, request: 0 });
   }
 
+  /**
+   * Hand MESSAGE to app APP, starting it if it does not run. With reply, the
+   * result carries the app's answer as `value`, however long the app takes.
+   */
+  tell(app: string, message: unknown, options: { reply?: boolean } = {}): Promise<Result> {
+    return this.request({ op: "tell", app, message, reply: options.reply, request: 0 });
+  }
+
+  /** An app's answer to ASK, what it was told with reply. */
+  answer(ask: number, value?: unknown, error?: string): void {
+    this.send({ op: "answer", ask, value, error });
+  }
+
   /** Whether ID is open, as far as this program knows. */
   has(id: string): boolean {
     return this.kept.has(id);
@@ -364,6 +383,10 @@ export class UIClient extends EventEmitter<Events> {
         return void this.emit("closed", message);
       case "show":
         return void this.emit("show");
+      case "told":
+        return void this.emit("told", message);
+      case "untold":
+        return void this.emit("untold", message.ask);
       case "prompt":
         return void this.emit("prompt", message.text);
       case "abort":

@@ -1,7 +1,7 @@
 // Every component the catalog has, in interfaces across the modes: a gallery
 // for seeing how generated interfaces look, and a test of each mode.
 //
-//     node examples/genui/run.mjs examples/genui/demos/gallery.ts [floating|parts|dock|canvas|dialog|all]
+//     node examples/genui/run.mjs examples/genui/demos/gallery.ts [floating|parts|dock|canvas|dialog|work|all]
 
 import { UIClient, type Spec } from "../client.js";
 
@@ -108,6 +108,33 @@ const parts: Partial<Spec> = {
   },
 };
 
+// What agents ask with: a change to review, answers to pick, a plan as it goes.
+const work: Partial<Spec> = {
+  root: "root",
+  state: {
+    format: "csv",
+    plan: [
+      { title: "Read the report command", status: "completed" },
+      { title: "Add a --format option", status: "in_progress", detail: "Editing src/report.mjs" },
+      { title: "Test the CSV output", status: "pending" },
+      { title: "Update the README", status: "failed", detail: "README.md is read-only" },
+    ],
+  },
+  elements: {
+    root: { type: "Stack", props: { gap: "lg" }, children: ["diff", "choices", "steps"] },
+    diff: { type: "Diff", children: [], props: {
+      path: "src/report.mjs", startLine: 20,
+      before: "  return lines.join(\"\\n\");\n}\n",
+      after: "  return lines.join(\"\\n\");\n}\n\nexport function reportCsv(invoices) {\n  return invoices.map((invoice) => [invoice.number, invoice.client, invoice.amount.toFixed(2)].join(\",\")).join(\"\\n\");\n}\n",
+    } },
+    choices: { type: "Choices", children: [], props: { value: { $bindState: "/format" }, options: [
+      { value: "csv", label: "CSV", description: "One row per invoice; what accounting imports take.", badge: "Recommended" },
+      { value: "json", label: "JSON", description: "Totals, balances and the overdue list, structured." },
+    ] } },
+    steps: { type: "Steps", props: { items: { $state: "/plan" } }, children: [] },
+  },
+};
+
 const question: Partial<Spec> = {
   root: "ask",
   elements: {
@@ -124,6 +151,7 @@ if (which === "all" || which === "dock") void ui.open("notes", { mode: "dock", p
 if (which === "all" || which === "canvas") void ui.open("people", { mode: "canvas", title: "Activity", spec: people });
 if (which === "all" || which === "parts") void ui.open("parts", { mode: "floating", place: { x: 760, y: 60 }, title: "Parts", width: 340, spec: parts });
 if (which === "dialog") void ui.open("question", { mode: "dialog", title: "Restart?", spec: question });
+if (which === "work") void ui.open("work", { mode: "floating", place: { x: 380, y: 60 }, title: "Work", width: 460, spec: work });
 
 ui.on("action", (event) => console.log(JSON.stringify(event)));
 ui.on("placed", (event) => console.log(JSON.stringify(event)));

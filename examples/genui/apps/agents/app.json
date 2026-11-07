@@ -1,0 +1,4 @@
+{
+  "title": "Agents",
+  "description": "What Claude Code and Codex are doing and what they need from you: a panel of their sessions and plans, and a card for each command, edit or question to answer. Their hooks start it (proscenium-ui hooks claude|codex)."
+}

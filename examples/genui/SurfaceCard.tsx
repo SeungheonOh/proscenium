@@ -1,11 +1,12 @@
 // One generated interface in its frame: a title bar to drag it by and close it
 // with, and the interface itself, drawn natively from its spec as it streams.
 
-import { createContext, memo, useContext } from "react";
-import { Box, Text, type AnimatedValues, type Motion, type StagePointerEvent, type Transform } from "proscenium";
+import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Box, Rect, spring, Text, translate, type AnimatedValues, type LayoutBox, type Motion, type StagePointerEvent,
+  type StageWheelEvent, type Transform } from "proscenium";
 import { GeneratedView } from "proscenium/genui";
 import { darkTheme, Icon, Label, lightTheme, makeStyles, Pressable, ProgressBar, StyleSheet, Surface,
-  ThemeProvider } from "proscenium/ui";
+  ThemeProvider, type Theme } from "proscenium/ui";
 import closeIcon from "./icons/close.svg";
 import type { HostSurface, UIHost } from "./host.js";
 
@@ -19,6 +20,9 @@ export interface Grabbing {
 }
 
 export const GrabContext = createContext<Grabbing | null>(null);
+
+/** The themes an interface is drawn with, as its `theme` asks: the world's own pair, the stock one by default. */
+export const SurfaceThemes = createContext<{ light: Theme; dark: Theme }>({ light: lightTheme, dark: darkTheme });
 export const HostContext = createContext<UIHost | null>(null);
 
 export type Chrome = "full" | "slim" | "none";
@@ -69,14 +73,18 @@ export interface SurfaceCardProps {
   dimmed?: boolean;
   /** Its zoom, for a card in the world: grabs measure on the screen. */
   scale?: number;
+  /** The most it may take of the screen's height: a taller interface scrolls inside its frame. */
+  maxHeight?: number;
 }
 
 /** A generated interface with its frame; drag the title bar to move it to another mode. */
-export const SurfaceCard = memo(function SurfaceCard({ entry, chrome, width, dimmed = false, scale = 1, frame = {} }: SurfaceCardProps) {
-  const theme = entry.theme === "dark" ? darkTheme : lightTheme;
+export const SurfaceCard = memo(function SurfaceCard({ entry, chrome, width, dimmed = false, scale = 1, frame = {}, maxHeight = 0 }: SurfaceCardProps) {
+  const themes = useContext(SurfaceThemes);
+  const theme = entry.theme === "dark" ? themes.dark : themes.light;
   return (
     <ThemeProvider theme={theme}>
-      <Framed entry={entry} chrome={chrome} width={width ?? entry.width} dimmed={dimmed} scale={scale} frame={frame} />
+      <Framed entry={entry} chrome={chrome} width={width ?? entry.width} dimmed={dimmed} scale={scale} frame={frame}
+              maxHeight={maxHeight} />
     </ThemeProvider>
   );
 }, (before, after) => {
@@ -93,7 +101,7 @@ function shallowSame(a: object, b: object): boolean {
   return keys.length === Object.keys(right).length && keys.every((key) => Object.is(left[key], right[key]));
 }
 
-function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<SurfaceCardProps>) {
+function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Required<SurfaceCardProps>) {
   const styles = useStyles();
   const colors = useColors();
   const type = useType();
@@ -118,7 +126,7 @@ function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<Surface
                    fallback={<Building />} />
   );
   return (
-    <Surface variant="card" style={styles.card} width={width} {...frame} fill={entry.theme === "dark" ? "#26262b" : "#ffffff"}
+    <Surface variant="card" style={styles.card} width={width} {...frame} fill={solid(colors.card)}
              opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)}>
       {chrome === "full" && (
         <Box style={styles.bar} cursor="grab" {...grip}>
@@ -139,9 +147,61 @@ function Framed({ entry, chrome, width, dimmed, scale, frame }: Required<Surface
           {close}
         </Box>
       )}
-      <Box style={chrome === "none" ? styles.bareBody : styles.body}>{view}</Box>
+      <Fit maxHeight={maxHeight ? maxHeight - (chrome === "full" ? 34 : chrome === "slim" ? 28 : 0) : 0}>
+        <Box style={chrome === "none" ? styles.bareBody : styles.body}>{view}</Box>
+      </Fit>
     </Surface>
   );
+}
+
+const glide = spring({ duration: 0.28, bounce: 0 });
+
+/**
+ * Its content as tall as it is, up to MAXHEIGHT (none: any height); past that,
+ * clipped, moved by the wheel, with a thumb on the right saying there is more.
+ * The content stays in the flow, so the frame takes its height from it.
+ */
+function Fit({ maxHeight, children }: { maxHeight: number; children: ReactNode }) {
+  const colors = useColors();
+  const [box, setBox] = useState<LayoutBox | null>(null);
+  const [content, setContent] = useState(0);
+  const [offset, setOffset] = useState(0);
+  const height = box?.height ?? 0;
+  const most = maxHeight > 0 ? Math.max(0, Math.round(content - height)) : 0;
+  const at = Math.min(Math.max(offset, 0), most);
+  const stale = useRef(at);
+  stale.current = at;
+  // Content that shrank back keeps what is in view.
+  useEffect(() => {
+    if (offset > most) setOffset(most);
+  }, [most]);
+  if (maxHeight <= 0) return <>{children}</>;
+  const wheel = (event: StageWheelEvent) => {
+    if (event.orientation !== "vertical" || most === 0) return;
+    event.stopPropagation();
+    const step = event.source === "wheel" || event.source === "wheel-tilt" ? (event.discrete || Math.sign(event.delta)) * 56 : event.delta;
+    // Whole pixels: text resting between them draws blurred.
+    setOffset(Math.round(Math.min(Math.max(stale.current + step, 0), most)));
+  };
+  const thumb = most > 0 && height > 0 ? Math.max(24, (height * height) / content) : 0;
+  return (
+    <Box flexDirection="column" alignSelf="stretch" maxHeight={maxHeight} clip onLayout={setBox} onWheel={wheel}>
+      <Box flexDirection="column" alignSelf="stretch" flexShrink={0} transform={translate(0, -at)} transition={glide}
+           onLayout={(layout) => setContent(layout.height)}>
+        {children}
+      </Box>
+      {thumb > 0 && (
+        <Rect position="absolute" x={(box?.width ?? 0) - 6} y={((height - thumb) * at) / most} width={4} height={thumb}
+              radius={2} fill={colors.faint} transition={glide} />
+      )}
+    </Box>
+  );
+}
+
+/** COLOR without its alpha: the card's own color, solid, so what moves behind it never shows through. */
+function solid(color: unknown): string {
+  const text = String(color);
+  return /^#[0-9a-f]{8}$/i.test(text) ? text.slice(0, 7) : /^#[0-9a-f]{4}$/i.test(text) ? text.slice(0, 4) : text;
 }
 
 /** What shows while an interface's first elements are on their way. */

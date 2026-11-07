@@ -77,6 +77,21 @@ interface Client {
   surfaces: Set<string>;
 }
 
+/** A program's message for an app, on its way or waiting for the app's answer. */
+interface Ask {
+  id: number;
+  /** The program that told it, and its request to answer. */
+  from: number;
+  request: number;
+  app: string;
+  message: unknown;
+  reply: boolean;
+  /** The app's connection it went to; none while it waits for the app. */
+  to?: number;
+  /** Times it was handed to the app: one that keeps failing on it is not handed it forever. */
+  tries: number;
+}
+
 const widths: Record<Mode, number> = { inline: 0, floating: 360, overlay: 300, dock: 320, canvas: 380, dialog: 420 };
 const maxWidth = 900;
 
@@ -89,6 +104,8 @@ export class UIHost {
   private readonly surfaces = new Map<string, HostSurface>();
   private readonly unsubscribe = new Map<string, () => void>();
   private readonly pending = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly asks = new Map<number, Ask>();
+  private nextAsk = 1;
   private nextClient = 1;
   /** While a program changes an interface's state, which is not news to it. */
   private quiet = false;
@@ -318,6 +335,24 @@ export class UIHost {
   private drop(client: Client): void {
     if (!this.clients.delete(client.id)) return;
     for (const key of client.surfaces) this.remove(key);
+    for (const ask of [...this.asks.values()]) {
+      if (ask.from === client.id) {
+        // What needs no answer still reaches the app; a question goes with the one who asked.
+        if (!ask.reply) continue;
+        this.asks.delete(ask.id);
+        if (ask.to !== undefined) this.send(ask.to, { type: "untold", ask: ask.id });
+      } else if (ask.to === client.id) {
+        // The app went before it answered: the next one it starts as gets the question.
+        ask.to = undefined;
+        if (ask.tries >= 3) this.settle(ask, { ok: false, error: `${ask.app} ended three times without answering` });
+        else {
+          // It quit with a question left: start it again to answer it, once its end is known.
+          setTimeout(() => {
+            if (this.asks.get(ask.id) === ask && ask.to === undefined && !appRunning(ask.app)) startApp(ask.app);
+          }, 1500).unref();
+        }
+      }
+    }
     if (client.agent) this.chat = { ...this.chat, connected: this.agent() !== undefined, busy: false };
     this.changed();
   }
@@ -328,6 +363,7 @@ export class UIHost {
         client.name = String(message.name || "program").slice(0, 60);
         if (typeof message.app === "string" && message.app) client.app = message.app;
         if (typeof message.pid === "number") client.pid = message.pid;
+        if (client.app) this.deliver(client.app);
         if (message.agent) {
           // One assistant keeps the chat; a newer one replaces it, as a newer director does.
           const older = this.agent();
@@ -365,6 +401,15 @@ export class UIHost {
           return this.send(client.id, { type: "result", request: message.request, ok: false, error: `No app "${name}"` });
         }
         void stopApp(name).then(() => this.send(client.id, { type: "result", request: message.request, ok: true }));
+        return;
+      }
+      case "tell":
+        return this.tell(client, message);
+      case "answer": {
+        const ask = this.asks.get(message.ask);
+        if (!ask || ask.to !== client.id) return;
+        this.settle(ask, message.error === undefined ? { ok: true, value: message.value }
+          : { ok: false, error: String(message.error) });
         return;
       }
       case "patch": {
@@ -456,6 +501,45 @@ export class UIHost {
       default:
         throw new Error(`Unknown op "${(message as { op?: string }).op}"`);
     }
+  }
+
+  /** Hand a program's message to an app, starting the app if it does not run. */
+  private tell(client: Client, message: Extract<ClientMessage, { op: "tell" }>): void {
+    const name = String(message.app ?? "");
+    if (!findApp(name) && !appRunning(name)) {
+      return this.send(client.id, { type: "result", request: message.request, ok: false, error: `No app "${name}"` });
+    }
+    const ask: Ask = { id: this.nextAsk++, from: client.id, request: message.request, app: name, message: message.message,
+                       reply: message.reply === true, tries: 0 };
+    this.asks.set(ask.id, ask);
+    if (!appRunning(name)) {
+      const started = startApp(name);
+      if (!started.ok) return this.settle(ask, { ok: false, error: started.error });
+    }
+    this.deliver(name);
+    // An app that never comes to take it.
+    setTimeout(() => {
+      if (this.asks.get(ask.id) === ask && ask.to === undefined) this.settle(ask, { ok: false, error: `${name} did not start` });
+    }, 15_000).unref();
+  }
+
+  /** Hand app NAME what waits for it, once it is connected. */
+  private deliver(name: string): void {
+    const app = this.appClient(name);
+    if (!app) return;
+    for (const ask of [...this.asks.values()]) {
+      if (ask.app !== name || ask.to !== undefined) continue;
+      ask.to = app.id;
+      ask.tries++;
+      this.send(app.id, { type: "told", ask: ask.id, from: this.clients.get(ask.from)?.name ?? "program",
+                          message: ask.message, reply: ask.reply });
+      if (!ask.reply) this.settle(ask, { ok: true });
+    }
+  }
+
+  private settle(ask: Ask, result: { ok: boolean; value?: unknown; error?: string }): void {
+    this.asks.delete(ask.id);
+    this.send(ask.from, { type: "result", request: ask.request, ...result });
   }
 
   private open(client: Client, message: Extract<ClientMessage, { op: "open" }>): void {

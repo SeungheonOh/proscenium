@@ -89,6 +89,15 @@ export type ClientMessage =
   | { op: "apps"; request: number }
   | { op: "launch"; app: string; restart?: boolean; request: number }
   | { op: "stop"; app: string; request: number }
+  /**
+   * Hand MESSAGE to app APP, starting it if it does not run. With REPLY, the
+   * result comes once the app answers, with its answer as `value`; without, once
+   * the app has it. A program that leaves before the answer takes the question
+   * with it (the app hears `untold`).
+   */
+  | { op: "tell"; app: string; message: unknown; reply?: boolean; request: number }
+  /** An app's answer to what it was told (`told`), by the ask's number. */
+  | { op: "answer"; ask: number; value?: unknown; error?: string }
   // The assistant's own: the chat it keeps.
   | { op: "chat"; messages: ChatMessage[] }
   | { op: "message"; message: ChatMessage }
@@ -110,9 +119,13 @@ export type HostMessage =
   | { type: "closed"; id: string; by: "person" | "program" }
   | { type: "result"; request: number; ok: boolean; problems?: string[]; error?: string;
       spec?: Spec; mode?: Mode; place?: Place; prompt?: string; components?: string[];
-      apps?: AppInfo[]; app?: AppInfo; log?: string }
+      apps?: AppInfo[]; app?: AppInfo; log?: string; value?: unknown }
   /** To an app: something started it while it runs (the person asked for it again), so it shows itself. */
   | { type: "show" }
+  /** To an app: a program (FROM, by its name) told it MESSAGE; with REPLY it waits for an `answer` to ASK. */
+  | { type: "told"; ask: number; from: string; message: unknown; reply: boolean }
+  /** To an app: the program that asked ASK left before an answer, so none is wanted. */
+  | { type: "untold"; ask: number }
   /** A fatal error ends the connection for good: a newer assistant took the chat. */
   | { type: "error"; message: string; fatal?: boolean }
   // To the assistant.

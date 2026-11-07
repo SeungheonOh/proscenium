@@ -39,7 +39,7 @@ flowchart LR
 
 | Where | What |
 | --- | --- |
-| `sdk/src/genui/` (`proscenium/genui`) | The catalog (`catalog.ts`: components as zod schemas, `catalogPrompt()`), `Surface` (a spec and its state, changed by JSON patches), `GeneratedView` (draws one), Markdown as Pango markup. |
+| `sdk/src/genui/` (`proscenium/genui`) | The catalog (`catalog.ts`: components as zod schemas, `catalogPrompt()`), `Surface` (a spec and its state, changed by JSON patches), `GeneratedView` (draws one), Markdown as Pango markup, line diffs and unified-diff parsing for `Diff` (`diff.ts`). |
 | `sdk/src/ui/` | `TextField`, `ScrollView`, `Checkbox` and `ProgressBar`, added for generated interfaces and the chat. |
 | `examples/genui/host.ts` | The world's side of the protocol: the socket, the interfaces programs own, the assistant's chat. |
 | `examples/genui/Surfaces.tsx` | Where interfaces show in each mode, and dragging them between modes. |
@@ -48,7 +48,8 @@ flowchart LR
 | `examples/genui/client.ts` | A program's side of the protocol, with no dependencies. |
 | `examples/genui/app.ts` | The app library (`proscenium-app`): views with action handlers, state, notes, saved data. |
 | `examples/genui/apps.ts` | The world's apps: finding them, starting them as processes, restarting crashed ones, bringing them back after a restart. |
-| `examples/genui/apps/` | Apps that ship with Proscenium: `timer` and `monitor`. |
+| `examples/genui/apps/` | Apps that ship with Proscenium: `timer`, `monitor`, and `agents` with its `hook.mjs` for Claude Code and Codex. |
+| `examples/genui/mcp.ts`, `scripts/proscenium-mcp` | An MCP server: coding agents ask the person and show interfaces of their own. |
 | `examples/genui/agent/` | The assistant. |
 | `examples/genui/cli.ts`, `scripts/proscenium-ui` | Interfaces and apps from the shell. |
 | `examples/genui/demos/` | `gallery.ts` (every component, every mode). |
@@ -80,9 +81,10 @@ The catalog (`sdk/src/genui/catalog.ts`) is what a model is told about and what
 the renderer draws:
 
 - Layout: `Stack`, `Card`, `Grid`, `List`, `Divider`, `Spacer`.
-- Content: `Heading`, `Text`, `Markdown`, `Badge`, `Metric`, `KeyValue`, `ListItem`, `Table`, `Code`, `Avatar`, `Image` (a file path or an https URL, fetched once).
+- Content: `Heading`, `Text`, `Markdown`, `Badge`, `Metric`, `KeyValue`, `ListItem`, `Table`, `Code` (with `maxLines`, the last lines of output that grows), `Avatar`, `Image` (a file path or an https URL, fetched once).
+- Work: `Diff` (a change as numbered red and green lines with unchanged runs folded: `before` and `after` texts, or a unified diff in `patch`, several files allowed), `Steps` (a plan as a timeline: each item pending, active, done, failed or skipped; Claude's `in_progress` and `completed` too).
 - Charts: `BarChart` (horizontal or vertical), `Sparkline`, `ProgressBar`.
-- Input: `Button` (as wide as its label, or `block`), `TextField`, `Switch`, `Checkbox`, `Slider`, `Tabs`.
+- Input: `Button` (as wide as its label, or `block`), `TextField`, `Switch`, `Checkbox`, `Slider`, `Tabs`, `Choices` (answers as rows with a description and a badge, one or `multiple`, for a question whose answers need explaining).
 - Live: `Countdown`, whose clock is kept in the interface's state so it runs on wherever the interface moves.
 
 Everything json-render specs can say works: `$state`, `$bindState`, `$item`,
@@ -93,7 +95,9 @@ world; `close` closes the interface, `copy` puts `text` on the clipboard, and
 goes to the program that owns the interface, with the interface's whole state.
 
 A root `Card` draws no card of its own, as the frame around the interface is
-one. An element that fails to draw shows why inside its own interface.
+one. An element that fails to draw shows why inside its own interface. An
+interface taller than the room its mode leaves (the screen's height, less its
+place) scrolls inside its frame, with a thumb that says there is more.
 
 ## Protocol
 
@@ -118,6 +122,8 @@ Program to world:
 | `apps` | `request` | Answered with `apps`: every app, whether it runs, what it shows and what is wrong with each spec. |
 | `launch` | `app`, `restart?`, `request` | Starts an app, or starts it again. A running app is sent `show` instead. Answered once its interfaces have been still for 0.6 s, it ended, or 6 s went by, with `app` (as in `apps`) and `log`, the end of its log. |
 | `stop` | `app`, `request` | Stops it; it stays stopped. |
+| `tell` | `app`, `message`, `reply?`, `request` | Hands an app a message, starting the app if it does not run. With `reply`, answered with the app's answer as `value` however long it takes; without, once the app has it, which it gets even if the program has left. |
+| `answer` | `ask`, `value?`, `error?` | An app's answer to what it was told. |
 
 A request with `request` is answered by `{"type":"result","request",…}`, with
 `problems` for `open` and `patch`: what is wrong with the spec now (a child
@@ -133,6 +139,8 @@ World to program:
 | `placed` | `id`, `mode`, `place` | The person moved it. |
 | `closed` | `id`, `by` | |
 | `show` | | To an app: something started it while it runs; it shows itself (`ui.onShow`). |
+| `told` | `ask`, `from`, `message`, `reply` | To an app: a program (by its name) told it something; with `reply` it waits for an `answer`. |
+| `untold` | `ask` | To an app: the program that asked left before the answer, so none is wanted. |
 | `error` | `message`, `fatal?` | A fatal one ends the connection for good: a newer assistant took the chat. |
 
 A program's interfaces close when its connection does. A world that reloads
@@ -219,6 +227,7 @@ ui.notify("Time's up", { title: "Timer", seconds: 10 });
 const data = ui.load({ entries: [] }); ui.save(data);
 ui.background = true;                         // keep running with nothing open
 ui.onShow(() => {});                          // asked for again while running
+ui.onMessage((message, told) => answer);      // what programs tell it (tell); told.signal aborts if the asker left
 ```
 
 The world still runs `setState`, `pushState`, `removeState`, `close` and `copy`
@@ -259,6 +268,68 @@ Writing an app by hand is a folder and two files; `proscenium-ui start NAME`
 runs it. `examples/genui/apps/timer/main.ts` is a full one in about 140 lines:
 presets, start and pause, a minute more, reset, an alert when the time is up,
 counting on after its card is closed, and the time kept across restarts.
+
+## Coding agents
+
+Claude Code and Codex can do their asking on the person's screen instead of
+in a terminal the person may not be looking at. Two pieces, used apart or
+together:
+
+- **The Agents app** (`examples/genui/apps/agents/`), fed by the agents' own
+  hooks. A panel docked at the side lists every session: its project, the
+  person's latest prompt, a badge (Working, Needs you, Your turn, Ended), what
+  runs now ("Running npm test", "Editing report.mjs") and the plan once the
+  agent keeps a task list (`TodoWrite`, `TaskCreate`, `TaskUpdate`), as `Steps`.
+  Each request opens a card over everything in the top right corner:
+  - a command to run, with Claude's description of it;
+  - an edit, as a `Diff` of the file around the change, numbered from where it
+    is in the file (`Write` against what the file holds now; Codex's
+    `apply_patch` converted from its own format, unnumbered);
+  - a web page to read, or another tool with its input;
+  - Claude's questions (`AskUserQuestion`): each as `Choices`, with room for
+    an answer in the person's own words.
+
+  Allow, Deny (with what to do instead, typed in the card) and Claude's
+  "always" suggestion when it has one ("Allow all edits", "Always allow npm
+  test …") answer it. Closing the card leaves the question to the terminal.
+  A turn that took more than 20 s ends with a note of what the agent said. The
+  proscenium MCP tools are allowed without asking, as all they do is show
+  things on this screen.
+- **The MCP server** (`scripts/proscenium-mcp`) gives an agent tools of its
+  own: `ask_person` (a question with explained answers, waited for),
+  `show_interface` (any interface it designs from the catalog, waited on with
+  `wait: true` or `wait_for_person`), `update_interface`, `close_interface`,
+  `notify_person` and `interface_components` (the catalog prompt). Its
+  interfaces are the server's, so they go when the agent's session ends.
+  What comes back leaves out long values the person did not change, such as a
+  diff the agent showed.
+
+`hook.mjs` is plain JavaScript with nothing to bundle, as agents run a hook
+for each tool. For a moment that only reports it hands the event to the app
+with `tell` and exits; for a request it waits for the app's answer and prints
+it as the hook's output. With no world listening it prints nothing and the
+agent asks in its terminal. Claude Code shows its own dialog while the hook
+waits, so the person can answer in either place; an answer in the terminal
+ends the hook, and the card goes with it.
+
+Setting it up:
+
+```sh
+proscenium-ui hooks claude > ~/.config/proscenium/claude-hooks.json   # then claude --settings that file,
+                                                                      # or merge its "hooks" into ~/.claude/settings.json
+proscenium-ui hooks codex > .codex/hooks.json                         # in a project, or ~/.codex/hooks.json
+claude --mcp-config '{"mcpServers":{"proscenium":{"command":"'"$PWD"'/scripts/proscenium-mcp"}}}'
+codex -c 'mcp_servers.proscenium.command="…/scripts/proscenium-mcp"' -c 'mcp_servers.proscenium.tool_timeout_sec=3600'
+```
+
+Codex asks once to trust new project hooks, and runs MCP servers with an
+environment of its own (`XDG_RUNTIME_DIR` set to the real one, other
+variables dropped): a world on a socket other than the default needs
+`env_vars = ["PROSCENIUM_UI_SOCKET"]` in the server's config. Its tool calls
+time out after 60 s unless `tool_timeout_sec` says otherwise, which a question
+the person answers later needs. Claude Code runs a long MCP call in the
+background and hands its result back as a task notification, with `<` and `>`
+escaped.
 
 ## The assistant
 
@@ -330,6 +401,8 @@ proscenium-ui apps                                                         # eve
 proscenium-ui start timer                                                  # says what it shows and what is wrong
 proscenium-ui stop timer
 proscenium-ui logs timer
+proscenium-ui tell agents '{"agent":"claude","event":{…}}'                # hand an app a message
+proscenium-ui hooks claude                                                 # hook settings for the Agents app
 ```
 
 ## Cost

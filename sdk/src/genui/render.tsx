@@ -13,14 +13,15 @@ import { createHash } from "node:crypto";
 import { mkdirSync, existsSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Children, Component, createContext, memo, useContext, useEffect, useRef, useState, useSyncExternalStore,
-  type ReactNode } from "react";
+import { Children, Component, createContext, memo, useContext, useEffect, useMemo, useRef, useState,
+  useSyncExternalStore, type ReactNode } from "react";
 import { evaluateVisibility, getByPath, resolveActionParam, resolveBindings, resolveElementProps,
   resolveRepeatStatePath, splitRepeatVisibility, type ActionBinding, type PropResolutionContext, type StateModel,
   type UIElement } from "@json-render/core";
 import { Box, Image, Rect, Spacer, Text } from "../components.js";
 import type { LayoutBox } from "../layout.js";
 import type { BoxProps, TextProps } from "../props.js";
+import { rotate } from "../transform.js";
 import { Button, Checkbox, ProgressBar as Progress, SegmentedControl, Slider as SliderControl,
   Switch as SwitchControl } from "../ui/controls.js";
 import { TextField as Field } from "../ui/TextField.js";
@@ -28,6 +29,7 @@ import { Pressable } from "../ui/Pressable.js";
 import { StyleSheet } from "../ui/styles.js";
 import { darkTheme, makeStyles, ThemeProvider, useTheme, type Theme } from "../ui/theme.js";
 import { Divider as Hairline, Label, Surface as Panel } from "../ui/views.js";
+import { diffTexts, parsePatch, type DiffFile, type DiffLine } from "./diff.js";
 import { markdownBlocks } from "./markdown.js";
 import type { Surface } from "./surface.js";
 
@@ -329,6 +331,8 @@ const useStyles = makeStyles((theme) => {
       listRow: { flexDirection: "column", paddingY: 5, alignSelf: "stretch" },
       cell: { flexGrow: 1, flexBasis: 0, flexDirection: "column" },
       quoteBar: { width: 3, radius: 1.5, fill: colors.accentLine, alignSelf: "stretch" },
+      choice: { flexDirection: "row", alignItems: "flex-start", gap: 10, paddingX: 12, paddingY: 10, radius: radii.md,
+                alignSelf: "stretch", transition: motion.pop },
     }),
     hover: colors.hover,
     selected: colors.accentTint,
@@ -594,7 +598,7 @@ function ListItem({ props, emit, listens }: Rendered) {
   const content = (
     <>
       {props.leading !== undefined && props.leading !== null && <Leading mark={text(props.leading)} />}
-      <Box flexDirection="column" gap={1} flexGrow={1} flexShrink={1}>
+      <Box flexDirection="column" gap={1} flexGrow={1} flexShrink={1} flexBasis={0}>
         <Text style={styles.body} weight={650} color={styles.theme.colors.ink} maxLines={1}>{text(props.title)}</Text>
         {props.subtitle !== undefined && props.subtitle !== null && (
           <Text style={styles.body} size={12} color={styles.theme.colors.muted} maxLines={2}>{text(props.subtitle)}</Text>
@@ -768,11 +772,286 @@ function ImageElement({ props }: Rendered) {
 
 function Code({ props }: Rendered) {
   const styles = useStyles();
+  let words = text(props.text);
+  // With maxLines, the end of it: output that grows keeps its newest lines in view.
+  const keep = props.maxLines === undefined || props.maxLines === null ? 0 : Math.max(1, Math.round(number(props.maxLines, 1)));
+  if (keep) {
+    const lines = words.replace(/\n$/, "").split("\n");
+    if (lines.length > keep) words = lines.slice(-keep).join("\n");
+  }
   return (
     <Box style={styles.code}>
-      <Text style={styles.mono}>{text(props.text) || " "}</Text>
+      <Text style={styles.mono}>{words || " "}</Text>
     </Box>
   );
+}
+
+const mono = "Noto Sans Mono, monospace";
+
+/** A file's change, or a unified diff's files: numbered lines, removals and additions tinted, unchanged runs folded. */
+function DiffElement({ props }: Rendered) {
+  const styles = useStyles();
+  const { colors } = styles.theme;
+  const patch = props.patch === undefined || props.patch === null ? "" : text(props.patch);
+  const before = props.before === undefined || props.before === null ? "" : text(props.before);
+  const after = props.after === undefined || props.after === null ? "" : text(props.after);
+  const path = props.path === undefined || props.path === null ? undefined : text(props.path);
+  const startLine = Math.max(1, Math.round(number(props.startLine, 1)));
+  const files = useMemo<DiffFile[]>(() => {
+    const found = patch ? parsePatch(patch) : [diffTexts(before, after, { path, startLine })];
+    if (path && found.length === 1 && !found[0]!.path) found[0]!.path = path;
+    return found;
+  }, [patch, before, after, path, startLine]);
+  // Cards scroll inside their frames, so a long diff can show in full.
+  const limit = Math.max(4, Math.round(number(props.maxLines, 200)));
+  const added = String(toneColor(styles.theme, "success")).slice(0, 7);
+  const removed = String(colors.danger).slice(0, 7);
+  // Wide enough for the biggest line number, in a face whose digits are one width.
+  const most = Math.max(0, ...files.flatMap((file) => file.hunks.flatMap((hunk) => hunk.lines.map((line) => Math.max(line.old ?? 0, line.new ?? 0)))));
+  const digits = String(most).length;
+  // A patch that numbers no lines (Codex's) has no gutter for them.
+  const numbered = most > 0;
+  let shown = 0;
+  let hidden = 0;
+  const row = (line: DiffLine, key: string) => {
+    if (shown >= limit) {
+      hidden++;
+      return null;
+    }
+    shown++;
+    const tint = line.kind === "added" ? added : line.kind === "removed" ? removed : undefined;
+    const numbers = `${line.old === undefined ? "".padStart(digits) : String(line.old).padStart(digits)} ${line.new === undefined ? "".padStart(digits) : String(line.new).padStart(digits)}`;
+    return (
+      <Box key={key} flexDirection="row" alignSelf="stretch" fill={tint ? `${tint}1f` : undefined} paddingX={8} gap={8}>
+        {numbered && <Text font={mono} size={11} lineHeight={1.4} color={colors.faint} flexShrink={0}>{numbers}</Text>}
+        <Text font={mono} size={11} lineHeight={1.4} color={tint ?? colors.faint} weight={700} flexShrink={0}>
+          {line.kind === "added" ? "+" : line.kind === "removed" ? "−" : " "}
+        </Text>
+        {/* A column of its own, measured at the width left, so a long line wraps and the row grows with it. */}
+        <Box flexDirection="column" flexGrow={1} flexShrink={1} flexBasis={0}>
+          <Text font={mono} size={11} lineHeight={1.4} color={line.kind === "same" ? colors.muted : colors.ink}
+                maxLines={4}>{line.text || " "}</Text>
+        </Box>
+      </Box>
+    );
+  };
+  const fold = (label: string, key: string) => (
+    <Box key={key} flexDirection="row" alignSelf="stretch" fill={colors.hover} paddingX={8} paddingY={2}>
+      <Text font={mono} size={11} lineHeight={1.4} color={colors.faint} maxLines={1} flexShrink={1}>{label}</Text>
+    </Box>
+  );
+  return (
+    <Box flexDirection="column" gap={8} alignSelf="stretch">
+      {files.map((file, at) => (
+        <Box key={at} flexDirection="column" alignSelf="stretch" radius={styles.theme.radii.sm} clip
+             border={{ width: 1, color: colors.line }}>
+          {(file.path || file.added || file.removed) ? (
+            <Box flexDirection="row" alignItems="center" gap={8} paddingX={10} paddingY={6} alignSelf="stretch"
+                 fill={colors.hover}>
+              <Text font={mono} size={12} weight={600} color={colors.ink} maxLines={1} flexShrink={1} flexGrow={1}>
+                {file.path ?? ""}
+              </Text>
+              <Text font={styles.theme.type.body.font} size={12} weight={650} color={added} flexShrink={0}>{`+${file.added}`}</Text>
+              <Text font={styles.theme.type.body.font} size={12} weight={650} color={removed} flexShrink={0}>{`−${file.removed}`}</Text>
+            </Box>
+          ) : null}
+          {file.hunks.length === 0 && fold("No changes", "none")}
+          {file.hunks.map((hunk, index) => (
+            <Box key={index} flexDirection="column" alignSelf="stretch">
+              {(hunk.skipped || (index > 0 && hunk.context)) && shown < limit
+                ? fold(`⋯ ${hunk.skipped ? `${hunk.skipped} unchanged line${hunk.skipped === 1 ? "" : "s"}` : ""}${hunk.context ? `  ${hunk.context}` : ""}`, "fold")
+                : null}
+              {hunk.lines.map((line, number) => row(line, String(number)))}
+            </Box>
+          ))}
+        </Box>
+      ))}
+      {hidden > 0 && <Text style={styles.label}>{`${hidden} more line${hidden === 1 ? "" : "s"}`}</Text>}
+    </Box>
+  );
+}
+
+interface Choice {
+  value: string;
+  label: string;
+  description?: string;
+  badge?: string;
+}
+
+/** Answers to pick from: one like radio buttons, or any number with `multiple`. */
+function ChoicesElement(rendered: Rendered) {
+  const styles = useStyles();
+  const { colors } = styles.theme;
+  const multiple = rendered.props.multiple === true;
+  const options: Choice[] = (Array.isArray(rendered.props.options) ? rendered.props.options : []).map((option) => {
+    if (typeof option !== "object" || option === null) return { value: text(option), label: text(option) };
+    const entry = option as Record<string, unknown>;
+    const label = text(entry.label ?? entry.value);
+    const optional = (value: unknown) => (value === undefined || value === null || value === "" ? undefined : text(value));
+    return { value: text(entry.value ?? label), label, description: optional(entry.description), badge: optional(entry.badge) };
+  });
+  const [value, setValue] = useValue<unknown>(rendered, "value", multiple ? [] : null);
+  const chosen = new Set(Array.isArray(value) ? value.map((each) => text(each))
+    : value === undefined || value === null || value === "" ? [] : [text(value)]);
+  const pick = (option: Choice) => {
+    if (multiple) {
+      const next = new Set(chosen);
+      if (next.has(option.value)) next.delete(option.value);
+      else next.add(option.value);
+      setValue(options.filter((each) => next.has(each.value)).map((each) => each.value));
+    } else {
+      setValue(option.value);
+    }
+    rendered.emit("change");
+  };
+  return (
+    <Box flexDirection="column" gap={6} alignSelf="stretch">
+      {options.map((option, index) => {
+        const selected = chosen.has(option.value);
+        return (
+          <Pressable key={`${index}:${option.value}`} onPress={() => pick(option)}
+                     style={({ hovered, pressed }) => [styles.choice, {
+                       fill: selected ? colors.accentSoft : pressed ? colors.press : hovered ? colors.hover : colors.clear,
+                       border: { width: 1, color: selected ? colors.accentLine : colors.line },
+                     }]}>
+            <Box paddingTop={1}><ChoiceMark selected={selected} multiple={multiple} /></Box>
+            <Box flexDirection="column" gap={2} flexGrow={1} flexShrink={1} flexBasis={0}>
+              <Text style={styles.body} weight={650} color={colors.ink}>{option.label}</Text>
+              {option.description !== undefined && (
+                <Text style={styles.body} size={12} color={colors.muted}>{option.description}</Text>
+              )}
+            </Box>
+            {option.badge !== undefined && (
+              <Box style={styles.badge} fill={`${String(colors.accent).slice(0, 7)}24`}>
+                <Text style={styles.badgeText} color={colors.accent} maxLines={1}>{option.badge}</Text>
+              </Box>
+            )}
+          </Pressable>
+        );
+      })}
+    </Box>
+  );
+}
+
+/** A radio's dot or a checkbox's tick, 18 pixels across. */
+function ChoiceMark({ selected, multiple }: { selected: boolean; multiple: boolean }) {
+  const styles = useStyles();
+  const { colors, motion } = styles.theme;
+  if (multiple) {
+    return (
+      <Box width={18} height={18} radius={5} transition={motion.pop} fill={selected ? colors.accent : colors.clear}
+           border={{ width: selected ? 1 : 1.5, color: selected ? colors.accent : colors.control }}>
+        <Tick shown={selected} />
+      </Box>
+    );
+  }
+  return (
+    <Box width={18} height={18} radius={9} alignItems="center" justifyContent="center" transition={motion.pop}
+         fill={selected ? colors.accent : colors.clear}
+         border={{ width: selected ? 1 : 1.5, color: selected ? colors.accent : colors.control }}>
+      <Rect width={6} height={6} radius={3} fill={colors.onAccent} opacity={selected ? 1 : 0} transition={motion.pop} />
+    </Box>
+  );
+}
+
+/** A tick in an 18-pixel box, drawn as two strokes so it sits in the middle whatever the font. */
+function Tick({ shown, color }: { shown: boolean; color?: string }) {
+  const styles = useStyles();
+  const fill = color ?? styles.theme.colors.onAccent;
+  return (
+    <Box position="absolute" x={0} y={0} width={18} height={18} opacity={shown ? 1 : 0} transition={styles.theme.motion.pop}>
+      <Rect position="absolute" x={3.9} y={10.1} width={4.8} height={2} radius={1} fill={fill} transform={tickShort} />
+      <Rect position="absolute" x={5.4} y={7.9} width={9.4} height={2} radius={1} fill={fill} transform={tickLong} />
+    </Box>
+  );
+}
+
+const tickShort = rotate(45);
+const tickLong = rotate(-47);
+const crossOne = rotate(45);
+const crossTwo = rotate(-45);
+
+type StepStatus = "pending" | "active" | "done" | "failed" | "skipped";
+
+/** A status as models and agents write it: TodoWrite's in_progress and completed, and the like. */
+function stepStatus(value: unknown): StepStatus {
+  const status = text(value).toLowerCase().replace(/[\s-]+/g, "_");
+  if (["done", "completed", "complete", "success", "succeeded", "finished", "passed"].includes(status)) return "done";
+  if (["active", "in_progress", "running", "current", "doing", "working", "started"].includes(status)) return "active";
+  if (["failed", "error", "failure", "blocked"].includes(status)) return "failed";
+  if (["skipped", "cancelled", "canceled", "deleted"].includes(status)) return "skipped";
+  return "pending";
+}
+
+const breathe = { opacity: [0.35, 1, 0.35], duration: 1.4, iterations: Infinity };
+
+/** A plan as a timeline: each step's mark, a line down to the next, its title and detail. */
+function StepsElement({ props }: Rendered) {
+  const styles = useStyles();
+  const { colors } = styles.theme;
+  const success = String(toneColor(styles.theme, "success"));
+  const items = (Array.isArray(props.items) ? props.items : []).map((item) => {
+    const entry = (typeof item === "object" && item !== null ? item : { title: item }) as Record<string, unknown>;
+    const detail = entry.detail ?? entry.activeForm;
+    return { title: text(entry.title ?? entry.content ?? entry.subject), status: stepStatus(entry.status),
+             detail: detail === undefined || detail === null || detail === "" ? undefined : text(detail) };
+  });
+  return (
+    <Box flexDirection="column" alignSelf="stretch">
+      {items.map((item, index) => {
+        const last = index === items.length - 1;
+        const active = item.status === "active";
+        return (
+          <Box key={index} flexDirection="row" gap={10} alignSelf="stretch">
+            <Box width={18} flexDirection="column" alignItems="center">
+              <StepMark status={item.status} />
+              {!last && <Rect width={2} flexGrow={1} minHeight={6} radius={1} marginTop={3} marginBottom={3}
+                              fill={item.status === "done" ? `${success.slice(0, 7)}66` : colors.line} />}
+            </Box>
+            <Box flexDirection="column" gap={1} flexGrow={1} flexShrink={1} flexBasis={0} paddingBottom={last ? 0 : 10}>
+              <Text style={styles.body} weight={active ? 650 : 500} lineHeight={1.38}
+                    color={active ? colors.ink : item.status === "pending" ? colors.soft : colors.muted}>{item.title}</Text>
+              {item.detail !== undefined && (active || item.status === "failed") && (
+                <Text style={styles.body} size={12} color={item.status === "failed" ? colors.danger : colors.muted}>{item.detail}</Text>
+              )}
+            </Box>
+          </Box>
+        );
+      })}
+    </Box>
+  );
+}
+
+function StepMark({ status }: { status: StepStatus }) {
+  const styles = useStyles();
+  const { colors, motion } = styles.theme;
+  const success = String(toneColor(styles.theme, "success"));
+  const base = { width: 18, height: 18, radius: 9, transition: motion.pop } as const;
+  switch (status) {
+    case "done":
+      return <Box {...base} fill={success}><Tick shown color={String(colors.onAccent)} /></Box>;
+    case "active":
+      return (
+        <Box {...base} alignItems="center" justifyContent="center" border={{ width: 2, color: colors.accent }}>
+          <Rect width={8} height={8} radius={4} fill={colors.accent} animate={breathe} />
+        </Box>
+      );
+    case "failed":
+      return (
+        <Box {...base} fill={colors.danger}>
+          <Rect position="absolute" x={4} y={8} width={10} height={2} radius={1} fill={colors.onAccent} transform={crossOne} />
+          <Rect position="absolute" x={4} y={8} width={10} height={2} radius={1} fill={colors.onAccent} transform={crossTwo} />
+        </Box>
+      );
+    case "skipped":
+      return (
+        <Box {...base} alignItems="center" justifyContent="center" border={{ width: 1.5, color: colors.line }}>
+          <Rect width={8} height={2} radius={1} fill={colors.faint} />
+        </Box>
+      );
+    default:
+      return <Box {...base} border={{ width: 1.5, color: colors.control }} />;
+  }
 }
 
 function Avatar({ props }: Rendered) {
@@ -962,7 +1241,7 @@ const components: Record<string, Drawn> = {
   Stack, Card, Grid, Heading, Text: TextElement, Markdown, Badge, Metric, KeyValue, ProgressBar, List, ListItem, Table,
   BarChart, Sparkline, Image: ImageElement, Code, Avatar, Divider: DividerElement, Spacer: SpacerElement,
   Button: ButtonElement, TextField: TextFieldElement, Switch: SwitchElement, Checkbox: CheckboxElement,
-  Slider: SliderElement, Tabs, Countdown,
+  Slider: SliderElement, Tabs, Countdown, Diff: DiffElement, Choices: ChoicesElement, Steps: StepsElement,
 };
 
 /** The component types the renderer draws. */

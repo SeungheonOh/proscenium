@@ -150,6 +150,13 @@ its own chrome:
   behind never shows through.
 - **Root card.** A `Card` at the spec's root draws no card of its own, since
   the frame already is one.
+- **Height.** The frame is as tall as its interface, up to the room its mode
+  leaves: the screen's height less the card's place for a floating card, the
+  screen's for overlays, docks and dialogs, none for canvas cards. Past that
+  the content scrolls inside the frame, by the wheel, in whole pixels, with a
+  thin thumb at the right edge saying there is more. A commit review an agent
+  wrote ran to 1,400 px on a 720 px screen; its buttons are a scroll away
+  rather than off the screen.
 
 ## The visual system
 
@@ -201,7 +208,7 @@ The compositor draws a text node's raster exactly where the node is. So:
 
 ## Components
 
-The catalog is small on purpose: 27 components a model can combine reliably.
+The catalog is small on purpose: 30 components a model can combine reliably.
 Notes on the ones with design decisions in them:
 
 - **Stack, Card, Grid, List.** Columns stretch their children; rows centre
@@ -222,6 +229,31 @@ Notes on the ones with design decisions in them:
   `$bindState` to paths the spec names, or kept under `/_ui` when bound to
   nothing.
 - **Image.** Takes a path, or an https URL fetched once into a cache.
+- **Diff.** Rows of 11 px mono: the old and new line numbers in a faint
+  gutter, a red − or green +, and the line, which wraps (up to four lines)
+  rather than running off. Removed and added rows are tinted with the danger
+  and success colors. Runs of unchanged lines fold to "⋯ 12 unchanged lines",
+  followed by the function a unified diff names. Each file has a header with
+  its path and +/− counts. Given `before` and `after` it works out the lines
+  itself: shared ends trimmed, then the longest common run of what is left.
+  Removals come before additions, as git shows them. A patch whose chunks
+  carry no numbers (Codex's) gets no gutter, rather than invented numbers.
+- **Choices.** Rows with a 1 px line that turns accent, with a soft accent
+  fill, when chosen. A radio dot, or a checkbox tick with `multiple`. The
+  label is strong, the description muted beneath it, and an optional badge
+  ("Recommended") sits at the right. It is for questions; `Tabs` stays the
+  short switch.
+- **Steps.** A timeline: an 18 px mark per item, with a line down to the next
+  that turns green below done items.
+  - Done is a green disc with a tick.
+  - Active is an accent ring around a breathing dot, its title strong in ink,
+    and its detail shown.
+  - Pending is an empty ring.
+  - Failed is a red disc with a cross, and its detail in red.
+  - Skipped is a faint ring with a bar.
+
+  The statuses agents write (`in_progress`, `completed`, `cancelled`) map onto
+  these.
 - **Failures.** An element that fails to draw shows why inside its own
   interface; an unknown type shows its name.
 
@@ -363,6 +395,53 @@ sequenceDiagram
 a minute more, reset, an alert over everything when the time is up, counting
 on with its card closed, and the time kept across restarts, in about 140 lines.
 
+## Coding agents
+
+The person runs Claude Code or Codex in a terminal and looks elsewhere. When
+the agent needs them, the question should come to where they are. What we
+built, and why:
+
+- **Hooks, not wrappers.** Both agents have hooks: a command run at each
+  moment (a prompt, a tool, a permission, the end of a turn), given the event
+  as JSON, whose output can decide a permission. Claude can also answer its
+  own questions (`AskUserQuestion`) through `updatedInput.answers`. Wrapping
+  the agent's terminal or its API would have meant parsing a TUI. With hooks,
+  the agent stays exactly as it is, and the terminal stays a place to answer
+  too.
+- **One app for every agent.** Hooks are short-lived and can't own a card
+  that outlives them, and a panel of sessions needs one owner anyway. So the
+  hooks `tell` the Agents app, which the world starts on the first message
+  and keeps running while anything waits. A request whose hook is killed (the
+  person answered in the terminal, or pressed Esc) is taken back (`untold`),
+  and its card closes. An app that crashes with a question open gets the
+  question again from the world once restarted.
+- **Fast hooks.** Claude runs one before every tool. `hook.mjs` is plain
+  JavaScript that writes two lines to the socket and exits (about 40 ms of node
+  start), instead of a bundled TypeScript program.
+- **Cards say what will happen, the way the person checks it.** A command
+  shows as code with the agent's own description of it. An edit shows as a
+  diff around the change, numbered as in the file, because "Edit report.mjs?"
+  alone can't be judged. A long command shows its first lines and "N more
+  lines", so the buttons stay on the screen. Deny takes words: what the agent
+  should do instead goes back with the denial, as in the terminal.
+- **No asking to ask.** The MCP server's tools only show things on the
+  person's screen, so the Agents app allows them without a card. Otherwise
+  every question came with a question about asking it.
+- **Agents make their own interfaces.** `show_interface` puts the catalog in
+  agents' hands. Asked to "show me the diff and your commit message, let me
+  edit it, commit once I approve", Claude Code built a review card: a heading,
+  a summary, a multi-file `Diff` of `git diff`, the message in a multiline
+  field, and Cancel and Approve & commit. It then waited on it. The
+  interfaces belong to the MCP server, so they go when the session ends.
+- **Tried for real.** Both agents did one errand in a small invoice CLI: add
+  machine-readable output for an accounting import, asking first. Claude Code
+  asked two questions (formats, multiple choice; contents, one), edited two
+  files, appended tests with a heredoc, ran them and built its commit review.
+  Codex asked through `ask_person`, took "CSV" plus a written note, and asked
+  to apply its patch across four files. The panel followed both throughout.
+  Neither used a task-list tool on this errand, so the plan view has only seen
+  test events so far.
+
 ## Live data
 
 Some interfaces show things that change by themselves: a system monitor, a
@@ -429,6 +508,13 @@ Measured on the headless rig:
   as the camera's position allows; after a fling it can rest between pixels,
   which softens windows too.
 - **First output only.** Interfaces show on the first output.
+- **Cards can't sit beside the agent's terminal.** The world isn't told which
+  process owns a window, so an agent's cards go to the top right corner rather
+  than next to its terminal. Knowing each window's client pid (a small change
+  in C) would let the Agents app put them beside the window whose process
+  started the agent.
+- **A multiline field doesn't grow.** A commit message longer than the field
+  is cut at its bottom edge rather than scrolling inside it.
 - **Apps run as the person.** An app the person allowed can do whatever they
   can. There's no sandbox, the same as for commands.
 - **Model reliability.** Codex Luna 6 at a low thinking level sometimes drops

@@ -1,0 +1,5 @@
+#!/bin/sh
+# An MCP server that lets coding agents put interfaces on the screen and wait for
+# the person's answer (see examples/genui/mcp.ts).
+here=$(cd "$(dirname "$0")/.." && pwd)
+exec node "$here/examples/genui/run.mjs" "$here/examples/genui/mcp.ts" "$@"

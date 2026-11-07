@@ -185,9 +185,42 @@ export const catalog = defineCatalog(schema, {
       description: "A picture: an absolute file path or an https URL.",
     },
     Code: {
-      props: z.object({ text: z.string() }),
+      props: z.object({ text: z.string(), maxLines: z.number().nullable() }),
       slots: [],
-      description: "Monospace text in a box: commands, output, code.",
+      description: "Monospace text in a box: commands, output, code. With maxLines it shows only the last lines, for output that keeps growing.",
+    },
+    Diff: {
+      props: z.object({
+        before: z.string().nullable(),
+        after: z.string().nullable(),
+        patch: z.string().nullable(),
+        path: z.string().nullable(),
+        startLine: z.number().nullable(),
+        maxLines: z.number().nullable(),
+      }),
+      slots: [],
+      description: "A change to a file as a diff: removed lines red, added lines green, numbered, with unchanged stretches folded. Give `before` and `after` (the old and new text; it works out what changed, and startLine numbers them from where they are in the file) or a unified diff in `patch` (git diff output, several files allowed). `path` names the file.",
+    },
+    Choices: {
+      props: z.object({
+        options: z.array(z.union([z.string(), z.object({
+          value: z.string().nullable(),
+          label: z.string(),
+          description: z.string().nullable(),
+          badge: z.string().nullable(),
+        })])),
+        value: z.union([z.string(), z.array(z.string()), z.null()]),
+        multiple: z.boolean().nullable(),
+      }),
+      slots: [],
+      description: 'Answers the person picks from, each a row with a label and an optional description and badge ("Recommended"): one, or any number with multiple: true. Bind value with {"$bindState":"/path"}: the chosen value, or a list of them with multiple (an option\'s value is its label unless given). Emits change. Use it for a question whose answers need explaining; Tabs for a short switch.',
+    },
+    Steps: {
+      props: z.object({
+        items: z.array(z.object({ title: z.string(), status: z.string().nullable(), detail: z.string().nullable() })),
+      }),
+      slots: [],
+      description: "A plan or checklist as a timeline. Each item's status is pending, active (pulsing: being done now), done, failed or skipped. Keep the items in state and change their status as the work moves on.",
     },
     Avatar: {
       props: z.object({ name: z.string(), size: z.number().nullable() }),

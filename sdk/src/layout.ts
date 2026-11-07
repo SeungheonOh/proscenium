@@ -203,6 +203,8 @@ interface Size {
 export class TextMetrics {
   private readonly sizes = new Map<string, Size>();
   private readonly pending = new Map<string, MeasureRequest>();
+  /** Sizes asked for and not answered yet: asked for once, however often layout wants them meanwhile. */
+  private readonly asked = new Set<string>();
   private readonly keys = new Map<number, string>();
   private nextKey = 1;
 
@@ -214,7 +216,7 @@ export class TextMetrics {
     const id = JSON.stringify(props);
     const known = this.sizes.get(id);
     if (known) return known;
-    if (!this.pending.has(id)) {
+    if (!this.pending.has(id) && !this.asked.has(id)) {
       const key = this.nextKey++;
       this.keys.set(key, id);
       this.pending.set(id, { key, props });
@@ -228,6 +230,7 @@ export class TextMetrics {
 
   takePending(): MeasureRequest[] {
     const requests = [...this.pending.values()];
+    for (const id of this.pending.keys()) this.asked.add(id);
     this.pending.clear();
     return requests;
   }
@@ -237,6 +240,7 @@ export class TextMetrics {
       const id = this.keys.get(key);
       if (id === undefined) continue;
       this.keys.delete(key);
+      this.asked.delete(id);
       this.remember(id, { width, height });
     }
   }
@@ -247,6 +251,7 @@ export class TextMetrics {
       const id = this.keys.get(key);
       if (id === undefined) continue;
       this.keys.delete(key);
+      this.asked.delete(id);
       this.remember(id, estimate(props));
     }
   }

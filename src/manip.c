@@ -176,7 +176,7 @@ struct manipulation *manipulation_begin_pan(struct server *server, struct output
     manipulation_point(server, manipulation, &manipulation->last_x, &manipulation->last_y);
     record_sample(manipulation, manipulation->last_x, manipulation->last_y);
     /* Grabbing a coasting canvas stops it where it is. */
-    camera_settle(output, now_seconds());
+    camera_settle(output, server_time(server));
     install(server, manipulation, false);
     return manipulation;
 }
@@ -325,7 +325,7 @@ void manipulation_end(struct server *server) {
     if (manipulation->kind == MANIPULATION_PAN) {
         double vx, vy;
         release_velocity(manipulation, &vx, &vy);
-        if (vx || vy) camera_fling(manipulation->output, vx, vy, now_seconds());
+        if (vx || vy) camera_fling(manipulation->output, vx, vy, server_time(server));
         cameras_report(server);
     } else {
         node_release(node, PROP_X);
@@ -357,7 +357,7 @@ void wheel_zoom(struct server *server, double delta, bool wheel) {
     if (!output) return;
     /* Notched wheels glide between steps; touchpads track exactly. */
     camera_zoom_at(output, exp2(-delta / 120), x, y, wheel ? camera_wheel_motion() : NULL,
-                   now_seconds());
+                   server_time(server));
     cameras_report(server);
     scene_changed(server);
 }
@@ -389,7 +389,7 @@ void gesture_manipulation_update(struct server *server, double dx, double dy, do
     if (manipulation->kind == MANIPULATION_ZOOM && scale > 0) {
         double x, y;
         manipulation_point(server, manipulation, &x, &y);
-        camera_zoom_at(output, scale / manipulation->last_x, x, y, NULL, now_seconds());
+        camera_zoom_at(output, scale / manipulation->last_x, x, y, NULL, server_time(server));
         manipulation->last_x = scale;
     }
     camera_pan(output, dx, dy);
@@ -407,7 +407,7 @@ void gesture_manipulation_end(struct server *server, bool cancelled) {
     if (manipulation->kind == MANIPULATION_PAN && !cancelled) {
         double vx, vy;
         release_velocity(manipulation, &vx, &vy);
-        if (vx || vy) camera_fling(manipulation->output, vx, vy, now_seconds());
+        if (vx || vy) camera_fling(manipulation->output, vx, vy, server_time(server));
     }
     manipulation_free(manipulation);
     cameras_report(server);

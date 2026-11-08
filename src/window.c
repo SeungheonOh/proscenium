@@ -653,7 +653,7 @@ void window_destroyed(struct window *window) {
     if (window->fallback) {
         struct protocol_error ignored;
         scene_remove(&server->fallback, 0, window->fallback->id, &ignored);
-        scene_finish_commit(&server->fallback, now_seconds());
+        scene_finish_commit(&server->fallback, server_time(server));
         window->fallback = NULL;
     }
     struct window *other;

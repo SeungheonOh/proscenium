@@ -29,8 +29,8 @@ void display_destroy(struct display *display);
  */
 struct display_frame;
 /* Build OUTPUT's next frame, to draw into BUFFER, which the caller holds until the frame
- * is freed. */
-struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer);
+ * is freed, with motion as it is at TIME, when the frame will show. */
+struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer, double time);
 /* Draw FRAME, then DONE(FRAME, DATA) on the main thread: at once when the main thread draws
  * or waits for it, else from the event loop once the render thread drew it. */
 void display_draw(struct display_frame *frame,

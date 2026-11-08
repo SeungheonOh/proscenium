@@ -2362,7 +2362,7 @@ static void frame_finished(void *data) {
     if (frame->done) frame->done(frame, frame->data);
 }
 
-struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer) {
+struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer, double time) {
     struct server *server = output->server;
     struct display *display = output->display;
     struct wlr_output *wlr_output = output->wlr_output;
@@ -2379,7 +2379,7 @@ struct display_frame *display_build(struct output *output, struct wlr_buffer *bu
         display->valid = false;
         wlr_damage_ring_add_whole(&display->ring);
     }
-    server_advance(server, now_seconds());
+    server_advance(server, time);
     web_prepare(server, output);
     windows_sweep_departed(server);
     refresh(output);

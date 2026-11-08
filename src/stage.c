@@ -98,7 +98,7 @@ void shader_report_error(struct server *server, struct node *node, const struct 
 /* The fallback: unplaced windows cascade on the first output while no director
  * scene presents them, so a missing or crashed director never hides them. */
 void windows_sync_fallback(struct server *server) {
-    double time = now_seconds();
+    double time = server_time(server);
     int index = 0;
     bool changed = false;
     struct window *window;
@@ -211,7 +211,7 @@ void stage_reindex(struct server *server) {
     }
     input_install_shortcuts(server);
     struct output *output;
-    double time = now_seconds();
+    double time = server_time(server);
     wl_list_for_each(output, &server->outputs, link) {
         struct node *camera = camera_for(server, output);
         if (camera) camera_apply_node(output, camera, time);
@@ -281,6 +281,10 @@ void windows_sweep_departed(struct server *server) {
 
 static bool settling(struct server *server) {
     return scene_settling(&server->scene) || scene_settling(&server->fallback);
+}
+
+double server_time(struct server *server) {
+    return fmax(now_seconds(), server->advanced_at);
 }
 
 /* Sample motion at TIME and keep frames coming while anything moves. Finite motion

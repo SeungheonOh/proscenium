@@ -417,6 +417,27 @@ static void arm_pace_timer(struct output *output, int milliseconds) {
     wl_event_source_timer_update(output->pace_timer, MAX(1, milliseconds));
 }
 
+/* Seconds of one refresh. */
+static double refresh_seconds(struct output *output) {
+    if (output->refresh > 0) return output->refresh / 1e9;
+    if (output->wlr_output->refresh > 0) return 1000.0 / output->wlr_output->refresh;
+    return 1.0 / 60;
+}
+
+/* The moment a frame built now shows motion at: now, unless frames built before it have yet
+ * to show (drawing, or committed and waiting for their flip). Then it shows a refresh after
+ * the newest of them, so it shows motion a refresh on: sampled now, two frames built moments
+ * apart would show the same moment a refresh apart, and motion would move every other
+ * refresh. It is never further ahead than a refresh for each of them, so where flips come
+ * sooner than the refresh says, the moments it shows stay with the clock. */
+static double frame_time(struct output *output) {
+    double now = now_seconds();
+    int ahead = output->frame_count + (output->wlr_output->frame_pending ? 1 : 0);
+    if (!ahead) return now;
+    double refresh = refresh_seconds(output);
+    return fmin(fmax(now, output->sampled_at + refresh), now + ahead * refresh);
+}
+
 /* Milliseconds of one refresh, for retries that must not spin the loop. */
 static int refresh_milliseconds(struct output *output) {
     int64_t refresh = output->refresh;
@@ -553,7 +574,8 @@ static void render_frame(struct output *output) {
         return;
     }
     if (server->render_thread) track_buffer(server, buffer);
-    struct display_frame *frame = display_build(output, buffer);
+    double time = frame_time(output);
+    struct display_frame *frame = display_build(output, buffer, time);
     output->building = false;
     bool again = output->next_frame;
     output->next_frame = false;
@@ -572,6 +594,7 @@ static void render_frame(struct output *output) {
         }
         return;
     }
+    output->sampled_at = time;
     output->frames[output->frame_count++] = (struct output_frame){frame, buffer, started, false};
     if (again) output_request_frame(output);
     display_draw(frame, frame_finished, output);
@@ -737,7 +760,7 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
     VEC_FOR(&server->cameras, struct node *, camera) {
         const char *name = node_string(*camera, PROP_OUTPUT);
         if (!name || !strcmp(name, output_name(output)))
-            camera_apply_node(output, *camera, now_seconds());
+            camera_apply_node(output, *camera, server_time(server));
     }
     wlr_xcursor_manager_load(server->xcursor_manager, wlr_output->scale);
     if (first) input_center_pointer(server, output);

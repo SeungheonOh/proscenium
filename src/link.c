@@ -317,7 +317,7 @@ static bool apply_commit(struct director *director, const struct json_value *mes
         return protocol_fail(error, "commit requires an ops array.");
     /* From its first commit the director's scene replaces the fallback layout. */
     director->committed = true;
-    double time = now_seconds();
+    double time = server_time(server);
     int rejected = 0;
     struct protocol_error first = {0};
     for (size_t i = 0; i < ops->array.count; i++) {
@@ -398,7 +398,7 @@ static bool move_cameras(struct server *server, const struct json_value *message
         if (target &&
             (target->type != JSON_STRING || strcmp(output_name(output), target->string.chars)))
             continue;
-        camera_move(output, &move, now_seconds());
+        camera_move(output, &move, server_time(server));
         any = true;
     }
     motion_unref(move.motion);

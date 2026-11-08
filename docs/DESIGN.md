@@ -89,6 +89,12 @@ renders it with GLES and routes input.
   Drawing on the main thread, frames start as late as still meets the vblank;
   with the render thread a frame starts as soon as one fewer than two are in
   flight, so building overlaps drawing, at up to a refresh more latency.
+- Motion is sampled for when a frame shows, not when it is built: a frame
+  built while others have yet to show samples a refresh after the newest of
+  them (never more than a refresh ahead for each), so frames built moments
+  apart still show motion a refresh apart. Changes start motion on the same
+  clock (`server_time`), so a change between two frames starts from what the
+  second shows.
 - Screen shares capture only while a consumer streams and the source changed.
 - Children the director starts stop with it: a director exiting unmounts its
   world first, so effects clean up.

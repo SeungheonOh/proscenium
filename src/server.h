@@ -166,6 +166,8 @@ struct output {
     bool awaiting_frame;
     /* Frame pacing: the last vblank, the refresh, and what frames cost. */
     int64_t vblank, refresh, target_vblank;
+    /* The moment the newest frame built shows motion at (seconds, as now_seconds()). */
+    double sampled_at;
     int64_t frame_cost, gpu_cost;
     int streak;
     struct wl_event_source *pace_timer, *idle_frame;
@@ -367,6 +369,10 @@ void scene_changed(struct server *server);
 void invalidate_displays(struct server *server);
 /* Sample motion at TIME and keep frames coming while anything moves. */
 void server_advance(struct server *server, double time);
+/* The scene's clock: now, or, while a frame on its way shows a later moment, that moment.
+ * Motion starts on it, so a change made between two frames starts from what the second
+ * shows, never from a moment before it. */
+double server_time(struct server *server);
 /* stage.c: rebuild everything indexed from the scene after it or the windows changed. */
 void stage_reindex(struct server *server);
 /* The size a node draws at: sized nodes their size, windows their natural one. */

@@ -11,7 +11,7 @@
 // renders, and never on pointer motion; and changes animate in the compositor
 // through `transition`, never by rendering frames.
 
-export { colors, createTheme, darkTheme, font, glassBorder, lightTheme, makeStyles, motion, radii, shadows, space,
+export { breathe, colors, createTheme, darkTheme, font, glassBorder, lightTheme, makeStyles, motion, radii, shadows, space,
   ThemeProvider, type, useTheme } from "./theme.js";
 export type { TextRole, Theme, ThemeColors, ThemeOverrides } from "./theme.js";
 export { resolveStyle, StyleSheet, variants } from "./styles.js";

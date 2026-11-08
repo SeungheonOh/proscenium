@@ -20,6 +20,7 @@ import { makeStyles, useTheme } from "./theme.js";
 /** What a field's style functions see. */
 export interface TextFieldState {
   focused: boolean;
+  hovered: boolean;
   disabled: boolean;
   empty: boolean;
 }
@@ -122,23 +123,26 @@ const useStyles = makeStyles(({ colors, type, radii, motion }) => ({
             border: { width: 1, color: colors.accentClear }, transition: motion.pop, clip: true },
     variants: {
       focused: { true: { fill: colors.raised, border: { width: 1, color: colors.accentLine } }, false: {} },
+      hovered: { true: {}, false: {} },
       disabled: { true: { opacity: 0.4 }, false: {} },
     },
-    defaults: { focused: false, disabled: false },
+    defaults: { focused: false, hovered: false, disabled: false },
+    compound: [{ when: { focused: false, hovered: true }, style: { fill: colors.press } }],
   }),
   ...StyleSheet.create({
     lines: { flexDirection: "column", justifyContent: "flex-end" },
     stack: { flexDirection: "column" },
-    text: { ...type.body, color: colors.ink, lineHeight: 1.15 },
-    placeholder: { ...type.body, color: colors.faint, lineHeight: 1.15 },
+    text: { ...type.body, color: colors.ink },
+    placeholder: { ...type.body, color: colors.faint },
     // The compositor draws no text that is wholly clear, so the copy is all but clear.
     // The caret glyph's own side bearing would put it into the next letter; a whole
     // pixel back keeps it on the pixel grid, where it stays sharp.
-    caret: { position: "absolute", x: -1, y: 0, width: "100%", ...type.body, lineHeight: 1.15, color: "#00000001" },
+    caret: { position: "absolute", x: -1, y: 0, width: "100%", ...type.body, color: "#00000001" },
     hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
   }),
   colors,
-  lineSize: type.body.size ?? 13,
+  /** Pixels from one line to the next: the body's own spacing. */
+  linePitch: Math.round((type.body.size ?? 13) * (type.body.lineHeight ?? 18 / 13)),
 }));
 
 /**
@@ -162,6 +166,7 @@ export const TextField = memo(function TextField({ value, onChangeText, onSubmit
   // What the field last showed, so a value changed from outside puts the caret at its end.
   const known = useRef(value);
   const pressedSelf = useRef(0);
+  const [hovered, setHovered] = useState(false);
   const latest = useRef({ value, caret, anchor });
   latest.current = { value, caret: Math.min(caret, value.length), anchor: anchor === null ? null : Math.min(anchor, value.length) };
 
@@ -297,8 +302,7 @@ export const TextField = memo(function TextField({ value, onChangeText, onSubmit
   } : null);
 
   const shown = latest.current;
-  const state: TextFieldState = { focused, disabled, empty: value === "" };
-  const lineHeight = Math.ceil(styles.lineSize * 1.15 * 1.17);
+  const state: TextFieldState = { focused, hovered: hovered && !disabled, disabled, empty: value === "" };
   const selection = shown.anchor === null || shown.anchor === shown.caret
     ? null : [Math.min(shown.anchor, shown.caret), Math.max(shown.anchor, shown.caret)] as const;
   const accent = String(colors.accent).slice(0, 7);
@@ -312,7 +316,7 @@ export const TextField = memo(function TextField({ value, onChangeText, onSubmit
   const single = multiline ? undefined : 1;
   return (
     <Box style={[styles.field(state), resolveStyle(style, state)]} width={width}
-         maxHeight={multiline ? lineHeight * maxLines + 14 : undefined}>
+         maxHeight={multiline ? styles.linePitch * maxLines + 14 : undefined}>
       <Box style={styles.lines} flexGrow={1}>
         <Box style={styles.stack}>
           {value === "" && placeholder !== undefined
@@ -321,7 +325,8 @@ export const TextField = memo(function TextField({ value, onChangeText, onSubmit
           {focused && <Text markup style={[styles.caret, textStyle, hidden]}>{caretMarkup}</Text>}
         </Box>
       </Box>
-      <Group style={styles.hit} cursor={disabled ? undefined : "text"} onPointerDown={disabled ? undefined : () => {
+      <Group style={styles.hit} cursor={disabled ? undefined : "text"} onPointerEnter={() => setHovered(true)}
+             onPointerLeave={() => setHovered(false)} onPointerDown={disabled ? undefined : () => {
         pressedSelf.current = performance.now();
         focusField(self);
       }} />

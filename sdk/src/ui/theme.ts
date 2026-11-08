@@ -7,6 +7,7 @@
 
 import { createContext, createElement, useContext, type ReactNode } from "react";
 import type { Color } from "../color.js";
+import type { Animation } from "../animation.js";
 import type { Border, Shadow, TextProps } from "../props.js";
 import type { Motion } from "../motion.js";
 import { spring } from "../motion.js";
@@ -68,18 +69,27 @@ export type TextRole = "body" | "strong" | "caption" | "title";
 export interface Theme {
   colors: ThemeColors;
   font: string;
-  /** Text styles by role, in pixels; a Label's `variant`. */
-  type: Record<TextRole, Pick<TextProps, "font" | "size" | "weight">>;
-  /** Space between and inside things, in pixels. */
-  space: { xs: number; sm: number; md: number; lg: number; xl: number };
+  /**
+   * Text styles by role, in pixels; a Label's `variant`. Each role's `lineHeight` puts
+   * its lines a whole number of pixels apart, so no line of wrapped text sits between pixels.
+   */
+  type: Record<TextRole, Pick<TextProps, "font" | "size" | "weight" | "lineHeight">>;
+  /** Space between and inside things, in pixels: `label` is a label's distance from its control. */
+  space: { xs: number; sm: number; label: number; md: number; lg: number; xl: number };
   /** Corner radii, in pixels; a pill's radius is half its height. */
   radii: { sm: number; md: number; lg: number };
   /** Shadows by how far a surface floats: a pill on content, a card, a floating panel, a knob. */
   shadows: { pill: Shadow; card: Shadow; float: Shadow; knob: Shadow };
   /** The edge of frosted glass. */
   glassBorder: Border;
-  /** One-shot springs. Nothing loops, so a still interface costs nothing to show. */
-  motion: { glide: Motion; pop: Motion; roll: Motion; arrive: Motion; slide: Motion };
+  /**
+   * One-shot springs. Nothing loops, so a still interface costs nothing to show. `layout`
+   * moves things a change of content pushes about, and the frames around them, together and
+   * without overshoot; `scroll` follows a wheel's notches.
+   */
+  motion: { glide: Motion; pop: Motion; roll: Motion; arrive: Motion; slide: Motion; layout: Motion; scroll: Motion };
+  /** The one loop for something under way: typing dots, an active step, work of unknown length. */
+  breathe: Animation;
 }
 
 const font = "Noto Sans, sans-serif";
@@ -119,12 +129,12 @@ export const lightTheme: Theme = {
   },
   font,
   type: {
-    body: { font, size: 13, weight: 500 },
-    strong: { font, size: 13, weight: 650 },
-    caption: { font, size: 12, weight: 650 },
-    title: { font, size: 15, weight: 650 },
+    body: { font, size: 13, weight: 500, lineHeight: 18 / 13 },
+    strong: { font, size: 13, weight: 650, lineHeight: 18 / 13 },
+    caption: { font, size: 12, weight: 650, lineHeight: 16 / 12 },
+    title: { font, size: 15, weight: 650, lineHeight: 20 / 15 },
   },
-  space: { xs: 2, sm: 4, md: 8, lg: 14, xl: 20 },
+  space: { xs: 2, sm: 4, label: 6, md: 8, lg: 14, xl: 20 },
   radii: { sm: 6, md: 9, lg: 14 },
   shadows: {
     pill: { color: "#00000040", blur: 8, y: 2 },
@@ -139,7 +149,10 @@ export const lightTheme: Theme = {
     roll: spring({ duration: 0.42, bounce: 0.06 }),
     arrive: spring({ duration: 0.7, bounce: 0.16 }),
     slide: spring({ duration: 0.42, bounce: 0.04 }),
+    layout: spring({ duration: 0.3, bounce: 0 }),
+    scroll: spring({ duration: 0.28, bounce: 0 }),
   },
+  breathe: { opacity: [0.3, 1], duration: 0.7, direction: "alternate", ease: "ease-in-out", iterations: Infinity },
 };
 
 /** Light text on dark glass and cards; the accent stays. */
@@ -241,4 +254,5 @@ export const radii = lightTheme.radii;
 export const shadows = lightTheme.shadows;
 export const glassBorder = lightTheme.glassBorder;
 export const motion = lightTheme.motion;
+export const breathe = lightTheme.breathe;
 export { font };

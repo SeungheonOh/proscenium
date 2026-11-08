@@ -6,7 +6,7 @@
 // it runs, to stop it or start it again.
 
 import { memo, useContext, useEffect, useRef, useState } from "react";
-import { Box, Group, Rect, Text, usePersistentState } from "proscenium";
+import { Box, Rect, Text, translate, usePersistentState, type AnimatedValues, type Transition } from "proscenium";
 import { MarkdownView } from "proscenium/genui";
 import { Icon, IconButton, Label, makeStyles, Pressable, ScrollView, StyleSheet, Surface, TextField,
   type ScrollViewHandle } from "proscenium/ui";
@@ -22,7 +22,7 @@ import toolIcon from "./icons/tool.svg";
 import type { AppStatus, ChatSnapshot, HostSurface, UIHost } from "./host.js";
 import type { ChatMessage, ChatPart, Mode } from "./protocol.js";
 import { GrabContext, SurfaceCard } from "./SurfaceCard.js";
-import { identity, type Area } from "./Surfaces.js";
+import type { Area } from "./Surfaces.js";
 
 const suggestions = [
   "A 25-minute focus timer in the corner",
@@ -35,43 +35,62 @@ const modeNames: Record<Mode, string> = {
   canvas: "on the canvas", dialog: "as a dialog",
 };
 
-const useStyles = makeStyles(({ colors, type, radii, motion }) => ({
-  ...StyleSheet.create({
-    panel: { flexDirection: "column", radius: 18, clip: true },
-    // Words and marks line up with the messages: 14 in from each side.
-    header: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, paddingLeft: 14, paddingRight: 7,
-              alignSelf: "stretch" },
-    rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
-    content: { paddingX: 14, paddingY: 14, gap: 14 },
-    composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingX: 14, paddingTop: 8, paddingBottom: 14,
+const useStyles = makeStyles(({ colors, type, radii, motion, breathe }) => {
+  // What a new message or part pushes about moves on the layout spring, as inside interfaces.
+  const moves: Transition = { default: motion.pop, x: motion.layout, y: motion.layout, width: motion.layout,
+                              height: motion.layout };
+  const textMoves: Transition = { default: motion.pop, x: motion.layout, y: motion.layout };
+  // Rows in the stream (a suggestion, a moved interface, an app) share one inset.
+  const row = { flexDirection: "row", alignItems: "center", paddingX: 12, paddingY: 9, radius: radii.md,
+                border: { width: 1, color: colors.line }, alignSelf: "stretch", transition: moves } as const;
+  return {
+    ...StyleSheet.create({
+      panel: { flexDirection: "column", radius: radii.lg, clip: true },
+      // Words and marks line up with the messages: 14 in from each side, the × included.
+      header: { flexDirection: "row", alignItems: "center", gap: 8, height: 48, paddingLeft: 14, paddingRight: 7,
                 alignSelf: "stretch" },
-    // As tall as a one-line field, so the two sit level.
-    send: { width: 32, height: 32, radius: 16, alignItems: "center", justifyContent: "center", transition: motion.pop },
-    user: { maxWidth: "86%", paddingX: 12, paddingY: 8, radius: 14, fill: colors.accent, flexDirection: "column" },
-    userText: { ...type.body, color: colors.onAccent, lineHeight: 1.2 },
-    assistant: { flexDirection: "column", gap: 10, alignSelf: "stretch" },
-    // Centred by layout, which keeps it on whole pixels; Pango centring could blur it.
-    event: { ...type.caption, color: colors.faint, alignSelf: "center" },
-    tool: { flexDirection: "row", alignItems: "center", gap: 6, height: 26, paddingX: 10, radius: 13,
-            fill: colors.hover, alignSelf: "flex-start", maxWidth: "100%" },
-    toolLabel: { ...type.caption, color: colors.muted, flexShrink: 1, maxLines: 1 },
-    thinking: { ...type.body, color: colors.faint, italic: true, maxLines: 2 },
-    moved: { flexDirection: "row", alignItems: "center", gap: 8, paddingX: 14, paddingY: 9, radius: radii.md,
-             border: { width: 1, color: colors.line }, alignSelf: "stretch" },
-    app: { flexDirection: "row", alignItems: "center", gap: 10, paddingLeft: 12, paddingRight: 14, paddingY: 9,
-           radius: radii.md, border: { width: 1, color: colors.line }, alignSelf: "stretch" },
-    appMark: { width: 28, height: 28, radius: 8, alignItems: "center", justifyContent: "center", fill: colors.accentSoft },
-    appWords: { flexDirection: "column", gap: 1, flexGrow: 1, flexShrink: 1 },
-    appButtons: { flexDirection: "row", alignItems: "center", gap: 16, flexShrink: 0 },
-    suggestion: { paddingX: 12, paddingY: 8, radius: radii.md, border: { width: 1, color: colors.line },
-                  alignSelf: "stretch", transition: motion.pop },
-    dot: { width: 6, height: 6, radius: 3, fill: colors.faint },
-    status: { ...type.caption, color: colors.muted, paddingX: 14, paddingTop: 6 },
-    title: { ...type.title, color: colors.ink },
-  }),
-  colors,
-  motion,
-}));
+      rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
+      content: { paddingX: 14, paddingY: 14, gap: 14 },
+      composer: { flexDirection: "row", alignItems: "flex-end", gap: 8, paddingX: 14, paddingY: 12, alignSelf: "stretch" },
+      // As tall as a one-line field, so the two sit level.
+      send: { width: 32, height: 32, radius: 16, alignItems: "center", justifyContent: "center", transition: motion.pop },
+      user: { maxWidth: "86%", paddingX: 12, paddingY: 8, radius: 14, fill: colors.accent, flexDirection: "column",
+              transition: moves },
+      userText: { ...type.body, color: colors.onAccent },
+      message: { flexDirection: "column", alignSelf: "stretch", transition: moves },
+      assistant: { flexDirection: "column", gap: 8, alignSelf: "stretch", transition: moves },
+      // Centred by layout, which keeps it on whole pixels; Pango centring could blur it.
+      event: { ...type.caption, color: colors.faint, alignSelf: "center", transition: textMoves },
+      tool: { flexDirection: "row", alignItems: "center", gap: 6, height: 26, paddingX: 10, radius: 13,
+              fill: colors.hover, alignSelf: "flex-start", maxWidth: "100%", transition: moves },
+      toolLabel: { ...type.caption, color: colors.muted, flexShrink: 1, maxLines: 1 },
+      toolCommand: { font: "Noto Sans Mono, monospace", size: 12, color: colors.muted, flexShrink: 1, maxLines: 1 },
+      thinking: { ...type.body, color: colors.faint, italic: true, maxLines: 2, transition: textMoves },
+      description: { ...type.body, color: colors.muted },
+      moved: { ...row, gap: 8 },
+      app: { ...row, gap: 10 },
+      appMark: { width: 28, height: 28, radius: radii.sm, alignItems: "center", justifyContent: "center",
+                 fill: colors.accentSoft },
+      appWords: { flexDirection: "column", gap: 2, flexGrow: 1, flexShrink: 1 },
+      // Small buttons whose words line up with the row's edge, their hover reaching past it.
+      appButtons: { flexDirection: "row", alignItems: "center", gap: 4, flexShrink: 0, marginRight: -8 },
+      chipButton: { height: 26, paddingX: 8, radius: radii.sm, flexDirection: "row", alignItems: "center",
+                    transition: motion.pop },
+      suggestion: { ...row },
+      dot: { width: 6, height: 6, radius: 3, fill: colors.faint },
+      typing: { flexDirection: "row", gap: 5, height: 14, alignItems: "center", alignSelf: "flex-start", transition: moves },
+      status: { ...type.caption, color: colors.muted, paddingX: 14, paddingTop: 6 },
+      title: { ...type.title, color: colors.ink },
+    }),
+    colors,
+    motion,
+    breathe,
+  };
+});
+
+/** A message or part that arrives while the chat is open rises into place. */
+const rises: AnimatedValues = { opacity: 0, transform: translate(0, 6) };
+const appears: AnimatedValues = { opacity: 0 };
 
 export interface ChatPanelProps {
   host: UIHost;
@@ -111,9 +130,18 @@ export function ChatPanel({ host, chat, surfaces, apps, area, onClose }: ChatPan
   const messages = waiting === null ? chat.messages
     : [...chat.messages, { id: "waiting", role: "user", parts: [{ type: "text", text: waiting }] } satisfies ChatMessage];
   const status = !chat.connected ? "Starting the assistant…" : chat.error ? chat.error : null;
+  // What was here when the chat opened is simply there; what comes after rises into place.
+  const atOpen = useRef<Set<string> | null>(null);
+  atOpen.current ??= new Set(messages.map((message) => message.id));
+  // One place for the typing dots, at the end, kept while the assistant works: they fade
+  // while a reply or a running tool shows it is under way, rather than come and go.
+  const last = messages.at(-1);
+  const lastPart = last?.role === "assistant" ? last.parts.at(-1) : undefined;
+  const waitingOnIt = last?.role !== "assistant" || (last.streaming === true
+    && (!lastPart || ((lastPart.type === "tool" || lastPart.type === "app") && lastPart.status !== "running")));
   return (
     <Surface variant="card" style={styles.panel} fill={styles.colors.raised} x={area.x} y={area.y} width={area.width}
-             height={area.height}>
+             height={area.height} transition={styles.motion.slide}>
       <Box style={styles.header}>
         <Icon src={sparkleIcon} size={16} tone="accent" />
         {/* The model's name is part of the title's line, so the two share a baseline. */}
@@ -121,18 +149,20 @@ export function ChatPanel({ host, chat, surfaces, apps, area, onClose }: ChatPan
           Assistant
           {chat.model && <Text size={13} weight={500} color={styles.colors.faint}>{`  ${chat.model}`}</Text>}
         </Text>
-        <IconButton icon={plusIcon} size={30} iconSize={15} onPress={() => host.resetChat()} />
-        <IconButton icon={closeIcon} size={30} iconSize={15} onPress={onClose} />
+        <IconButton icon={plusIcon} size={30} iconSize={16} onPress={() => host.resetChat()} />
+        <IconButton icon={closeIcon} size={30} iconSize={16} onPress={onClose} />
       </Box>
       <Rect style={styles.rule} />
       <ScrollView ref={scroll} flexGrow={1} flexShrink={1} stickToEnd contentStyle={styles.content}>
         {messages.length === 0 && <Welcome onPick={send} />}
         {messages.map((message) => (
-          <MessageView key={message.id} message={message} surfaces={surfaces} apps={apps} host={host} />
+          <MessageView key={message.id} message={message} surfaces={surfaces} apps={apps} host={host}
+                       rises={!atOpen.current!.has(message.id)} />
         ))}
-        {chat.busy && messages.at(-1)?.role !== "assistant" && <Typing />}
+        {chat.busy && <Typing shown={waitingOnIt} />}
       </ScrollView>
-      {status && <Text style={styles.status} maxLines={2} width="100%">{status}</Text>}
+      {status && <Text style={styles.status} maxLines={2} width="100%" initial={appears} exit={appears}>{status}</Text>}
+      <Rect style={styles.rule} />
       <Box style={styles.composer}>
         <TextField value={draft} onChangeText={setDraft} onSubmit={send} multiline autoFocus
                    placeholder="Ask for anything, or for an interface" style={{ flexGrow: 1, flexShrink: 1 }} />
@@ -144,7 +174,7 @@ export function ChatPanel({ host, chat, surfaces, apps, area, onClose }: ChatPan
           : <Pressable onPress={() => send(draft)} disabled={!draft.trim()}
                        style={({ hovered }) => [styles.send, {
                          fill: !draft.trim() ? styles.colors.control : hovered ? styles.colors.accentHover : styles.colors.accent }]}>
-              <Icon src={sendIcon} size={17} tone="onAccent" />
+              <Icon src={sendIcon} size={16} tone="onAccent" />
             </Pressable>}
       </Box>
     </Surface>
@@ -154,12 +184,12 @@ export function ChatPanel({ host, chat, surfaces, apps, area, onClose }: ChatPan
 function Welcome({ onPick }: { onPick: (text: string) => void }) {
   const styles = useStyles();
   return (
-    <Box flexDirection="column" gap={8} alignSelf="stretch" paddingTop={8}>
+    <Box flexDirection="column" gap={8} alignSelf="stretch" exit={appears}>
       <Label variant="title">What can I make you?</Label>
-      <Text style={styles.thinking} italic={false} maxLines={3} width="100%">
+      <Text style={styles.description} maxLines={3} width="100%">
         Ask a question, or for an interface: it appears here, and you can drag it out onto the screen, an edge, a corner or the canvas.
       </Text>
-      <Box flexDirection="column" gap={6} alignSelf="stretch" paddingTop={6}>
+      <Box flexDirection="column" gap={8} alignSelf="stretch" paddingTop={6}>
         {suggestions.map((suggestion) => (
           <Pressable key={suggestion} onPress={() => onPick(suggestion)}
                      style={({ hovered, pressed }) => [styles.suggestion, { fill: pressed ? styles.colors.press : hovered ? styles.colors.hover : styles.colors.clear }]}>
@@ -172,14 +202,18 @@ function Welcome({ onPick }: { onPick: (text: string) => void }) {
 }
 
 /** One message; it renders again only when it, or the interfaces, change. */
-const MessageView = memo(function MessageView({ message, surfaces, apps, host }: {
+const MessageView = memo(function MessageView({ message, surfaces, apps, host, rises: arrives }: {
   message: ChatMessage; surfaces: readonly HostSurface[]; apps: readonly AppStatus[]; host: UIHost;
+  /** It came while the chat was open, so it rises into place. */
+  rises: boolean;
 }) {
   const styles = useStyles();
+  const initial = arrives ? rises : undefined;
   if (message.role === "user") {
     const words = message.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
     return (
-      <Box flexDirection="row" justifyContent="flex-end" alignSelf="stretch">
+      <Box flexDirection="row" justifyContent="flex-end" alignSelf="stretch" transition={styles.message.transition}
+           initial={initial}>
         <Box style={styles.user}>
           <Text style={styles.userText}>{words}</Text>
         </Box>
@@ -188,62 +222,71 @@ const MessageView = memo(function MessageView({ message, surfaces, apps, host }:
   }
   if (message.role === "event") {
     const words = message.parts.map((part) => (part.type === "text" ? part.text : "")).join("");
-    return <Text style={styles.event}>{words}</Text>;
+    return <Text style={styles.event} initial={initial}>{words}</Text>;
   }
   const last = message.parts.at(-1);
   return (
-    <Box style={styles.assistant}>
+    <Box style={styles.assistant} initial={initial}>
       {message.parts.map((part, index) => (
         <PartView key={part.type === "text" || part.type === "thinking" ? index : `${part.type}:${part.id}`} part={part}
-                  live={message.streaming === true && part === last} surfaces={surfaces} apps={apps} host={host} />
+                  live={message.streaming === true && part === last} surfaces={surfaces} apps={apps} host={host}
+                  rises={message.streaming === true} />
       ))}
-      {message.streaming && (!last || (last.type === "tool" || last.type === "app") && last.status !== "running") && <Typing />}
-      {message.error && <Label tone="danger" maxLines={4} width="100%">{message.error}</Label>}
+      {message.error && <Label tone="danger" maxLines={4} width="100%" initial={appears}>{message.error}</Label>}
     </Box>
   );
 });
 
-function PartView({ part, live, surfaces, apps, host }: { part: ChatPart; live: boolean; surfaces: readonly HostSurface[];
-                                                           apps: readonly AppStatus[]; host: UIHost }) {
+function PartView({ part, live, surfaces, apps, host, rises: arrives }: {
+  part: ChatPart; live: boolean; surfaces: readonly HostSurface[]; apps: readonly AppStatus[]; host: UIHost;
+  /** Its message is still coming, so a part new in it fades in. */
+  rises: boolean;
+}) {
   const styles = useStyles();
   const dragging = useContext(GrabContext)?.dragging ?? null;
+  const initial = arrives ? appears : undefined;
   switch (part.type) {
     case "text":
-      return part.text.trim() ? <MarkdownView text={part.text} /> : null;
+      return part.text.trim() ? <MarkdownView text={part.text} initial={initial} transition={styles.message.transition} /> : null;
     case "thinking":
-      return live ? <Text style={styles.thinking} width="100%">{lastLine(part.text) || "Thinking…"}</Text> : null;
+      return live ? <Text style={styles.thinking} width="100%" initial={appears} exit={appears}>
+        {lastLine(part.text) || "Thinking…"}</Text> : null;
     case "app":
       if (part.status === "done" && part.name) return <AppChip name={part.name} title={part.title ?? part.name} apps={apps} host={host} />;
       // While it is written, or when it failed, it is a tool like the others.
-      return <ToolPill label={part.label} status={part.status} />;
+      return <ToolPill label={part.label} status={part.status} initial={initial} />;
     case "tool":
-      return <ToolPill label={part.label} status={part.status} />;
+      return <ToolPill label={part.label} status={part.status} initial={initial} />;
     case "ui": {
       const entry = surfaces.find((surface) => surface.agent && surface.id === part.id);
       if (!entry) return null;
       if (entry.mode === "inline") {
+        // No identity to hand over: a place on the screen means nothing in the scrolling chat, so a
+        // card brought back fades in here as it fades out there.
         return <SurfaceCard key={entry.placed} entry={entry} chrome="slim" width="100%" dimmed={dragging === entry.key}
-                            frame={{ layoutId: identity(entry, dragging) }} />;
+                            frame={{ initial: appears, exit: appears }} />;
       }
       return (
-        <Box style={styles.moved}>
-          <Label tone="muted" flexShrink={1} flexGrow={1}>{`${entry.title ?? entry.id} is ${modeNames[entry.mode]}`}</Label>
-          <Pressable onPress={() => host.place(entry.key, "inline")} flexShrink={0}>
-            {({ hovered }) => <Label tone={hovered ? "accent" : "soft"} variant="strong">Bring back</Label>}
-          </Pressable>
+        <Box style={styles.moved} initial={appears}>
+          <Label tone="muted" flexShrink={1} flexGrow={1} maxLines={2}>{`${entry.title ?? entry.id} is ${modeNames[entry.mode]}`}</Label>
+          <Box style={styles.appButtons}>
+            <ChipButton label="Bring back" onPress={() => host.place(entry.key, "inline")} />
+          </Box>
         </Box>
       );
     }
   }
 }
 
-function ToolPill({ label, status }: { label: string; status: "running" | "done" | "error" }) {
+function ToolPill({ label, status, initial }: { label: string; status: "running" | "done" | "error"; initial?: AnimatedValues }) {
   const styles = useStyles();
+  // A command reads as one, in the face code is shown in.
+  const command = label.startsWith("$ ");
   return (
-    <Box style={styles.tool}>
-      <Icon src={status === "error" ? alertIcon : status === "done" ? checkIcon : toolIcon} size={13}
-            tone={status === "error" ? "danger" : "muted"} animate={status === "running" ? pulse : undefined} />
-      <Text style={styles.toolLabel}>{label}</Text>
+    <Box style={styles.tool} initial={initial}>
+      <Icon src={status === "error" ? alertIcon : status === "done" ? checkIcon : toolIcon} size={14}
+            tone={status === "error" ? "danger" : "muted"} animate={status === "running" ? styles.breathe : undefined} />
+      <Text style={command ? styles.toolCommand : styles.toolLabel}>{label}</Text>
     </Box>
   );
 }
@@ -256,7 +299,7 @@ function AppChip({ name, title, apps, host }: { name: string; title: string; app
   return (
     <Box style={styles.app}>
       <Box style={styles.appMark}>
-        <Icon src={appIcon} size={15} tone="accent" />
+        <Icon src={appIcon} size={16} tone="accent" />
       </Box>
       <Box style={styles.appWords}>
         <Label variant="strong" maxLines={1}>{title}</Label>
@@ -272,25 +315,25 @@ function AppChip({ name, title, apps, host }: { name: string; title: string; app
 }
 
 function ChipButton({ label, onPress }: { label: string; onPress: () => void }) {
+  const styles = useStyles();
   return (
-    <Pressable onPress={onPress} flexShrink={0}>
-      {({ hovered }) => <Label tone={hovered ? "accent" : "soft"} variant="strong">{label}</Label>}
+    <Pressable onPress={onPress} flexShrink={0}
+               style={({ hovered, pressed }) => [styles.chipButton, {
+                 fill: pressed ? styles.colors.accentSoftPress : hovered ? styles.colors.accentSoft : styles.colors.clear }]}>
+      {({ hovered }) => <Label tone={hovered ? "accent" : "soft"} variant="strong" transition={styles.motion.pop}>{label}</Label>}
     </Pressable>
   );
 }
 
-const pulse = { opacity: [1, 0.35, 1], duration: 1.1, iterations: Infinity };
-
-/** Three dots that breathe while a reply is on its way. */
-function Typing() {
+/** Three dots that breathe, one after another, while the assistant works; faded while what it does shows already. */
+function Typing({ shown }: { shown: boolean }) {
   const styles = useStyles();
   return (
-    <Group height={14} width={40}>
+    <Box style={styles.typing} opacity={shown ? 1 : 0} initial={appears} exit={appears}>
       {[0, 1, 2].map((index) => (
-        <Rect key={index} style={styles.dot} x={index * 11} y={4}
-              animate={{ opacity: [0.25, 1, 0.25], duration: 1.2, delay: index * 0.18, iterations: Infinity }} />
+        <Rect key={index} style={styles.dot} animate={{ ...styles.breathe, delay: index * 0.18 }} />
       ))}
-    </Group>
+    </Box>
   );
 }
 

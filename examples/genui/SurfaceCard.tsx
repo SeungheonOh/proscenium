@@ -1,9 +1,9 @@
 // One generated interface in its frame: a title bar to drag it by and close it
 // with, and the interface itself, drawn natively from its spec as it streams.
 
-import { createContext, memo, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Box, Rect, spring, Text, translate, type AnimatedValues, type LayoutBox, type Motion, type StagePointerEvent,
-  type StageWheelEvent, type Transform } from "proscenium";
+import { createContext, memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Box, instant, Rect, Text, translate, type AnimatedValues, type LayoutBox, type Motion, type StagePointerEvent,
+  type StageWheelEvent, type Transform, type Transition } from "proscenium";
 import { GeneratedView } from "proscenium/genui";
 import { darkTheme, Icon, Label, lightTheme, makeStyles, Pressable, ProgressBar, StyleSheet, Surface,
   ThemeProvider, type Theme } from "proscenium/ui";
@@ -12,7 +12,7 @@ import type { HostSurface, UIHost } from "./host.js";
 
 /** Starts dragging an interface by its title bar; the drag itself lives in Surfaces.tsx. */
 export interface Grabbing {
-  grab(key: string, event: StagePointerEvent, size: { width: number; scale?: number }): void;
+  grab(key: string, event: StagePointerEvent, size: { width: number; height?: number; scale?: number }): void;
   move(event: StagePointerEvent): void;
   release(event: StagePointerEvent): void;
   /** The interface being dragged, if any. */
@@ -31,21 +31,35 @@ export type Chrome = "full" | "slim" | "none";
 // each side, the close button's mark included.
 const inset = 14;
 
-const useStyles = makeStyles(({ colors, motion }) => StyleSheet.create({
-  card: { flexDirection: "column", radius: 14, clip: true, transition: motion.pop },
-  // Tall enough that the title sits as far from the top as the content does from the sides.
-  bar: { flexDirection: "row", alignItems: "center", gap: 6, height: 34, paddingLeft: inset, paddingRight: inset - 6,
-         alignSelf: "stretch" },
-  slimBar: { flexDirection: "row", alignItems: "center", gap: 6, height: 28, paddingLeft: inset, paddingRight: inset - 6,
-             alignSelf: "stretch" },
-  title: { flexShrink: 1 },
-  owner: { flexShrink: 0 },
-  body: { flexDirection: "column", paddingX: inset, paddingBottom: inset, alignSelf: "stretch" },
-  bareBody: { flexDirection: "column", padding: inset, alignSelf: "stretch" },
-  close: { width: 24, height: 24, radius: 7, alignItems: "center", justifyContent: "center", transition: motion.pop },
-  building: { flexDirection: "column", gap: 8, paddingY: 6, alignSelf: "stretch" },
-  rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
-}));
+// The bars' heights: the title (18 high) 8 from the full bar's top and 7 from the slim
+// one's, so content starts about as far below either as it sits from the sides. Both name
+// the interface the same way, whatever its mode.
+const barHeight = 34;
+const slimBarHeight = 32;
+
+const useStyles = makeStyles(({ colors, motion, radii, type }) => {
+  // Everything inside moves as the interface's own content does, on one spring that never
+  // overshoots, so the frame grows and shrinks with its content rather than clip it.
+  const moves: Transition = { default: motion.pop, x: motion.layout, y: motion.layout, width: motion.layout,
+                              height: motion.layout };
+  return {
+    ...StyleSheet.create({
+      card: { flexDirection: "column", radius: radii.lg, clip: true },
+      bar: { flexDirection: "row", alignItems: "center", gap: 6, height: barHeight, paddingLeft: inset,
+             paddingRight: inset - 6, alignSelf: "stretch", transition: moves },
+      slimBar: { flexDirection: "row", alignItems: "center", gap: 6, height: slimBarHeight, paddingLeft: inset,
+                 paddingRight: inset - 6, alignSelf: "stretch", transition: moves },
+      slimTitle: { ...type.strong, color: colors.ink, maxLines: 1, flexShrink: 1, flexGrow: 1 },
+      body: { flexDirection: "column", paddingX: inset, paddingBottom: inset, alignSelf: "stretch", transition: moves },
+      bareBody: { flexDirection: "column", padding: inset, alignSelf: "stretch", transition: moves },
+      close: { width: 24, height: 24, radius: radii.sm, alignItems: "center", justifyContent: "center", transition: moves },
+      building: { flexDirection: "column", gap: 6, alignSelf: "stretch" },
+      rule: { height: 1, fill: colors.line, alignSelf: "stretch" },
+    }),
+    moves,
+    motion,
+  };
+});
 
 const useColors = makeStyles(({ colors }) => colors);
 const useType = makeStyles(({ type }) => type);
@@ -57,7 +71,8 @@ export interface Frame {
   y?: number;
   initial?: AnimatedValues;
   exit?: AnimatedValues;
-  transition?: Motion;
+  /** How the card moves from place to place; it grows and shrinks with its content whatever this is. */
+  transition?: Motion | Transition;
   transform?: Transform;
   opacity?: number;
   interactive?: boolean;
@@ -107,10 +122,13 @@ function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Requi
   const type = useType();
   const host = useContext(HostContext)!;
   const grabbing = useContext(GrabContext);
+  // How tall it was last laid out, for the drop zones' previews; read only when it is grabbed.
+  const laid = useRef(0);
   const grip = grabbing && entry.mode !== "dialog" ? {
     onPointerDown: (event: StagePointerEvent) => {
-      host.raise(entry.key);
-      grabbing.grab(entry.key, event, { width: typeof width === "number" ? width : entry.width, scale });
+      // A free card comes to the front; one in a dock or a corner keeps its place in the column.
+      if (entry.mode === "floating" || entry.mode === "canvas") host.raise(entry.key);
+      grabbing.grab(entry.key, event, { width: typeof width === "number" ? width : entry.width, height: laid.current, scale });
     },
     onPointerMove: (event: StagePointerEvent) => grabbing.move(event),
     onPointerUp: (event: StagePointerEvent) => grabbing.release(event),
@@ -121,13 +139,18 @@ function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Requi
       <Icon src={closeIcon} size={12} tone="muted" />
     </Pressable>
   );
-  const view = (
-    <GeneratedView surface={entry.surface} onAction={(action, params) => host.act(entry.key, action, params)}
-                   fallback={<Building />} />
-  );
+  // Made once per interface, so the frame moving (a drag, a dock) never draws the interface again.
+  const view = useMemo(() => (
+    <GeneratedView surface={entry.surface} title={entry.title ?? entry.id}
+                   onAction={(action, params) => host.act(entry.key, action, params)} fallback={<Building />} />
+  ), [entry.surface, entry.key, entry.title, entry.id, host]);
+  // Placed by its frame's motion, sized with its content's.
+  const given = frame.transition;
+  const transition: Transition = given === undefined ? styles.moves
+    : isMotion(given) ? { ...styles.moves, default: given, x: given, y: given } : { ...styles.moves, ...given };
   return (
-    <Surface variant="card" style={styles.card} width={width} {...frame} fill={solid(colors.card)}
-             opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)}>
+    <Surface variant="card" style={styles.card} width={width} {...frame} transition={transition} fill={solid(colors.card)}
+             opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)} onLayout={(layout) => { laid.current = layout.height; }}>
       {chrome === "full" && (
         <Box style={styles.bar} cursor="grab" {...grip}>
           {/* Title and owner on one line, so they share a baseline. */}
@@ -142,19 +165,20 @@ function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Requi
       )}
       {chrome === "slim" && (
         <Box style={styles.slimBar} cursor="grab" {...grip}>
-          <Text font={type.caption.font} size={12} weight={650} color={colors.muted} maxLines={1} flexShrink={1}
-                flexGrow={1}>{entry.title ?? entry.id}</Text>
+          <Text style={styles.slimTitle}>{entry.title ?? entry.id}</Text>
           {close}
         </Box>
       )}
-      <Fit maxHeight={maxHeight ? maxHeight - (chrome === "full" ? 34 : chrome === "slim" ? 28 : 0) : 0}>
+      <Fit maxHeight={maxHeight ? maxHeight - (chrome === "full" ? barHeight : chrome === "slim" ? slimBarHeight : 0) : 0}>
         <Box style={chrome === "none" ? styles.bareBody : styles.body}>{view}</Box>
       </Fit>
     </Surface>
   );
 }
 
-const glide = spring({ duration: 0.28, bounce: 0 });
+function isMotion(value: Motion | Transition): value is Motion {
+  return typeof (value as { type?: unknown }).type === "string";
+}
 
 /**
  * Its content as tall as it is, up to MAXHEIGHT (none: any height); past that,
@@ -163,6 +187,7 @@ const glide = spring({ duration: 0.28, bounce: 0 });
  */
 function Fit({ maxHeight, children }: { maxHeight: number; children: ReactNode }) {
   const colors = useColors();
+  const styles = useStyles();
   const [box, setBox] = useState<LayoutBox | null>(null);
   const [content, setContent] = useState(0);
   const [offset, setOffset] = useState(0);
@@ -171,6 +196,7 @@ function Fit({ maxHeight, children }: { maxHeight: number; children: ReactNode }
   const at = Math.min(Math.max(offset, 0), most);
   const stale = useRef(at);
   stale.current = at;
+  const scrolled = useRef<"wheel" | "finger">("wheel");
   // Content that shrank back keeps what is in view.
   useEffect(() => {
     if (offset > most) setOffset(most);
@@ -179,20 +205,25 @@ function Fit({ maxHeight, children }: { maxHeight: number; children: ReactNode }
   const wheel = (event: StageWheelEvent) => {
     if (event.orientation !== "vertical" || most === 0) return;
     event.stopPropagation();
-    const step = event.source === "wheel" || event.source === "wheel-tilt" ? (event.discrete || Math.sign(event.delta)) * 56 : event.delta;
+    const notched = event.source === "wheel" || event.source === "wheel-tilt";
+    scrolled.current = notched ? "wheel" : "finger";
+    const step = notched ? (event.discrete || Math.sign(event.delta)) * 56 : event.delta;
     // Whole pixels: text resting between them draws blurred.
     setOffset(Math.round(Math.min(Math.max(stale.current + step, 0), most)));
   };
   const thumb = most > 0 && height > 0 ? Math.max(24, (height * height) / content) : 0;
+  // Its edges move with the content and the frame; a wheel's notches glide, fingers move it at once.
+  const scrolling: Transition = { ...styles.moves, transform: scrolled.current === "finger" ? instant : styles.motion.scroll };
   return (
-    <Box flexDirection="column" alignSelf="stretch" maxHeight={maxHeight} clip onLayout={setBox} onWheel={wheel}>
-      <Box flexDirection="column" alignSelf="stretch" flexShrink={0} transform={translate(0, -at)} transition={glide}
+    <Box flexDirection="column" alignSelf="stretch" maxHeight={maxHeight} clip onLayout={setBox} onWheel={wheel}
+         transition={styles.moves}>
+      <Box flexDirection="column" alignSelf="stretch" flexShrink={0} transform={translate(0, -at)} transition={scrolling}
            onLayout={(layout) => setContent(layout.height)}>
         {children}
       </Box>
       {thumb > 0 && (
         <Rect position="absolute" x={(box?.width ?? 0) - 6} y={((height - thumb) * at) / most} width={4} height={thumb}
-              radius={2} fill={colors.faint} transition={glide} />
+              radius={2} fill={colors.faint} transition={styles.motion.scroll} />
       )}
     </Box>
   );

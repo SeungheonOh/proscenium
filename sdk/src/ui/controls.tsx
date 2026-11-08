@@ -1,5 +1,6 @@
 import { memo, useRef, useState, type ReactNode } from "react";
 import { Box, Group, Rect } from "../components.js";
+import { instant } from "../motion.js";
 import { rotate } from "../transform.js";
 import type { Color } from "../color.js";
 import type { StagePointerEvent } from "../events.js";
@@ -185,7 +186,7 @@ const useSwitch = makeStyles(({ colors, shadows, motion }) => ({
     compound: [{ when: { value: false, hovered: true }, style: { fill: colors.controlHover } }],
   }),
   knob: StyleSheet.create({
-    knob: { width: 16, height: 16, radius: 8, fill: colors.knob, shadow: shadows.knob, transition: motion.pop },
+    knob: { width: 16, height: 16, radius: 8, fill: colors.knob, shadow: shadows.knob, transition: motion.glide },
   }).knob,
 }));
 
@@ -210,12 +211,14 @@ export const Switch = memo(function Switch({ value, onValueChange, disabled = fa
   );
 });
 
-const useSegments = makeStyles(({ colors, radii, motion }) => ({
+// As tall as a medium button (28 and the track's 2 either side); the chosen card's corners
+// follow the track's, 2 pixels in.
+const useSegments = makeStyles(({ colors, radii, shadows, motion }) => ({
   ...StyleSheet.create({
     segments: { flexDirection: "row", padding: 2, radius: radii.md, fill: colors.hover },
     disabled: { opacity: 0.4 },
-    segment: { height: 26, paddingX: 12, radius: 7, alignItems: "center", justifyContent: "center" },
-    indicator: { position: "absolute", radius: 7, fill: colors.raised, shadow: { color: "#0000001f", blur: 4, y: 1 },
+    segment: { height: 28, paddingX: 12, radius: radii.md - 2, alignItems: "center", justifyContent: "center" },
+    indicator: { position: "absolute", radius: radii.md - 2, fill: colors.raised, shadow: { ...shadows.knob, color: "#0000001f", blur: 4 },
                  transition: motion.glide },
   }),
   motion,
@@ -275,7 +278,9 @@ export const SegmentedControl = memo(SegmentedControlOf) as typeof SegmentedCont
 
 /** A slider's state, as its style functions see it. */
 export interface SliderState {
+  /** Held down, whether or not it has moved yet. */
   dragging: boolean;
+  hovered: boolean;
   disabled: boolean;
 }
 
@@ -287,7 +292,9 @@ const useSlider = makeStyles(({ colors, shadows, motion }) => ({
     fill: { position: "absolute", x: 0, y: 7, height: 6, radius: 3, fill: { from: colors.accentLight, to: colors.accent, angle: 0 } },
     hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
     thumb: { position: "absolute", y: 2, width: 16, height: 16, radius: 8, fill: colors.knob,
-             shadow: { ...shadows.knob, blur: 4 } },
+             shadow: { ...shadows.knob, blur: 4 }, transition: motion.pop },
+    // Under the pointer or held, the thumb lifts: a deeper shadow.
+    lifted: { shadow: { ...shadows.knob, blur: 7, y: 2 } },
   }),
   motion,
 }));
@@ -321,9 +328,12 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
                                              style, railStyle, fillStyle, thumbStyle }: SliderProps) {
   const styles = useSlider();
   const [dragging, setDragging] = useState(false);
+  // Moved since it was pressed: from then on the thumb follows the pointer at once.
+  const [moved, setMoved] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const last = useRef(value);
   last.current = value;
-  const state: SliderState = { dragging, disabled };
+  const state: SliderState = { dragging, hovered: hovered && !disabled, disabled };
   const fraction = Math.min(Math.max((value - min) / (max - min || 1), 0), 1);
   const travel = width - thumb;
   // A held press reports where the pointer is on the hit area even off it, so the
@@ -333,22 +343,30 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
     if (step) next = Math.min(max, min + Math.round((next - min) / step) * step);
     if (next !== last.current) onValueChange?.(next);
   };
-  // While dragged the thumb follows the pointer at once; otherwise it glides.
-  const follow = dragging ? undefined : styles.motion.glide;
+  // While dragged the thumb follows the pointer at once; a click, and anything else, glides.
+  const follow = dragging && moved ? undefined : styles.motion.glide;
+  const thumbMotion = { default: styles.motion.pop, x: follow ?? instant };
   return (
     <Box style={[styles.track, disabled && styles.disabled, resolveStyle(style, state)]} width={width}>
       <Rect style={[styles.rail, resolveStyle(railStyle, state)]} width={width} />
       <Rect style={[styles.fill, resolveStyle(fillStyle, state)]} width={Math.max(6, thumb / 2 + fraction * travel)}
             transition={follow} />
-      <Rect style={[styles.thumb, resolveStyle(thumbStyle, state)]} x={fraction * travel} transition={follow} />
+      <Rect style={[styles.thumb, (dragging || state.hovered) && styles.lifted, resolveStyle(thumbStyle, state)]}
+            x={fraction * travel} transition={thumbMotion} />
       <Group
         style={styles.hit}
         cursor={disabled ? undefined : "pointer"}
+        onPointerEnter={() => setHovered(true)}
+        onPointerLeave={() => setHovered(false)}
         onPointerDown={disabled ? undefined : (event) => {
           setDragging(true);
+          setMoved(false);
           pick(event);
         }}
-        onPointerMove={dragging ? pick : undefined}
+        onPointerMove={dragging ? (event) => {
+          if (!moved) setMoved(true);
+          pick(event);
+        } : undefined}
         onPointerUp={() => setDragging(false)}
       />
     </Box>
@@ -440,25 +458,34 @@ export interface ProgressBarProps {
   fillStyle?: Style<RectProps>;
 }
 
-const useProgress = makeStyles(({ colors, motion }) => ({
+const useProgress = makeStyles(({ colors, motion, breathe }) => ({
   ...StyleSheet.create({
     track: { height: 6, radius: 3, fill: colors.track, clip: true, alignSelf: "stretch" },
     fill: { position: "absolute", x: 0, y: 0, height: 6, radius: 3, transition: motion.glide },
   }),
   colors,
+  breathe,
 }));
 
-/** Work of unknown length: the whole bar breathes. */
-const pulse = { opacity: [0.25, 0.9, 0.25], duration: 1.4, iterations: Infinity };
+const fromNothing = { width: 0 } as const;
 
-/** How much of something is done, as a filling bar. Its fill glides to each new value. */
+/**
+ * How much of something is done, as a filling bar. Its fill glides to each new value;
+ * work of unknown length fills the bar and breathes, and once its length is known the fill
+ * starts again from nothing rather than shrinking back from full.
+ */
 export const ProgressBar = memo(function ProgressBar({ value, width, color, style, fillStyle }: ProgressBarProps) {
   const styles = useProgress();
+  const known = value !== null;
+  const wasKnown = useRef(known);
+  const grows = known && !wasKnown.current;
+  wasKnown.current = known;
   const fraction = value === null ? 1 : Math.min(Math.max(value, 0), 1);
   return (
     <Box style={[styles.track, style]} width={width}>
-      <Rect style={[styles.fill, fillStyle]} fill={color ?? styles.colors.accent} width={`${fraction * 100}%`}
-            animate={value === null ? pulse : undefined} />
+      <Rect key={known ? "known" : "unknown"} style={[styles.fill, fillStyle]} fill={color ?? styles.colors.accent}
+            width={`${fraction * 100}%`} initial={grows ? fromNothing : undefined}
+            animate={known ? undefined : styles.breathe} />
     </Box>
   );
 });

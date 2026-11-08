@@ -47,6 +47,8 @@ interface Step {
 
 interface Session {
   key: string;
+  /** Its rows' element keys: the same for as long as it shows, so its rows move rather than change places. */
+  serial: number;
   agent: Agent;
   cwd: string;
   prompt?: string;
@@ -65,6 +67,7 @@ interface Session {
 
 const names: Record<Agent, string> = { claude: "Claude Code", codex: "Codex" };
 const sessions = new Map<string, Session>();
+let serials = 0;
 const ui = app({ title: "Agents" });
 let panel: View | undefined;
 let asks = 0;
@@ -134,8 +137,8 @@ function sessionOf(agent: Agent, event: HookEvent): Session {
     for (const [other, left] of sessions) {
       if (left.agent === agent && left.cwd === event.cwd && left.status !== "working" && left.asks === 0) sessions.delete(other);
     }
-    session = { key, agent, cwd: event.cwd ?? "", status: "idle", plan: [], asks: 0, waiting: false, turnAt: Date.now(),
-                updated: Date.now() };
+    session = { key, serial: serials++, agent, cwd: event.cwd ?? "", status: "idle", plan: [], asks: 0, waiting: false,
+                turnAt: Date.now(), updated: Date.now() };
     sessions.set(key, session);
   }
   if (event.cwd) session.cwd = event.cwd;
@@ -252,7 +255,8 @@ function finished(session: Session, event: HookEvent): void {
   }
 }
 
-// The panel: every session, newest first.
+// The panel: every session, the one whose turn began last first. Sessions keep their places
+// while they work, however often their hooks report, and move only when a new turn begins.
 
 const statusBadge = (session: Session) =>
   session.asks > 0 || session.waiting ? { text: "Needs you", tone: "warning" }
@@ -261,7 +265,7 @@ const statusBadge = (session: Session) =>
     : { text: "Your turn", tone: "success" };
 
 function show(): void {
-  const shown = [...sessions.values()].sort((a, b) => b.updated - a.updated);
+  const shown = [...sessions.values()].sort((a, b) => b.turnAt - a.turnAt);
   ui.background = asks > 0;
   if (!shown.length) {
     panel?.close();
@@ -274,7 +278,7 @@ function show(): void {
     return key;
   };
   const rows = shown.flatMap((session, index) => {
-    const at = `s${index}`;
+    const at = `s${session.serial}`;
     const badge = statusBadge(session);
     const parts = [
       add(`${at}-head`, "Stack", { direction: "horizontal", gap: "sm", align: "center" }, [
@@ -291,7 +295,7 @@ function show(): void {
                                                  tone: needed ? "warning" : "accent", size: "sm", maxLines: 1 }));
     }
     if (session.plan.length) parts.push(add(`${at}-plan`, "Steps", { items: session.plan }));
-    const block = add(at, "Stack", { gap: "sm" }, parts);
+    const block = add(at, "Stack", { gap: "md" }, parts);
     return index === 0 ? [block] : [add(`${at}-rule`, "Divider", {}), block];
   });
   add("root", "Stack", { gap: "md" }, rows);
@@ -432,7 +436,7 @@ function permissionCard(session: Session, event: HookEvent): Card {
     ...body,
     instead: { type: "TextField", props: { value: { $bindState: "/instead" }, placeholder: `Or tell ${agentName.split(" ")[0]} what to do instead` },
                children: [], on: { submit: { action: "deny" } } } as Element,
-    buttons: { type: "Stack", props: { direction: "horizontal", gap: "sm", justify: "end" }, children: actions } as Element,
+    buttons: { type: "Stack", props: { direction: "horizontal", gap: "md", justify: "end" }, children: actions } as Element,
     deny: button("Deny", "deny"),
     allow: button("Allow", "allow", "filled"),
   };
@@ -542,7 +546,7 @@ function questionCard(event: HookEvent): Card {
       elements[`q${index}-header`] = { type: "Badge", props: { text: question.header, tone: "accent" }, children: [] } as Element;
       parts.unshift(`q${index}-header`);
     }
-    elements[`q${index}`] = { type: "Stack", props: { gap: "sm" }, children: parts } as Element;
+    elements[`q${index}`] = { type: "Stack", props: { gap: "md" }, children: parts } as Element;
     keys.push(`q${index}`);
     if (index < questions.length - 1) {
       elements[`q${index}-rule`] = { type: "Divider", props: {}, children: [] } as Element;
@@ -553,7 +557,7 @@ function questionCard(event: HookEvent): Card {
     root: { type: "Stack", props: { gap: "lg" }, children: [...keys, "missing", "buttons"] },
     missing: { type: "Text", props: { text: "Answer each question first.", tone: "danger", size: "sm" }, children: [],
                visible: { $state: "/missing" } },
-    buttons: { type: "Stack", props: { direction: "horizontal", gap: "sm", justify: "end" }, children: ["terminal", "answer"] },
+    buttons: { type: "Stack", props: { direction: "horizontal", gap: "md", justify: "end" }, children: ["terminal", "answer"] },
     terminal: button("Answer in the terminal", "terminal"),
     answer: button("Answer", "answer", "filled"),
   });

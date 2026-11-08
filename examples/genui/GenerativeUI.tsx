@@ -18,7 +18,8 @@
 
 import { dirname, join } from "node:path";
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { Group, Shortcut, spring, useOutputs, usePersistentState } from "proscenium";
+import { Group, Shortcut, useOutputs, usePersistentState } from "proscenium";
+import { motion } from "proscenium/ui";
 import { barLayout } from "../components/bar/layout.js";
 import assistantMain from "./agent/main.ts?url";
 import runner from "./run.mjs?url";
@@ -27,11 +28,11 @@ import { ChatPanel } from "./Chat.js";
 import { startAssistant, UIHost } from "./host.js";
 import { socketPath } from "./protocol.js";
 import { GrabContext, HostContext } from "./SurfaceCard.js";
-import { ScreenSurfaces, useGrabbing, WorldSurfaces, type Area, type Screenful } from "./Surfaces.js";
+import { margin, ScreenSurfaces, useGrabbing, WorldSurfaces, type Area, type Screenful } from "./Surfaces.js";
 
 const chatWidth = 420;
-const margin = 12;
-const slide = spring({ duration: 0.4, bounce: 0.08 });
+/** Below the bar, as far from it as everything keeps from the screen's edges. */
+const top = barLayout.margin + barLayout.height + margin;
 
 export function GenerativeUI() {
   const [host] = useState(() => new UIHost());
@@ -43,8 +44,7 @@ export function GenerativeUI() {
   }, [host, path]);
   const { surfaces, chat, apps } = useSyncExternalStore(host.subscribe, host.getSnapshot);
   const output = useOutputs()[0];
-  const screen: Screenful = { width: output?.width ?? 1280, height: output?.height ?? 720, top: barLayout.reserve,
-                              output: output?.name };
+  const screen: Screenful = { width: output?.width ?? 1280, height: output?.height ?? 720, top, output: output?.name };
   host.screen = { width: screen.width, height: screen.height };
   host.output = output?.name;
 
@@ -71,7 +71,7 @@ export function GenerativeUI() {
   const grab = useGrabbing(host, screen, chatOpen ? chatArea : null, surfaces);
 
   const panel = chatOpen && (
-    <Group key="chat" initial={{ x: 40, opacity: 0 }} exit={{ x: 40, opacity: 0 }} transition={slide}>
+    <Group key="chat" initial={{ x: 40, opacity: 0 }} exit={{ x: 40, opacity: 0 }} transition={motion.slide}>
       <ChatPanel host={host} chat={chat} surfaces={surfaces} apps={apps} area={chatArea} onClose={() => setChatOpen(false)} />
     </Group>
   );

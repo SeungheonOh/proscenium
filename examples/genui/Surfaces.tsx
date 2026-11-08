@@ -5,11 +5,17 @@
 //
 // While dragged, the interface stays where it was, faded, and a live copy
 // follows the pointer on the screen; the drop moves it, and the copy hands its
-// place over to it (layoutId), so it glides from where it was let go.
+// place over to it (layoutId), so it glides from where it was let go. Docks,
+// corners and dialogs lay their cards out in boxes whose origin is the screen's,
+// so a card's place in its box is its place on the screen, which is what the copy
+// hands over. A card pinned to the canvas lands in the world, under the camera,
+// where screen places mean nothing, and so does one dropped back in the chat: the copy fades
+// away and the card fades in.
 
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { Box, getCamera, Rect, Reserve, Screen, scale, Text } from "proscenium";
+import { Box, getCamera, instant, Rect, Reserve, Screen, scale, Text } from "proscenium";
 import { makeStyles, StyleSheet, Surface } from "proscenium/ui";
+import { barLayout } from "../components/bar/layout.js";
 import type { HostSurface, UIHost } from "./host.js";
 import type { Anchor, Mode, Place } from "./protocol.js";
 import { SurfaceCard, type Grabbing } from "./SurfaceCard.js";
@@ -35,6 +41,8 @@ interface Drag {
   grabX: number;
   grabY: number;
   width: number;
+  /** How tall it is on the screen. */
+  height: number;
   /** The pointer now, and where it went down. */
   x: number;
   y: number;
@@ -52,29 +60,37 @@ export interface Zone {
   area: Area;
 }
 
-const margin = 12;
+/** From the screen's edges, as the bar keeps from them. */
+export const margin = barLayout.margin;
 const edge = 30;
 const corner = 110;
 
-/** What docks and the chat leave of the screen's width: where overlays sit. */
-export function clearSpan(surfaces: readonly HostSurface[], screen: Screenful, chat: Area | null): { left: number; right: number } {
+/** What docks and the chat leave of the screen's width, where overlays sit; and how wide each dock is. */
+export function clearSpan(surfaces: readonly HostSurface[], screen: Screenful, chat: Area | null):
+    { left: number; right: number; docks: { left: number; right: number } } {
   const dock = (side: "left" | "right") => surfaces.filter((entry) => entry.mode === "dock" && entry.place.side === side)
-    .reduce((most, entry) => Math.max(most, entry.width + margin), 0);
-  return { left: margin + dock("left"), right: chat ? chat.x - margin : screen.width - margin - dock("right") };
+    .reduce((most, entry) => Math.max(most, entry.width), 0);
+  const docks = { left: dock("left"), right: dock("right") };
+  const room = (width: number) => (width ? width + margin : 0);
+  return { left: margin + room(docks.left), right: chat ? chat.x - margin : screen.width - margin - room(docks.right), docks };
 }
 
 /** Where a card dropped at (X, Y) would go, on SCREEN, with the chat at CHAT if it is open. */
 function zoneAt(x: number, y: number, screen: Screenful, chat: Area | null, entry: HostSurface,
-                grab: { x: number; y: number; width: number }, clear: { left: number; right: number }): Zone {
+                grab: { x: number; y: number; width: number; height?: number },
+                clear: ReturnType<typeof clearSpan>): Zone {
   const { width, height, top } = screen;
   const dockHeight = height - top - margin;
   // The pin is drawn over everything while dragging, the chat included, so it comes first.
   const pin = canvasTarget(screen);
   if (inside(x, y, pin)) return { mode: "canvas", place: {}, label: "Pin to canvas", area: pin };
+  // A dock is as wide as its widest card, this one included.
+  const dockWidth = (side: "left" | "right") => clear.docks[side] > 0 ? Math.max(clear.docks[side], entry.width) : entry.width;
   if (x < edge) return { mode: "dock", place: { side: "left" }, label: "Dock left",
-                         area: { x: margin, y: top, width: 320, height: dockHeight } };
+                         area: { x: margin, y: top, width: dockWidth("left"), height: dockHeight } };
   if (x > width - edge) return { mode: "dock", place: { side: "right" }, label: "Dock right",
-                                 area: { x: width - margin - 320, y: top, width: 320, height: dockHeight } };
+                                 area: { x: width - margin - dockWidth("right"), y: top, width: dockWidth("right"),
+                                         height: dockHeight } };
   // Corners of what docks and the chat leave clear, where overlays sit.
   const anchors: [Anchor, boolean][] = [
     ["top-left", x < clear.left + corner && x >= clear.left - edge && y < top + corner],
@@ -86,8 +102,11 @@ function zoneAt(x: number, y: number, screen: Screenful, chat: Area | null, entr
     if (!hit) continue;
     const left = anchor.endsWith("left");
     const upper = anchor.startsWith("top");
+    // As wide as the card; as tall as it was, near enough.
+    const tall = Math.min(grab.height ?? 200, height - top - margin);
     return { mode: "overlay", place: { anchor }, label: "Pin over everything",
-             area: { x: left ? clear.left : clear.right - 300, y: upper ? top : height - margin - 200, width: 300, height: 200 } };
+             area: { x: left ? clear.left : clear.right - entry.width, y: upper ? top : height - margin - tall,
+                     width: entry.width, height: tall } };
   }
   if (chat && entry.agent && entry.message && inside(x, y, chat)) {
     return { mode: "inline", place: {}, label: "Back to the chat", area: chat };
@@ -122,14 +141,14 @@ export function useGrabbing(host: UIHost, screen: Screenful, chat: Area | null, 
   world.current = { host, screen, chat, surfaces };
   const entry = drag ? surfaces.find((surface) => surface.key === drag.key) : undefined;
   const zone = drag?.moving && entry ? zoneAt(drag.x, drag.y, screen, chat, entry,
-                                              { x: drag.grabX, y: drag.grabY, width: drag.width },
+                                              { x: drag.grabX, y: drag.grabY, width: drag.width, height: drag.height },
                                               clearSpan(surfaces, screen, chat)) : null;
   const handlers = useMemo<Omit<Grabbing, "dragging">>(() => ({
     grab(key, event, size) {
       const scaleBy = size.scale ?? 1;
       const started: Drag = { key, grabX: Math.min(event.localX * scaleBy, size.width - 20), grabY: event.localY * scaleBy,
-                              width: size.width, x: event.screenX, y: event.screenY, fromX: event.screenX,
-                              fromY: event.screenY, moving: false };
+                              width: size.width, height: (size.height ?? 0) * scaleBy, x: event.screenX, y: event.screenY,
+                              fromX: event.screenX, fromY: event.screenY, moving: false };
       // Events can come faster than renders: keep what they see current at once.
       latest.current = started;
       setDrag(started);
@@ -167,20 +186,27 @@ export function useGrabbing(host: UIHost, screen: Screenful, chat: Area | null, 
   return { grabbing, drag: drag?.moving ? drag : null, zone, entry };
 }
 
-const useStyles = makeStyles(({ colors, motion, type }) => ({
+// Cards stacked in a dock, a corner or a dialog are a row's gap apart, as cards are inside an interface.
+const stacked = 8;
+
+const useStyles = makeStyles(({ colors, motion, type, radii }) => ({
   ...StyleSheet.create({
-    dock: { position: "absolute", flexDirection: "column", gap: 10 },
-    anchored: { position: "absolute", flexDirection: "column", gap: 10 },
-    zone: { position: "absolute", radius: 16, fill: colors.accentSoft, border: { width: 2, color: colors.accentLine },
+    // At the screen's origin, the cards placed by padding: see the top of this file.
+    dock: { position: "absolute", x: 0, y: 0, flexDirection: "column", gap: stacked },
+    anchored: { position: "absolute", x: 0, y: 0, flexDirection: "column", gap: stacked },
+    zone: { position: "absolute", radius: radii.lg, fill: colors.accentSoft, border: { width: 2, color: colors.accentLine },
             transition: motion.pop, alignItems: "center", justifyContent: "center" },
-    zoneLabel: { ...type.strong, color: colors.accent },
+    // Moves with the zone, which it sits in the middle of.
+    zoneLabel: { ...type.strong, color: colors.accent, transition: motion.pop },
     pin: { position: "absolute", radius: 26, flexDirection: "row", alignItems: "center", justifyContent: "center",
            transition: motion.pop },
     scrim: { position: "absolute", x: 0, y: 0, fill: "#00000059" },
-    dialog: { position: "absolute", x: 0, y: 0, flexDirection: "column", gap: 12, alignItems: "center",
+    dialog: { position: "absolute", x: 0, y: 0, flexDirection: "column", gap: stacked, alignItems: "center",
               justifyContent: "center" },
   }),
   motion,
+  // The copy under the pointer follows it at once; the rest of it (fading in) springs.
+  follow: { default: motion.pop, x: instant, y: instant },
 }));
 
 const anchorLayout: Record<Anchor, { justifyContent: "flex-start" | "center" | "flex-end"; alignItems: "flex-start" | "center" | "flex-end" }> = {
@@ -197,6 +223,10 @@ const anchorLayout: Record<Anchor, { justifyContent: "flex-start" | "center" | "
 
 const arriving = { opacity: 0, transform: scale(0.96) };
 const leaving = { opacity: 0, transform: scale(0.96) };
+/** The copy picked up: it comes up from the faded card it was taken from. */
+const lifted = { opacity: 0.3 };
+const dropped = { opacity: 0 };
+const anchors = Object.keys(anchorLayout) as Anchor[];
 
 /**
  * A card's identity: while a copy of it is dragged the copy takes it, so the card
@@ -252,14 +282,18 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
   const glide = styles.motion.glide;
   // Overlays sit in what docks and the chat leave of the screen.
   const { left: clearLeft, right: clearRight } = clearSpan(surfaces, screen, chat);
+  // Containers stay once they have held a card, so the last card to leave one still fades out.
+  const used = useRef(new Set<Anchor>());
+  for (const anchor of overlays.keys()) used.current.add(anchor);
   return (
     <>
       <Reserve output={screen.output} left={left.length ? dockWidth(left) + margin : 0}
                right={right.length ? dockWidth(right) + margin : 0} />
       <Screen output={screen.output}>
-        {([["left", left], ["right", right]] as const).map(([side, entries]) => entries.length > 0 && (
-          <Box key={side} style={styles.dock} x={side === "left" ? margin : width - margin - dockWidth(entries)}
-               y={top} width={dockWidth(entries)} maxHeight={height - top - margin} transition={glide}>
+        {([["left", left], ["right", right]] as const).map(([side, entries]) => (
+          <Box key={side} style={styles.dock} paddingLeft={side === "left" ? margin : width - margin - dockWidth(entries)}
+               paddingTop={top} width={side === "left" ? margin + dockWidth(entries) : width - margin}
+               maxHeight={height - margin} interactive={false}>
             {entries.map((entry) => (
               <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" width={dockWidth(entries)}
                            dimmed={dragging === entry.key} maxHeight={height - top - margin}
@@ -274,29 +308,28 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
                        frame={{ layoutId: identity(entry, dragging), x: entry.place.x ?? 0, y: entry.place.y ?? 0,
                                 initial: arriving, exit: leaving, transition: glide }} />
         ))}
-        {[...overlays].map(([anchor, entries]) => (
-          <Box key={anchor} style={styles.anchored} {...anchorLayout[anchor]} x={clearLeft} y={top}
-               width={clearRight - clearLeft} height={height - top - margin} interactive={false} transition={glide}>
-            {entries.map((entry) => (
+        {anchors.filter((anchor) => used.current.has(anchor)).map((anchor) => (
+          <Box key={anchor} style={styles.anchored} {...anchorLayout[anchor]} paddingLeft={clearLeft} paddingTop={top}
+               width={clearRight} height={height - margin} interactive={false}>
+            {(overlays.get(anchor) ?? []).map((entry) => (
               <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="slim" dimmed={dragging === entry.key}
                            maxHeight={height - top - margin}
                            frame={{ layoutId: identity(entry, dragging), initial: arriving, exit: leaving, transition: glide }} />
             ))}
           </Box>
         ))}
+        {/* The backdrop takes presses, so the rest waits for an answer. */}
         {dialogs.length > 0 && (
-          <>
-            {/* The backdrop takes presses, so the rest waits for an answer. */}
-            <Rect style={styles.scrim} width={width} height={height} initial={{ opacity: 0 }} exit={{ opacity: 0 }}
-                  transition={glide} onPointerDown={() => {}} />
-            <Box style={styles.dialog} width={width} height={height} interactive={false}>
-              {dialogs.map((entry) => (
-                <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" maxHeight={height - top - 2 * margin}
-                             frame={{ layoutId: `genui:${entry.key}`, initial: arriving, exit: leaving, transition: glide }} />
-              ))}
-            </Box>
-          </>
+          <Rect style={styles.scrim} width={width} height={height} initial={{ opacity: 0 }} exit={{ opacity: 0 }}
+                transition={glide} onPointerDown={() => {}} />
         )}
+        {/* Dialogs sit in the middle of what the bar leaves. */}
+        <Box style={styles.dialog} width={width} height={height} paddingTop={top} paddingBottom={margin} interactive={false}>
+          {dialogs.map((entry) => (
+            <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" maxHeight={height - top - 2 * margin}
+                         frame={{ layoutId: `genui:${entry.key}`, initial: arriving, exit: leaving, transition: glide }} />
+          ))}
+        </Box>
         <DropZones grab={grab} screen={screen} />
       </Screen>
     </>
@@ -310,6 +343,9 @@ function DropZones({ grab, screen }: { grab: ReturnType<typeof useGrabbing>; scr
   const pin = canvasTarget(screen);
   const lit = zone && zone.mode !== "floating" ? zone : null;
   const onCanvas = zone?.mode === "canvas";
+  // In the world, and in the chat's scrolling stream, a place on the screen means nothing to
+  // the card that lands there: the copy hands nothing over, and fades as the card fades in.
+  const handsOver = !onCanvas && zone?.mode !== "inline";
   return (
     <>
       {lit && lit.mode !== "canvas" && (
@@ -318,13 +354,16 @@ function DropZones({ grab, screen }: { grab: ReturnType<typeof useGrabbing>; scr
           <Text style={styles.zoneLabel}>{lit.label}</Text>
         </Box>
       )}
+      {/* Unscaled, so its words stay sharp. */}
+      <SurfaceCard entry={entry} chrome="full"
+                   frame={{ layoutId: handsOver ? `genui:${entry.key}` : undefined, x: Math.round(drag.x - drag.grabX),
+                            y: Math.round(drag.y - drag.grabY), opacity: 0.94, interactive: false, initial: lifted,
+                            exit: dropped, transition: styles.follow }} />
+      {/* Over the copy, which would otherwise hide it just as it is reached. */}
       <Surface variant={onCanvas ? "accent" : "glass"} style={styles.pin} x={pin.x} y={pin.y} width={pin.width}
                height={pin.height} initial={{ opacity: 0 }} exit={{ opacity: 0 }} interactive={false}>
         <Text style={styles.zoneLabel} color={onCanvas ? "#ffffff" : undefined}>Pin to canvas</Text>
       </Surface>
-      <SurfaceCard entry={entry} chrome="full"
-                   frame={{ layoutId: `genui:${entry.key}`, x: Math.round(drag.x - drag.grabX), y: Math.round(drag.y - drag.grabY),
-                            transform: scale(1.02), opacity: 0.94, interactive: false }} />
     </>
   );
 }

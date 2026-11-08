@@ -53,20 +53,18 @@ export const catalog = defineCatalog(schema, {
         align: z.enum(["start", "center", "end", "stretch"]).nullable(),
         justify: z.enum(["start", "center", "end", "between"]).nullable(),
         wrap: z.boolean().nullable(),
-        padding: gap.nullable(),
       }),
       slots: ["default"],
-      description: "Lays children out in a column (default) or a row. The basic layout container.",
+      description: "Lays children out in a column (default) or a row. The basic layout container. It has no inset of its own: use a Card to set content apart.",
     },
     Card: {
       props: z.object({
         title: z.string().nullable(),
         subtitle: z.string().nullable(),
         variant: z.enum(["card", "plain", "tinted", "ink"]).nullable(),
-        padding: gap.nullable(),
       }),
       slots: ["default"],
-      description: "A rounded section with an optional title and subtitle; children in a column. Use to group content.",
+      description: "A rounded section with an optional title and subtitle; children in a column. Use to group content. Its inset is fixed, the same as every card's.",
     },
     Grid: {
       props: z.object({ columns: z.number(), gap: gap.nullable() }),

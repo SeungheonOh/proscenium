@@ -48,7 +48,7 @@ flowchart LR
 | `examples/genui/client.ts` | A program's side of the protocol, with no dependencies. |
 | `examples/genui/app.ts` | The app library (`proscenium-app`): views with action handlers, state, notes, saved data. |
 | `examples/genui/apps.ts` | The world's apps: finding them, starting them as processes, restarting crashed ones, bringing them back after a restart. |
-| `examples/genui/apps/` | Apps that ship with Proscenium: `timer`, `monitor`, and `agents` with its `hook.mjs` for Claude Code and Codex. |
+| `examples/genui/apps/` | Apps that ship with Proscenium: `timer`, `monitor`, `activity`, `network`, `storage`, `repository`, `todo`, and `agents` with its `hook.mjs` for Claude Code and Codex. |
 | `examples/genui/mcp.ts`, `scripts/proscenium-mcp` | An MCP server: coding agents ask the person and show interfaces of their own. |
 | `examples/genui/agent/` | The assistant. |
 | `examples/genui/cli.ts`, `scripts/proscenium-ui` | Interfaces and apps from the shell. |
@@ -268,6 +268,16 @@ Writing an app by hand is a folder and two files; `proscenium-ui start NAME`
 runs it. `examples/genui/apps/timer/main.ts` is a full one in about 140 lines:
 presets, start and pause, a minute more, reset, an alert when the time is up,
 counting on after its card is closed, and the time kept across restarts.
+
+The others show what an app does with live data, each on its own process:
+
+| App | What it shows | What it shows off |
+| --- | --- | --- |
+| `activity` | CPU, memory and load, every core's last 45 seconds, the top processes by CPU or memory | A repeated grid of sparklines, a table re-sorted on a tab, state every 1.5 s |
+| `network` | The connection in use: address, download and upload rates, ping time, Wi-Fi name and signal | Rates as metrics over charts; commands (`ping`, `nmcli`) run without blocking |
+| `storage` | How full each disk is; the largest folders and files, press a folder to measure inside it | `du` in a process of its own while a busy bar shows; folders measured once come back at once |
+| `repository` | A git checkout's branch, upstream, changed files with each one's diff, and history | Pressing a row (an item's field arrives as its state path: read it with `view.get`), the `Diff` component, another checkout from a text field |
+| `todo` | A to-do list kept across restarts | Checkboxes bound to repeated items; `proscenium-ui tell todo '"Water the plants"'` adds from any program |
 
 ## Coding agents
 

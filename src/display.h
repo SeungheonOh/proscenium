@@ -23,14 +23,32 @@ struct display *display_create(struct output *output);
 void display_prepare_shader(struct server *server, struct shader *shader);
 void display_destroy(struct display *display);
 
-/* Draw OUTPUT's frame into BUFFER, whose framebuffer is bound; DAMAGE receives the
- * buffer region the frame changed. False when the frame changed nothing and no
- * client waits for it, so it need not be shown. */
-bool display_render(struct output *output, struct wlr_buffer *buffer, pixman_region32_t *damage);
-/* Before the commit: the surfaces the frame shows, which presentation feedback then reports. */
-void display_frame_feedback(struct output *output);
-/* After the commit: frame callbacks, or the damage back on failure. */
-void display_frame_done(struct output *output, bool committed, const pixman_region32_t *damage);
+/*
+ * A frame: built on the main thread, drawn where the renderer draws, shown by a commit.
+ * It holds what it draws, so the main thread can build the next one while it draws.
+ */
+struct display_frame;
+/* Build OUTPUT's next frame, to draw into BUFFER, which the caller holds until the frame
+ * is freed. */
+struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer);
+/* Draw FRAME, then DONE(FRAME, DATA) on the main thread: at once when the main thread draws
+ * or waits for it, else from the event loop once the render thread drew it. */
+void display_draw(struct display_frame *frame,
+                  void (*done)(struct display_frame *frame, void *data), void *data);
+/* False when it changed nothing and no client waits for it, so it need not be shown. */
+bool display_frame_shown(const struct display_frame *frame);
+/* Whether its buffer holds it: drawn, or nothing to draw. False when the buffer could not
+ * be drawn into, and must not be shown. */
+bool display_frame_drew(const struct display_frame *frame);
+/* The buffer region it changes. */
+const pixman_region32_t *display_frame_damage(const struct display_frame *frame);
+/* Milliseconds building it took on the main thread, and drawing it. */
+void display_frame_times(const struct display_frame *frame, double *build_ms, double *draw_ms);
+/* Before the commit: the surfaces it shows, which presentation feedback then reports. */
+void display_frame_feedback(struct display_frame *frame);
+/* After the commit: frame callbacks, or its damage back on failure. */
+void display_frame_done(struct display_frame *frame, bool committed);
+void display_frame_free(struct display_frame *frame);
 
 void display_add_damage(struct output *output, const pixman_region32_t *damage);
 void display_damage_whole(struct output *output);
@@ -63,7 +81,7 @@ double displays_built_at(struct server *server);
 struct display_targets {
     struct render_target *full, *scaled;
 };
-void display_release_targets(struct display_targets *targets);
+void display_release_targets(struct server *server, struct display_targets *targets);
 /*
  * Read OUTPUT's REGION (output-logical pixels) as the scene presents it now,
  * scaled to WIDTH x HEIGHT, into PIXELS: RGBA, top row first. GL must be current.

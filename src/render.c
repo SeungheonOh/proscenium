@@ -1,8 +1,11 @@
 #include "render.h"
 
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <math.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <wlr/render/dmabuf.h>
 #include <wlr/util/log.h>
 
 #include "shader.h"
@@ -311,6 +314,13 @@ struct batch_layout {
     int components;
 };
 
+/* An output buffer as a framebuffer: its dma-buf imported as an image backing a renderbuffer. */
+struct buffer_target {
+    const void *key;
+    EGLImageKHR image;
+    GLuint renderbuffer, framebuffer;
+};
+
 struct render_shader {
     const struct shader *shader;
     /* A paint's or effect's program; a filter's over ordinary textures, then over
@@ -318,11 +328,14 @@ struct render_shader {
     struct shaded *programs[2];
     /* A paint reading neither its backdrop, its output nor its clock, whose values fit
      * the driver's attributes and varyings, also has BATCH_PROGRAM, taking them per
-     * vertex: small draws of it back to back go to the GPU as one. Laid out on its first
-     * draw, where the driver's limits are known. */
-    bool laid_out, batched;
+     * vertex: small draws of it back to back go to the GPU as one. Laid out with its
+     * program, on first use. */
+    bool batched;
     struct batch_layout layout;
     struct shaded *batch_program;
+    /* Its paint's or effect's program built and linked: what the scene may rely on.
+     * Programs start building on first use, where the drawing happens. */
+    atomic_bool usable;
 };
 
 struct renderer {
@@ -360,6 +373,8 @@ struct renderer {
     /* The glScissor box last set, valid while SCISSOR_SET. */
     int gl_scissor[4];
     bool scissor_set;
+    /* Framebuffers drawing into output buffers, imported once each (struct buffer_target). */
+    struct vec buffer_targets;
 };
 
 const double RENDER_FULL_UV[8] = {0, 0, 1, 0, 0, 1, 1, 1};
@@ -777,25 +792,25 @@ static struct shaded *ready(struct renderer *renderer, const struct shader *shad
 struct render_shader *render_shader_create(const struct shader *shader) {
     struct render_shader *out = xcalloc(1, sizeof *out);
     out->shader = shader;
-    out->programs[0] = start_shaded(out, shader, false, false);
     return out;
 }
 
 bool render_shader_ready(const struct render_shader *shader) {
-    const struct shaded *main = shader->programs[0];
-    return main->program.handle && !main->build.program && !main->error;
+    return atomic_load(&shader->usable);
 }
 
-/* OWNER's paint or effect program once it can run; NULL while it builds or once it
- * failed, as REPORT says. */
+/* OWNER's paint or effect program once it can run, started on first use; NULL while it
+ * builds or once it failed, as REPORT says. */
 static struct shaded *main_program(struct renderer *renderer, struct render_shader *owner,
                                    struct render_report *report) {
-    if (!owner->laid_out) {
-        owner->laid_out = true;
+    if (!owner->programs[0]) {
+        owner->programs[0] = start_shaded(owner, owner->shader, false, false);
         owner->batched = batch_layout_for(renderer, owner->shader, &owner->layout);
         if (owner->batched) owner->batch_program = start_shaded(owner, owner->shader, false, true);
     }
-    return ready(renderer, owner->shader, owner->programs[0], report);
+    struct shaded *shaded = ready(renderer, owner->shader, owner->programs[0], report);
+    if (shaded && !atomic_load(&owner->usable)) atomic_store(&owner->usable, true);
+    return shaded;
 }
 
 void render_shader_destroy(struct render_shader *shader) {
@@ -852,6 +867,7 @@ struct renderer *render_create(void) {
     vec_init(&renderer->mipmaps, sizeof(struct slot_entry));
     vec_init(&renderer->blur_chains, sizeof(struct blur_chain));
     vec_init(&renderer->effect_targets, sizeof(struct effect_target));
+    vec_init(&renderer->buffer_targets, sizeof(struct buffer_target));
     renderer->viewport_width = renderer->viewport_height = 1;
     const char *extensions = (const char *)glGetString(GL_EXTENSIONS);
     PFNGLMAXSHADERCOMPILERTHREADSKHRPROC compiler_threads =
@@ -954,7 +970,106 @@ void render_destroy(struct renderer *renderer) {
     vec_finish(&renderer->effect_targets);
     free(renderer->batch);
     if (renderer->batch_buffer) glDeleteBuffers(1, &renderer->batch_buffer);
+    while (renderer->buffer_targets.length)
+        render_forget_buffer(renderer,
+                             ((struct buffer_target *)renderer->buffer_targets.data)->key);
+    vec_finish(&renderer->buffer_targets);
     free(renderer);
+}
+
+/* Output buffers. */
+
+static void delete_buffer_target(struct buffer_target *target) {
+    if (target->framebuffer) glDeleteFramebuffers(1, &target->framebuffer);
+    if (target->renderbuffer) glDeleteRenderbuffers(1, &target->renderbuffer);
+    if (target->image)
+        ((PFNEGLDESTROYIMAGEKHRPROC)eglGetProcAddress("eglDestroyImageKHR"))(eglGetCurrentDisplay(),
+                                                                             target->image);
+}
+
+GLuint render_buffer_framebuffer(struct renderer *renderer, const void *key,
+                                 const struct wlr_dmabuf_attributes *dmabuf) {
+    VEC_FOR(&renderer->buffer_targets, struct buffer_target, target) {
+        if (target->key == key) return target->framebuffer;
+    }
+    if (!dmabuf || dmabuf->n_planes < 1 || dmabuf->n_planes > 4) return 0;
+    EGLint attribs[64];
+    int n = 0;
+    attribs[n++] = EGL_WIDTH;
+    attribs[n++] = dmabuf->width;
+    attribs[n++] = EGL_HEIGHT;
+    attribs[n++] = dmabuf->height;
+    attribs[n++] = EGL_LINUX_DRM_FOURCC_EXT;
+    attribs[n++] = (EGLint)dmabuf->format;
+    static const EGLint fd_key[] = {EGL_DMA_BUF_PLANE0_FD_EXT, EGL_DMA_BUF_PLANE1_FD_EXT,
+                                    EGL_DMA_BUF_PLANE2_FD_EXT, EGL_DMA_BUF_PLANE3_FD_EXT};
+    static const EGLint offset_key[] = {
+        EGL_DMA_BUF_PLANE0_OFFSET_EXT, EGL_DMA_BUF_PLANE1_OFFSET_EXT, EGL_DMA_BUF_PLANE2_OFFSET_EXT,
+        EGL_DMA_BUF_PLANE3_OFFSET_EXT};
+    static const EGLint pitch_key[] = {EGL_DMA_BUF_PLANE0_PITCH_EXT, EGL_DMA_BUF_PLANE1_PITCH_EXT,
+                                       EGL_DMA_BUF_PLANE2_PITCH_EXT, EGL_DMA_BUF_PLANE3_PITCH_EXT};
+    static const EGLint modifier_lo[] = {
+        EGL_DMA_BUF_PLANE0_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE1_MODIFIER_LO_EXT,
+        EGL_DMA_BUF_PLANE2_MODIFIER_LO_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_LO_EXT};
+    static const EGLint modifier_hi[] = {
+        EGL_DMA_BUF_PLANE0_MODIFIER_HI_EXT, EGL_DMA_BUF_PLANE1_MODIFIER_HI_EXT,
+        EGL_DMA_BUF_PLANE2_MODIFIER_HI_EXT, EGL_DMA_BUF_PLANE3_MODIFIER_HI_EXT};
+    for (int p = 0; p < dmabuf->n_planes; p++) {
+        attribs[n++] = fd_key[p];
+        attribs[n++] = dmabuf->fd[p];
+        attribs[n++] = offset_key[p];
+        attribs[n++] = (EGLint)dmabuf->offset[p];
+        attribs[n++] = pitch_key[p];
+        attribs[n++] = (EGLint)dmabuf->stride[p];
+        /* DRM_FORMAT_MOD_INVALID: the allocator chose none. */
+        if (dmabuf->modifier != UINT64_C(0x00ffffffffffffff)) {
+            attribs[n++] = modifier_lo[p];
+            attribs[n++] = (EGLint)(dmabuf->modifier & 0xffffffff);
+            attribs[n++] = modifier_hi[p];
+            attribs[n++] = (EGLint)(dmabuf->modifier >> 32);
+        }
+    }
+    attribs[n++] = EGL_NONE;
+    PFNEGLCREATEIMAGEKHRPROC create =
+        (PFNEGLCREATEIMAGEKHRPROC)eglGetProcAddress("eglCreateImageKHR");
+    PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC storage =
+        (PFNGLEGLIMAGETARGETRENDERBUFFERSTORAGEOESPROC)eglGetProcAddress(
+            "glEGLImageTargetRenderbufferStorageOES");
+    if (!create || !storage) return 0;
+    struct buffer_target target = {.key = key};
+    target.image =
+        create(eglGetCurrentDisplay(), EGL_NO_CONTEXT, EGL_LINUX_DMA_BUF_EXT, NULL, attribs);
+    if (target.image == EGL_NO_IMAGE_KHR) {
+        wlr_log(WLR_ERROR, "Cannot import an output buffer (0x%x)", eglGetError());
+        return 0;
+    }
+    glGenRenderbuffers(1, &target.renderbuffer);
+    glBindRenderbuffer(GL_RENDERBUFFER, target.renderbuffer);
+    storage(GL_RENDERBUFFER, target.image);
+    glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glGenFramebuffers(1, &target.framebuffer);
+    glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER,
+                              target.renderbuffer);
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (status != GL_FRAMEBUFFER_COMPLETE) {
+        wlr_log(WLR_ERROR, "An imported output buffer is incomplete (0x%x)", status);
+        delete_buffer_target(&target);
+        return 0;
+    }
+    *(struct buffer_target *)vec_push(&renderer->buffer_targets) = target;
+    return target.framebuffer;
+}
+
+void render_forget_buffer(struct renderer *renderer, const void *key) {
+    for (size_t i = 0; i < renderer->buffer_targets.length; i++) {
+        struct buffer_target *target = vec_at(&renderer->buffer_targets, i);
+        if (target->key != key) continue;
+        delete_buffer_target(target);
+        vec_remove(&renderer->buffer_targets, i);
+        return;
+    }
 }
 
 /* Batches. */
@@ -1071,7 +1186,8 @@ void render_begin_frame(struct renderer *renderer, int width, int height) {
     renderer->viewport_height = height;
     renderer->origin_x = renderer->origin_y = 0;
     renderer->effect_depth = 0;
-    /* wlroots draws with programs, and sets scissors, of its own between frames. */
+    /* Without the render thread, wlroots draws with programs, and sets scissors, of its own
+     * between frames in this context. */
     renderer->current = 0;
     renderer->scissor_set = false;
     glViewport(0, 0, width, height);
@@ -1439,14 +1555,12 @@ struct render_raster *render_slot_raster(struct renderer *renderer, uint64_t slo
     return slot_find(&renderer->rasters, slot);
 }
 
-struct render_raster *render_install_raster(struct renderer *renderer, uint64_t slot, uint64_t key,
-                                            const void *pixels, int width, int height,
-                                            GLenum format) {
+void render_install_raster(struct renderer *renderer, uint64_t slot, const void *pixels, int width,
+                           int height, GLenum format) {
     flush_batch(renderer);
     struct render_raster *raster = render_slot_raster(renderer, slot);
     if (!raster) {
         raster = xcalloc(1, sizeof(*raster));
-        raster->lifetime = 2;
         slot_insert(&renderer->rasters, slot, raster);
     }
     if (raster->texture) {
@@ -1456,29 +1570,6 @@ struct render_raster *render_install_raster(struct renderer *renderer, uint64_t 
     }
     raster->width = width;
     raster->height = height;
-    raster->key = key;
-    raster->used = now_seconds();
-    raster->family = 0;
-    raster->scale = 1;
-    return raster;
-}
-
-struct render_raster *render_raster(struct renderer *renderer, uint64_t slot, uint64_t key,
-                                    double lifetime, render_raster_producer producer, void *data) {
-    struct render_raster *raster = render_slot_raster(renderer, slot);
-    if ((!raster || raster->key != key) && producer) {
-        producer(renderer, slot, key, data);
-        raster = render_slot_raster(renderer, slot);
-    }
-    if (!raster || raster->key != key) return NULL;
-    raster->used = now_seconds();
-    raster->lifetime = lifetime;
-    return raster;
-}
-
-void render_touch_raster(struct renderer *renderer, uint64_t slot) {
-    struct render_raster *raster = render_slot_raster(renderer, slot);
-    if (raster) raster->used = now_seconds();
 }
 
 void render_sweep(struct renderer *renderer, double now) {
@@ -1512,16 +1603,14 @@ void render_sweep(struct renderer *renderer, double now) {
         }
     }
     renderer->mipmaps.length = kept;
-    kept = 0;
-    VEC_FOR(&renderer->rasters, struct slot_entry, entry) {
-        struct render_raster *raster = entry->value;
-        if (now - raster->used > raster->lifetime) {
-            destroy_raster(raster);
-        } else {
-            ((struct slot_entry *)renderer->rasters.data)[kept++] = *entry;
-        }
-    }
-    renderer->rasters.length = kept;
+}
+
+void render_drop_raster(struct renderer *renderer, uint64_t slot) {
+    struct render_raster *raster = render_slot_raster(renderer, slot);
+    if (!raster) return;
+    flush_batch(renderer);
+    slot_remove(&renderer->rasters, slot);
+    destroy_raster(raster);
 }
 
 void render_draw_raster(struct renderer *renderer, const struct render_raster *raster,

@@ -137,6 +137,15 @@ struct hit {
     struct box clip;
 };
 
+/* A frame of an output built and not yet committed, drawing into BUFFER; FINISHED once the
+ * renderer is done with it. */
+struct output_frame {
+    struct display_frame *frame;
+    struct wlr_buffer *buffer;
+    int64_t started;
+    bool finished;
+};
+
 struct output {
     struct server *server;
     struct wl_list link; /* server.outputs */
@@ -149,8 +158,9 @@ struct output {
     struct display *display;
     /* Reserved by the director's reserve nodes, in logical pixels. */
     double reserve_top, reserve_right, reserve_bottom, reserve_left;
-    /* A frame is wanted; one is being rendered; another was asked for meanwhile. */
-    bool frame_requested, rendering, next_frame;
+    /* A frame is wanted; one is being built; another was asked for meanwhile; a failed
+     * frame waits for the pace timer to try again. */
+    bool frame_requested, building, next_frame, retrying;
     /* A frame was asked for and is not yet rendered: picking keeps to the hits of the
      * frame on screen until it is. */
     bool awaiting_frame;
@@ -163,6 +173,12 @@ struct output {
     int failures;
     struct gpu_timer *gpu_timer;
     bool gpu_timer_checked;
+    /* Frames built and not yet committed, oldest first: a finished one waits for the flip
+     * before it. With a render thread, one builds while the one before draws. */
+    struct output_frame frames[2];
+    int frame_count;
+    /* Going: frames drawn now are freed, not shown. */
+    bool closing;
     struct wl_listener frame, request_state, destroy, present, needs_frame, damage, commit;
 };
 
@@ -219,11 +235,21 @@ struct server {
     char instance[32];
 
     struct renderer *renderer;
+    /* Where the renderer draws, unless NULL (PROSCENIUM_RENDER_THREAD=0, output buffers
+     * that are not dma-bufs, or no renderer on a context sharing wlroots'): then the main
+     * thread draws in wlroots' context. */
+    struct render_thread *render_thread;
+    struct wl_event_source *render_source;
     struct link *link;
     struct media *media;
     struct wl_event_source *media_source;
     /* Text rasters the media worker is making, by raster slot. */
     struct idmap text_jobs;
+    /* What is uploaded where the renderer draws (content.c): rasters by slot; uploads
+     * waiting for the next frame; this frame's time left for rasterizing text. */
+    struct idmap rasters;
+    struct vec pending_uploads;
+    double text_spare;
     struct web *web;
     struct input *input;
     struct shares *share;
@@ -326,6 +352,9 @@ struct output *output_by_name(struct server *server, const char *name);
 struct output *output_first(struct server *server);
 struct output *output_at(struct server *server, double layout_x, double layout_y);
 void output_request_frame(struct output *output);
+/* Around drawing a frame of OUTPUT, where the renderer draws: its GPU timer. */
+void output_draw_begin(struct output *output);
+void output_draw_end(struct output *output);
 void request_frames(struct server *server);
 void output_describe(struct output *output, struct json_writer *writer);
 const char *output_name(struct output *output);
@@ -347,3 +376,8 @@ bool link_connected(struct server *server);
 /* main.c */
 /* Make the compositor's EGL context current; false when it cannot be. */
 bool server_gl_current(struct server *server);
+/*
+ * Run JOB(DATA) where the renderer draws, and wait for it: on the render thread, after
+ * fencing what the main context did so far, or here in the main context.
+ */
+void server_render(struct server *server, void (*job)(void *data), void *data);

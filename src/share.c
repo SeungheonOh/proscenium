@@ -107,7 +107,8 @@ static void schedule(struct shares *shares) {
 
 static void forget(struct shares *shares, struct share *share) {
     if (share->targets.full || share->targets.scaled) {
-        if (server_gl_current(shares->server)) display_release_targets(&share->targets);
+        if (server_gl_current(shares->server))
+            display_release_targets(shares->server, &share->targets);
     }
     if (share->source.window) window_unref(share->source.window);
     free(share->pixels);

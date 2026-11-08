@@ -19,12 +19,15 @@
 #include <wlr/types/wlr_output.h>
 #include <wlr/types/wlr_output_layout.h>
 #include <wlr/types/wlr_xcursor_manager.h>
+#include <wlr/util/addon.h>
 #include <wlr/util/log.h>
 #include <wlr/util/region.h>
 #include <wlr/util/transform.h>
 
 #include "display.h"
 #include "input.h"
+#include "render.h"
+#include "renderthread.h"
 #include "link.h"
 #include "server.h"
 #include "stage.h"
@@ -80,6 +83,55 @@ static void gpu_timer_destroy(struct gpu_timer *timer) {
     free(timer);
 }
 
+static void nothing(void *data) {
+    (void)data;
+}
+
+/* An output buffer the render thread draws into, imported there once: the import goes when
+ * wlroots destroys the buffer, before its address can come back as another buffer. */
+struct imported_buffer {
+    struct server *server;
+    struct wlr_buffer *buffer;
+    struct wlr_addon addon;
+};
+
+static void forget_buffer(void *data) {
+    struct imported_buffer *imported = data;
+    render_forget_buffer(imported->server->renderer, imported->buffer);
+}
+
+static void buffer_forgotten(void *data) {
+    free(data);
+}
+
+static void imported_buffer_destroy(struct wlr_addon *addon) {
+    struct imported_buffer *imported = wl_container_of(addon, imported, addon);
+    wlr_addon_finish(addon);
+    /* Once the thread is gone, so is the renderer and every import it held. */
+    if (!imported->server->render_thread) {
+        free(imported);
+        return;
+    }
+    render_thread_queue(imported->server->render_thread, forget_buffer, buffer_forgotten, imported);
+}
+
+static const struct wlr_addon_interface imported_buffer_impl = {
+    .name = "proscenium-imported-buffer",
+    .destroy = imported_buffer_destroy,
+};
+
+static void track_buffer(struct server *server, struct wlr_buffer *buffer) {
+    if (wlr_addon_find(&buffer->addons, server, &imported_buffer_impl)) return;
+    struct imported_buffer *imported = xcalloc(1, sizeof *imported);
+    imported->server = server;
+    imported->buffer = buffer;
+    wlr_addon_init(&imported->addon, &buffer->addons, server, &imported_buffer_impl);
+}
+
+static void destroy_gpu_timer(void *timer) {
+    gpu_timer_destroy(timer);
+}
+
 static void gpu_timer_recycle(struct gpu_timer *timer, const GLuint pair[2]) {
     if (timer->free_count < (int)ARRAY_LENGTH(timer->free))
         memcpy(timer->free[timer->free_count++], pair, sizeof timer->free[0]);
@@ -100,8 +152,9 @@ static void gpu_timer_collect(struct output *output) {
     GLint disjoint = 0;
     glGetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
     if (disjoint) {
-        struct output *other;
-        wl_list_for_each(other, &output->server->outputs, link) gpu_timer_drop(other->gpu_timer);
+        /* Reading the flag cleared it for the other outputs' timers too, whose spans may
+         * cross the event: the pacing estimate decays past one odd value. */
+        gpu_timer_drop(timer);
         return;
     }
     int done = 0;
@@ -143,6 +196,19 @@ static void gpu_timer_end(struct output *output) {
     glFlush();
     memcpy(timer->pending[timer->pending_count++], timer->open, sizeof timer->open);
     timer->has_open = false;
+}
+
+/* Query objects belong to the context that made them: the timer lives where frames draw. */
+void output_draw_begin(struct output *output) {
+    if (!output->gpu_timer_checked) {
+        output->gpu_timer = gpu_timer_create();
+        output->gpu_timer_checked = true;
+    }
+    gpu_timer_begin(output);
+}
+
+void output_draw_end(struct output *output) {
+    gpu_timer_end(output);
 }
 
 const char *output_name(struct output *output) {
@@ -276,27 +342,38 @@ static void render_frame(struct output *output);
 
 static void start_frame(struct output *output);
 
+/* Whether another frame may start building. Without a render thread, one at a time once
+ * the flip before it is done; with one, also while the frame before it still draws, but
+ * never while a finished one waits for its flip, which would only add latency. A failed
+ * frame waits for its retry. */
+static bool can_start(struct output *output) {
+    if (output->retrying || output->closing) return false;
+    if (!output->server->render_thread)
+        return !output->wlr_output->frame_pending && !output->frame_count;
+    return !output->frame_count || (output->frame_count == 1 && !output->frames[0].finished);
+}
+
 static void idle_frame(void *data) {
     struct output *output = data;
     output->idle_frame = NULL;
-    if (output->frame_requested && output->wlr_output->enabled &&
-        !output->wlr_output->frame_pending)
+    if (output->frame_requested && output->wlr_output->enabled && can_start(output))
         start_frame(output);
 }
 
 /* Our own requests never go through wlr_output_schedule_frame, which would latch
  * wlroots' needs_frame until a commit and so hide cursor updates after a skipped frame. */
 void output_request_frame(struct output *output) {
-    if (!output->wlr_output->enabled) return;
+    if (!output->wlr_output->enabled || output->closing) return;
     output->awaiting_frame = true;
-    if (output->rendering) {
+    if (output->building) {
         output->next_frame = true;
         return;
     }
     if (output->frame_requested) return;
     output->frame_requested = true;
-    /* A flip in flight brings a frame event; otherwise the frame starts once the loop is idle. */
-    if (!output->wlr_output->frame_pending && !output->idle_frame)
+    /* A flip, a frame drawn or a retry starts it later; otherwise it starts once the loop is
+     * idle. */
+    if (can_start(output) && !output->idle_frame)
         output->idle_frame = wl_event_loop_add_idle(output->server->loop, idle_frame, output);
 }
 
@@ -311,6 +388,9 @@ static int frame_delay(struct output *output) {
     bool following = output->vblank && output->refresh > 0 && time - output->vblank <= FLIP_WINDOW;
     output->target_vblank = 0;
     output->streak = following ? output->streak + 1 : 0;
+    /* With a render thread, frames start once the one before has its buffer: pacing a
+     * start would only delay the frame after. */
+    if (output->server->render_thread) return 0;
     if (output->streak < PACED_AFTER) return 0;
     int64_t lead = output->frame_cost + output->gpu_cost + FRAME_MARGIN;
     /* Flip events report the vblank just presented a moment ahead of now. */
@@ -324,7 +404,9 @@ static int frame_delay(struct output *output) {
 
 static int pace_timer_fired(void *data) {
     struct output *output = data;
-    if (output->frame_requested && output->wlr_output->enabled) render_frame(output);
+    output->retrying = false;
+    if (output->frame_requested && output->wlr_output->enabled && can_start(output))
+        render_frame(output);
     return 0;
 }
 
@@ -350,53 +432,42 @@ static void start_frame(struct output *output) {
     else arm_pace_timer(output, delay);
 }
 
-static void handle_frame(struct wl_listener *listener, void *data) {
-    struct output *output = wl_container_of(listener, output, frame);
-    if (output->frame_requested) start_frame(output);
-}
-
 static void note_frame_cost(struct output *output, int64_t nanoseconds) {
     output->frame_cost = MAX(nanoseconds, MAX(output->frame_cost * 15 / 16, (int64_t)1000000));
 }
 
-static void render_frame(struct output *output) {
+/* Retry a frame that failed, backing off; its callbacks and motion are owed. Nothing else
+ * starts a frame until the timer fires. */
+static void retry_frame(struct output *output) {
+    output->frame_requested = true;
+    output->retrying = true;
+    output->failures++;
+    arm_pace_timer(output, output->failures < 4 ? refresh_milliseconds(output) : 1000);
+}
+
+/* Show PENDING, drawn: software cursors over it, then the commit. */
+static void commit_frame(struct output *output, struct output_frame *pending) {
     struct server *server = output->server;
     struct wlr_output *wlr_output = output->wlr_output;
-    int64_t started = now_nanoseconds();
-    output->frame_requested = false;
-    output->rendering = true;
-    bool committed = false, skipped = false;
-
-    struct wlr_output_state state;
-    wlr_output_state_init(&state);
-    struct wlr_buffer *buffer = NULL;
-    if (!wlr_output_configure_primary_swapchain(wlr_output, &state, &wlr_output->swapchain) ||
-        !(buffer = wlr_swapchain_acquire(wlr_output->swapchain)) || !server_gl_current(server)) {
-        wlr_log(WLR_ERROR, "output %s: no buffer to draw into", output_name(output));
-        goto done;
+    struct display_frame *frame = pending->frame;
+    struct wlr_buffer *buffer = pending->buffer;
+    if (!display_frame_drew(frame) || !wlr_output->enabled) {
+        /* The buffer could not be drawn into, and what it holds is not this frame; or the
+         * output was turned off since, and showing anything waits for it to come back. */
+        if (wlr_output->enabled)
+            wlr_log(WLR_ERROR, "output %s: cannot draw into its buffer", output_name(output));
+        display_frame_done(frame, false);
+        wlr_buffer_unlock(buffer);
+        display_frame_free(frame);
+        if (wlr_output->enabled) retry_frame(output);
+        return;
     }
-    GLuint framebuffer = wlr_gles2_renderer_get_buffer_fbo(server->wlr_renderer, buffer);
-    if (!framebuffer) {
-        wlr_log(WLR_ERROR, "output %s: cannot draw into its buffer", output_name(output));
-        goto done;
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    if (!output->gpu_timer_checked) {
-        output->gpu_timer = gpu_timer_create();
-        output->gpu_timer_checked = true;
-    }
-    gpu_timer_begin(output);
     pixman_region32_t damage;
     pixman_region32_init(&damage);
-    bool shown = display_render(output, buffer, &damage);
-    gpu_timer_end(output);
-    if (!shown && !wlr_output->needs_frame) {
-        /* Nothing changed and nobody waits: the buffer, already up to date, stays unshown.
-         * A cursor wlroots moved or changed is still committed, if nothing else is. */
-        pixman_region32_fini(&damage);
-        skipped = true;
-        goto done;
-    }
+    pixman_region32_copy(&damage, display_frame_damage(frame));
+    /* What the render thread drew reaches the buffer before wlroots uses it. */
+    if (server->render_thread && server_gl_current(server))
+        render_thread_wait_render(server->render_thread);
     if (wlr_output->software_cursor_locks > 0 || !wlr_output->hardware_cursor) {
         /* Cursors without a plane are drawn over the frame, as wlroots tracks them. */
         struct wlr_render_pass *pass =
@@ -406,41 +477,104 @@ static void render_frame(struct output *output) {
             wlr_render_pass_submit(pass);
         }
     }
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
     wlr_output_state_set_buffer(&state, buffer);
     wlr_output_state_set_damage(&state, &damage);
-    display_frame_feedback(output);
-    committed = wlr_output_commit_state(wlr_output, &state);
-    display_frame_done(output, committed, &damage);
+    display_frame_feedback(frame);
+    bool committed = wlr_output_commit_state(wlr_output, &state);
+    display_frame_done(frame, committed);
+    double build_ms, draw_ms;
+    display_frame_times(frame, &build_ms, &draw_ms);
     if (committed) share_output_presented(server, output, &damage);
     pixman_region32_fini(&damage);
-
-done:
-    if (buffer) wlr_buffer_unlock(buffer);
     wlr_output_state_finish(&state);
-    output->rendering = false;
-    bool again = output->next_frame;
-    output->next_frame = false;
+    wlr_buffer_unlock(buffer);
+    display_frame_free(frame);
     if (committed) {
-        int64_t cost = now_nanoseconds() - started;
+        int64_t cost = server->render_thread ? (int64_t)(MAX(build_ms, draw_ms) * 1e6)
+                                             : now_nanoseconds() - pending->started;
         if (cost > SLOW_FRAME)
             wlr_log(WLR_INFO, "output %s: a frame took %.1f ms", output_name(output), cost / 1e6);
         note_frame_cost(output, cost);
         output->failures = 0;
-        /* The flip's frame event starts the next one. */
-        if (again) output_request_frame(output);
-    } else if (skipped && again) {
-        /* Something may still change, e.g. motion on another output: look again a
-         * refresh later rather than at once, which would keep the loop busy. */
-        output->frame_requested = true;
-        arm_pace_timer(output, refresh_milliseconds(output));
-    } else if (skipped) {
-        output->awaiting_frame = false;
     } else {
-        /* Failed: the frame's callbacks and motion are owed; retry, backing off. */
-        output->frame_requested = true;
-        output->failures++;
-        arm_pace_timer(output, output->failures < 4 ? refresh_milliseconds(output) : 1000);
+        retry_frame(output);
     }
+}
+
+/* Commit the drawn frames whose turn it is: in order, each once the flip before it is done. */
+static void commit_ready(struct output *output) {
+    while (output->frame_count && output->frames[0].finished &&
+           !output->wlr_output->frame_pending && !output->closing) {
+        struct output_frame pending = output->frames[0];
+        memmove(output->frames, output->frames + 1,
+                (size_t)(--output->frame_count) * sizeof *output->frames);
+        commit_frame(output, &pending);
+    }
+}
+
+static void frame_finished(struct display_frame *frame, void *data) {
+    struct output *output = data;
+    for (int i = 0; i < output->frame_count; i++)
+        if (output->frames[i].frame == frame) output->frames[i].finished = true;
+    commit_ready(output);
+    /* Room for another frame: a wanted one starts once the loop is idle. */
+    if (output->frame_requested && output->wlr_output->enabled && can_start(output) &&
+        !output->idle_frame && !output->building)
+        output->idle_frame = wl_event_loop_add_idle(output->server->loop, idle_frame, output);
+}
+
+static void handle_frame(struct wl_listener *listener, void *data) {
+    struct output *output = wl_container_of(listener, output, frame);
+    commit_ready(output);
+    if (output->frame_requested && can_start(output)) start_frame(output);
+}
+
+static void render_frame(struct output *output) {
+    struct server *server = output->server;
+    struct wlr_output *wlr_output = output->wlr_output;
+    int64_t started = now_nanoseconds();
+    output->frame_requested = false;
+    output->building = true;
+    struct wlr_output_state state;
+    wlr_output_state_init(&state);
+    struct wlr_buffer *buffer = NULL;
+    bool ready =
+        wlr_output_configure_primary_swapchain(wlr_output, &state, &wlr_output->swapchain) &&
+        (buffer = wlr_swapchain_acquire(wlr_output->swapchain)) && server_gl_current(server);
+    wlr_output_state_finish(&state);
+    if (!ready) {
+        wlr_log(WLR_ERROR, "output %s: no buffer to draw into", output_name(output));
+        if (buffer) wlr_buffer_unlock(buffer);
+        output->building = false;
+        output->next_frame = false;
+        retry_frame(output);
+        return;
+    }
+    if (server->render_thread) track_buffer(server, buffer);
+    struct display_frame *frame = display_build(output, buffer);
+    output->building = false;
+    bool again = output->next_frame;
+    output->next_frame = false;
+    if (!display_frame_shown(frame) && !wlr_output->needs_frame) {
+        /* Nothing changed and nobody waits: the buffer, already up to date, stays unshown.
+         * A cursor wlroots moved or changed is still committed, if nothing else is. */
+        display_frame_free(frame);
+        wlr_buffer_unlock(buffer);
+        if (again) {
+            /* Something may still change, e.g. motion on another output: look again a
+             * refresh later rather than at once, which would keep the loop busy. */
+            output->frame_requested = true;
+            arm_pace_timer(output, refresh_milliseconds(output));
+        } else {
+            output->awaiting_frame = false;
+        }
+        return;
+    }
+    output->frames[output->frame_count++] = (struct output_frame){frame, buffer, started, false};
+    if (again) output_request_frame(output);
+    display_draw(frame, frame_finished, output);
 }
 
 static void handle_present(struct wl_listener *listener, void *data) {
@@ -522,8 +656,20 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
     wl_list_remove(&output->destroy.link);
     if (output->pace_timer) wl_event_source_remove(output->pace_timer);
     if (output->idle_frame) wl_event_source_remove(output->idle_frame);
+    output->pace_timer = output->idle_frame = NULL;
+    /* Frames on their way finish drawing, and go unshown. */
+    output->closing = true;
+    if (output->frame_count && server->render_thread) {
+        server_render(server, nothing, NULL);
+        render_thread_dispatch(server->render_thread);
+    }
+    for (int i = 0; i < output->frame_count; i++) {
+        display_frame_free(output->frames[i].frame);
+        wlr_buffer_unlock(output->frames[i].buffer);
+    }
+    output->frame_count = 0;
     if (server_gl_current(server)) {
-        gpu_timer_destroy(output->gpu_timer);
+        server_render(server, destroy_gpu_timer, output->gpu_timer);
         display_destroy(output->display);
     }
     camera_destroy(output->camera);

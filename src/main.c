@@ -50,6 +50,7 @@
 #include "input.h"
 #include "link.h"
 #include "render.h"
+#include "renderthread.h"
 #include "server.h"
 #include "stage.h"
 #include "webnode.h"
@@ -242,6 +243,61 @@ bool server_gl_current(struct server *server) {
                           wlr_egl_get_context(egl));
 }
 
+static void free_shader_program(void *program) {
+    render_shader_destroy(program);
+}
+
+void server_render(struct server *server, void (*job)(void *data), void *data) {
+    if (!server->render_thread) {
+        job(data);
+        return;
+    }
+    if (server_gl_current(server)) render_thread_fence_main(server->render_thread);
+    render_thread_run(server->render_thread, job, data);
+}
+
+static int render_finished(int fd, uint32_t mask, void *data) {
+    struct server *server = data;
+    render_thread_dispatch(server->render_thread);
+    return 0;
+}
+
+static void create_renderer(void *data) {
+    struct server *server = data;
+    server->renderer = render_create();
+}
+
+static void destroy_renderer(void *data) {
+    struct server *server = data;
+    shaders_finish(&server->shaders, free_shader_program);
+    render_destroy(server->renderer);
+    server->renderer = NULL;
+}
+
+/* The render thread, unless PROSCENIUM_RENDER_THREAD=0, output buffers are not dma-bufs
+ * (which it imports to draw into), or no context shares wlroots'. */
+static void start_render_thread(struct server *server) {
+    const char *setting = getenv("PROSCENIUM_RENDER_THREAD");
+    if (setting && !strcmp(setting, "0")) return;
+    if (!(server->allocator->buffer_caps & WLR_BUFFER_CAP_DMABUF)) return;
+    struct wlr_egl *egl = wlr_gles2_renderer_get_egl(server->wlr_renderer);
+    server->render_thread =
+        render_thread_create(wlr_egl_get_display(egl), wlr_egl_get_context(egl));
+    if (!server->render_thread) return;
+    server->render_source =
+        wl_event_loop_add_fd(server->loop, render_thread_fd(server->render_thread),
+                             WL_EVENT_READABLE, render_finished, server);
+    wlr_log(WLR_INFO, "Drawing on a render thread");
+}
+
+/* Stop the render thread: drawing goes back to the main thread. */
+static void stop_render_thread(struct server *server) {
+    if (server->render_source) wl_event_source_remove(server->render_source);
+    server->render_source = NULL;
+    render_thread_destroy(server->render_thread);
+    server->render_thread = NULL;
+}
+
 static bool server_start(struct server *server, const struct options *options) {
     server->wl_display = wl_display_create();
     server->loop = wl_display_get_event_loop(server->wl_display);
@@ -345,7 +401,16 @@ static bool server_start(struct server *server, const struct options *options) {
     free(path);
     if (!server->link) return false;
 
-    if (!server_gl_current(server) || !(server->renderer = render_create())) {
+    if (server_gl_current(server)) {
+        start_render_thread(server);
+        server_render(server, create_renderer, server);
+        if (!server->renderer && server->render_thread) {
+            wlr_log(WLR_ERROR, "No renderer on the render thread; drawing on the main thread");
+            stop_render_thread(server);
+            if (server_gl_current(server)) create_renderer(server);
+        }
+    }
+    if (!server->renderer) {
         wlr_log(WLR_ERROR, "cannot set up the GLES renderer");
         return false;
     }
@@ -359,10 +424,6 @@ static bool server_start(struct server *server, const struct options *options) {
         wlr_headless_add_output(server->backend, options->width, options->height);
     if (server->screen_sharing) share_init(server);
     return true;
-}
-
-static void free_shader_program(void *program) {
-    render_shader_destroy(program);
 }
 
 static void server_finish(struct server *server) {
@@ -384,12 +445,12 @@ static void server_finish(struct server *server) {
     scene_finish(&server->fallback);
     content_finish(server);
     if (server->renderer && server_gl_current(server)) {
-        shaders_finish(&server->shaders, free_shader_program);
-        render_destroy(server->renderer);
+        server_render(server, destroy_renderer, server);
     } else {
         /* Without a context the programs cannot go, nor were any made without a renderer. */
         shaders_finish(&server->shaders, NULL);
     }
+    stop_render_thread(server);
     if (server->xcursor_manager) wlr_xcursor_manager_destroy(server->xcursor_manager);
     if (server->cursor) wlr_cursor_destroy(server->cursor);
     if (server->allocator) wlr_allocator_destroy(server->allocator);

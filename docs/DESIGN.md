@@ -11,8 +11,17 @@ renders it with GLES and routes input.
 ## Process and threads
 
 - **Compositor** (one process): the Wayland event loop on the main thread owns
-  every wlroots object, the scene, GL and the director link. Nothing on it waits
-  for the network, disk, a child process or the director.
+  every wlroots object, the scene and the director link, and builds each frame.
+  Nothing on it waits for the network, disk, a child process or the director.
+- **Render thread** (`renderthread.c`): an EGL context of its own in wlroots'
+  share group, where every frame is drawn. The main thread builds a frame (the
+  item sets it draws, held; client textures resolved and their buffers held;
+  rasters to upload; the passes), hands it over, and builds the next
+  one while it draws, at most two ahead of the screen. Fences order each side's
+  GL work before the other reads it. A frame drawing web pages, a checked frame
+  and a capture draw while the main thread waits. `PROSCENIUM_RENDER_THREAD=0`
+  draws on the main thread instead, as do output buffers that are not dma-bufs
+  and a context that cannot share wlroots' or make the renderer.
 - **Media worker** thread: decodes images and rasterizes text with Pango/Cairo,
   returning results through an eventfd the event loop watches.
 - **Screencast** thread: the desktop portal's ScreenCast backend over D-Bus and
@@ -39,9 +48,10 @@ renders it with GLES and routes input.
 | `output.c` | Outputs, the row layout, frame scheduling and pacing, GPU timing, work areas. |
 | `window.c` | Windows: ids, metadata, configure, focus, snapshots. |
 | `xdg.c`, `xwayland.c` | xdg-shell and X11 clients as windows; popups, decorations, override-redirect children. |
-| `display.c` | Per-output display lists, damage, repair passes, occlusion, effects, hits, captures. |
-| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints; render targets. |
-| `content.c` | Text and image nodes on top of `media.c`. |
+| `display.c` | Per-output display lists, damage, repair passes, occlusion, effects, hits, captures; frames: building, preparing, drawing. |
+| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints, output buffers as framebuffers; render targets. |
+| `renderthread.c` | The render thread: its context, the job queue, fences between the two contexts. |
+| `content.c` | Text and image nodes on top of `media.c`; what is uploaded where frames draw: rasters by slot. |
 | `media.c` | Pango text layout and rasters, image decoding, the worker. |
 | `webnode.c`, `web.c` | Web nodes: pages on the CEF helper (`web/`), their frames and input. |
 | `input.c` | Keyboards, pointer, gestures; shortcuts, bindings, picking, events, cursors, drags. |
@@ -75,8 +85,10 @@ renders it with GLES and routes input.
 - The cursor uses a hardware plane where the output has one, so pointer motion
   over a still scene costs no frame.
 - Allocation per frame is bounded and reused; display lists keep their storage.
-- Commands reach the GPU early (`glFlush` every millisecond of recording), and
-  frames start as late as still meets the vblank.
+- Commands reach the GPU early (`glFlush` every millisecond of recording).
+  Drawing on the main thread, frames start as late as still meets the vblank;
+  with the render thread a frame starts as soon as one fewer than two are in
+  flight, so building overlaps drawing, at up to a refresh more latency.
 - Screen shares capture only while a consumer streams and the source changed.
 - Children the director starts stop with it: a director exiting unmounts its
   world first, so effects clean up.

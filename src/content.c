@@ -10,6 +10,9 @@
  * it is large enough to take a frame's worth of it, which the worker does. Images
  * are shared by path, decode on the worker, and release their textures a while
  * after they were last on screen.
+ *
+ * The main thread decides what each texture holds (the raster mirror) and hands the
+ * pixels to the frame as uploads, which the renderer puts in place where it draws.
  */
 #include "content.h"
 
@@ -23,6 +26,8 @@
 
 /* Device pixels of new text rasterized during a frame; larger text goes to the worker. */
 #define INLINE_TEXT_PIXELS (512 * 256)
+/* Seconds a frame may spend rasterizing new text itself. */
+#define TEXT_SPARE 0.003
 
 struct text_cache {
     struct media_text_layout layout;
@@ -143,15 +148,35 @@ static void text_done(void *data, struct media_text_raster raster, const char *e
     free_job(job);
 }
 
-static void install_text(struct renderer *renderer, uint64_t slot, uint64_t key, uint64_t family,
-                         const struct media_text_raster *raster) {
-    struct render_raster *installed =
-        render_install_raster(renderer, slot, key, raster->pixels.data, raster->pixels.width,
-                              raster->pixels.height, GL_BGRA_EXT);
-    if (installed) {
-        installed->family = family;
-        installed->scale = raster->scale;
+/* Rasters: what is uploaded where the renderer draws, as the main thread keeps track of it. */
+struct raster_entry {
+    uint64_t key, family;
+    double scale, used, lifetime;
+};
+
+/* Put PIXELS in SLOT for KEY, by an upload the next frame takes; PIXELS go with it. */
+static void install_raster(struct server *server, struct vec *uploads, uint64_t slot, uint64_t key,
+                           uint64_t family, double scale, double lifetime,
+                           struct media_pixels *pixels, GLenum format) {
+    struct raster_entry *entry = idmap_get(&server->rasters, (int64_t)slot);
+    if (!entry) {
+        entry = xcalloc(1, sizeof *entry);
+        idmap_put(&server->rasters, (int64_t)slot, entry);
     }
+    *entry = (struct raster_entry){key, family, scale, now_seconds(), lifetime};
+    struct content_upload *upload = vec_push(uploads);
+    *upload = (struct content_upload){
+        .kind = CONTENT_RASTER, .slot = slot, .pixels = *pixels, .format = format};
+    *pixels = (struct media_pixels){0};
+}
+
+static struct raster_entry *raster_entry(struct server *server, uint64_t slot) {
+    return idmap_get(&server->rasters, (int64_t)slot);
+}
+
+void content_touch_raster(struct server *server, uint64_t slot) {
+    struct raster_entry *entry = raster_entry(server, slot);
+    if (entry) entry->used = now_seconds();
 }
 
 struct text_request {
@@ -163,12 +188,12 @@ struct text_request {
     struct media_color color;
     bool failed;
     struct text_job *job;
-    struct render_raster *current;
+    struct raster_entry *current;
     int output_index;
+    struct vec *uploads;
 };
 
-static void produce_text(struct renderer *renderer, uint64_t slot, uint64_t key, void *data) {
-    struct text_request *request = data;
+static void produce_text(uint64_t slot, uint64_t key, struct text_request *request) {
     struct server *server = request->server;
     /* Text only rescaled waits for the worker, as does new text once the frame's
      * spare time is spent, or text too large to raster within it; after the worker
@@ -176,7 +201,7 @@ static void produce_text(struct renderer *renderer, uint64_t slot, uint64_t key,
     struct media_text_box box = media_text_raster_box(&request->layout->metrics, request->scale);
     bool large = (double)box.pixel_width * box.pixel_height > INLINE_TEXT_PIXELS;
     bool defer = request->current ? request->current->family == request->family
-                                  : large || !render_spare_time(renderer);
+                                  : large || !(server->text_spare > 0);
     if (!request->failed && defer) {
         /* One job a slot at a time: what it brings is closer, and the next draw asks for the rest.
          */
@@ -198,18 +223,17 @@ static void produce_text(struct renderer *renderer, uint64_t slot, uint64_t key,
     struct media_text_raster raster;
     if (media_text_rasterize(server->media, &request->layout->style, &request->layout->metrics,
                              request->color, request->scale, &raster)) {
-        install_text(renderer, slot, key, request->family, &raster);
-        media_pixels_finish(&raster.pixels);
+        install_raster(server, request->uploads, slot, key, request->family, raster.scale, 2.0,
+                       &raster.pixels, GL_BGRA_EXT);
     }
-    render_spend_spare_time(renderer, since);
+    server->text_spare -= now_seconds() - since;
 }
 
-struct render_raster *content_text_raster(struct server *server, struct node *node,
-                                          int output_index, uint64_t slot, uint64_t key,
-                                          double scale, const double color[4]) {
+bool content_text_prepare_raster(struct server *server, struct node *node, int output_index,
+                                 uint64_t slot, uint64_t key, double scale, const double color[4],
+                                 struct vec *uploads, double *raster_scale) {
     struct text_cache *cache = node->cache;
-    if (!cache) return NULL;
-    struct renderer *renderer = server->renderer;
+    if (!cache) return false;
     uint64_t family = text_family(&cache->layout, color);
     struct text_job *job = idmap_get(&server->text_jobs, (int64_t)slot);
     bool failed = false;
@@ -218,26 +242,35 @@ struct render_raster *content_text_raster(struct server *server, struct node *no
         idmap_remove(&server->text_jobs, (int64_t)slot);
         failed = job->failed;
         if (job->raster.pixels.data && job->family == family)
-            install_text(renderer, slot, job->key, family, &job->raster);
+            install_raster(server, uploads, slot, job->key, family, job->raster.scale, 2.0,
+                           &job->raster.pixels, GL_BGRA_EXT);
         free_job(job);
         job = NULL;
     }
-    struct text_request request = {
-        .server = server,
-        .node = node,
-        .layout = &cache->layout,
-        .family = family,
-        .scale = scale,
-        .color = {color[0], color[1], color[2], color[3]},
-        .failed = failed,
-        .job = job,
-        .current = render_slot_raster(renderer, slot),
-        .output_index = output_index,
-    };
-    struct render_raster *raster = render_raster(renderer, slot, key, 2.0, produce_text, &request);
-    if (raster && raster->key == key) return raster;
-    struct render_raster *current = render_slot_raster(renderer, slot);
-    return current && current->family == family ? current : NULL;
+    struct raster_entry *entry = raster_entry(server, slot);
+    if (!entry || entry->key != key) {
+        struct text_request request = {
+            .server = server,
+            .node = node,
+            .layout = &cache->layout,
+            .family = family,
+            .scale = scale,
+            .color = {color[0], color[1], color[2], color[3]},
+            .failed = failed,
+            .job = job,
+            .current = entry,
+            .output_index = output_index,
+            .uploads = uploads,
+        };
+        produce_text(slot, key, &request);
+        entry = raster_entry(server, slot);
+    }
+    /* At another scale, it shows until the worker's arrives. */
+    if (!entry || (entry->key != key && entry->family != family)) return false;
+    entry->used = now_seconds();
+    entry->lifetime = 2;
+    *raster_scale = entry->scale;
+    return true;
 }
 
 /* Images. */
@@ -305,26 +338,57 @@ static uint64_t image_slot(const struct media_image *image) {
 
 bool content_image_shown(struct server *server, struct media_image *image) {
     if (!media_image_loaded(image)) return false;
-    uint64_t slot = image_slot(image);
-    bool has_texture = render_slot_raster(server->renderer, slot) != NULL;
-    if (has_texture) render_touch_raster(server->renderer, slot);
+    struct raster_entry *entry = raster_entry(server, image_slot(image));
+    bool has_texture = entry && entry->key == image->serial;
+    if (has_texture) entry->used = now_seconds();
     return media_image_show(image, has_texture);
 }
 
-static void produce_image(struct renderer *renderer, uint64_t slot, uint64_t key, void *data) {
-    struct media_image *image = data;
-    if (image->state != MEDIA_IMAGE_DECODED || !image->pixels.data) return;
-    render_install_raster(renderer, slot, key, image->pixels.data, image->pixels.width,
-                          image->pixels.height, GL_RGBA);
-    media_image_uploaded(image);
-}
-
-struct render_raster *content_image_raster(struct server *server, struct node *node) {
+bool content_image_prepare(struct server *server, struct node *node, struct vec *uploads,
+                           uint64_t *slot) {
     struct image_cache *cache = node->cache;
     struct media_image *image = cache ? cache->image : NULL;
-    if (!image) return NULL;
-    return render_raster(server->renderer, image_slot(image), image->serial, MEDIA_IMAGE_LIFETIME,
-                         produce_image, image);
+    if (!image) return false;
+    *slot = image_slot(image);
+    struct raster_entry *entry = raster_entry(server, *slot);
+    if (!entry || entry->key != image->serial) {
+        if (image->state != MEDIA_IMAGE_DECODED || !image->pixels.data) return false;
+        /* The pixels go with the upload: uploaded is what the image becomes. */
+        install_raster(server, uploads, *slot, image->serial, 0, 1, MEDIA_IMAGE_LIFETIME,
+                       &image->pixels, GL_RGBA);
+        media_image_uploaded(image);
+        entry = raster_entry(server, *slot);
+    }
+    entry->used = now_seconds();
+    entry->lifetime = MEDIA_IMAGE_LIFETIME;
+    return true;
+}
+
+/* Uploads. */
+
+void content_apply_uploads(struct renderer *renderer, const struct vec *uploads) {
+    VEC_FOR(uploads, struct content_upload, upload) {
+        switch (upload->kind) {
+        case CONTENT_RASTER:
+            render_install_raster(renderer, upload->slot, upload->pixels.data,
+                                  upload->pixels.width, upload->pixels.height, upload->format);
+            break;
+        case CONTENT_DROP_RASTER: render_drop_raster(renderer, upload->slot); break;
+        }
+    }
+}
+
+void content_free_uploads(struct vec *uploads) {
+    VEC_FOR(uploads, struct content_upload, upload) media_pixels_finish(&upload->pixels);
+    vec_clear(uploads);
+}
+
+void content_frame_begin(struct server *server, struct vec *uploads) {
+    /* Rasters dropped since the last frame go before anything it uploads. */
+    VEC_FOR(&server->pending_uploads, struct content_upload, upload)
+        *(struct content_upload *)vec_push(uploads) = *upload;
+    vec_clear(&server->pending_uploads);
+    server->text_spare = TEXT_SPARE;
 }
 
 void content_image_fit(int fit, const struct media_image *image, double width, double height,
@@ -412,6 +476,20 @@ void content_node_dead(struct server *server, struct node *node) {
 void content_release_stale(struct server *server) {
     double time = now_seconds();
     media_release_stale(server->media, time);
+    /* Rasters unused for their lifetime go with the next frame's uploads. One an output's
+     * cached display draws was touched when that display was built. */
+    double built_at = displays_built_at(server);
+    size_t at = 0;
+    int64_t raster_slot;
+    void *raster;
+    while (idmap_next(&server->rasters, &at, &raster_slot, &raster)) {
+        struct raster_entry *entry = raster;
+        if (built_at - entry->used <= entry->lifetime) continue;
+        idmap_remove(&server->rasters, raster_slot);
+        free(entry);
+        *(struct content_upload *)vec_push(&server->pending_uploads) =
+            (struct content_upload){.kind = CONTENT_DROP_RASTER, .slot = (uint64_t)raster_slot};
+    }
     /* Text the worker finished after it left the screen, before a draw installed it. */
     size_t index = 0;
     int64_t slot;
@@ -467,6 +545,8 @@ static int media_ready(int fd, uint32_t mask, void *data) {
 
 void content_init(struct server *server) {
     idmap_init(&server->text_jobs);
+    idmap_init(&server->rasters);
+    vec_init(&server->pending_uploads, sizeof(struct content_upload));
     server->media = media_create(image_done, server);
     if (server->media)
         server->media_source = wl_event_loop_add_fd(server->loop, media_get_fd(server->media),
@@ -479,6 +559,11 @@ void content_finish(struct server *server) {
     void *value;
     while (idmap_next(&server->text_jobs, &index, &slot, &value)) free_job(value);
     idmap_finish(&server->text_jobs);
+    index = 0;
+    while (idmap_next(&server->rasters, &index, &slot, &value)) free(value);
+    idmap_finish(&server->rasters);
+    content_free_uploads(&server->pending_uploads);
+    vec_finish(&server->pending_uploads);
     if (server->media_source) wl_event_source_remove(server->media_source);
     if (server->media) media_destroy(server->media);
     server->media = NULL;

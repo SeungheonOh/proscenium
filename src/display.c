@@ -5,6 +5,7 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <math.h>
+#include <wlr/render/dmabuf.h>
 #include <wlr/render/gles2.h>
 #include <wlr/render/wlr_texture.h>
 #include <wlr/types/wlr_compositor.h>
@@ -18,6 +19,7 @@
 #include "content.h"
 #include "input.h"
 #include "render.h"
+#include "renderthread.h"
 #include "stage.h"
 #include "web.h"
 #include "webnode.h"
@@ -85,7 +87,10 @@ struct item {
             struct box box, mask;
             double radius, opacity;
             double uv[8];
-            struct wlr_texture *texture; /* for a snapshot, whose surface is gone */
+            /* For a snapshot, whose surface is gone: its texture, and the buffer its window
+             * holds for it. */
+            struct wlr_texture *texture;
+            struct wlr_buffer *buffer;
         } surface;
         struct {
             struct mat3 transform;
@@ -129,14 +134,27 @@ struct transform_entry {
     bool mirror;
 };
 
+/*
+ * Items and the uniform values they draw with, shared by the display that built them and
+ * the frames drawing them: a set a frame still draws is left to it, and the display
+ * builds into a new one. Its references are the main thread's.
+ */
+struct item_set {
+    int refs;
+    struct vec items;  /* struct item */
+    struct vec values; /* float */
+};
+
 struct display {
     struct output *output;
     struct wlr_damage_ring ring;
     pixman_region32_t pending;
     int buffer_width, buffer_height, transform;
 
-    struct vec items, seat_items;          /* struct item */
-    struct vec values;                     /* float: uniforms of the shaders items draw */
+    /* The scene's items, and the seat's (drag icons), as last built. */
+    struct item_set *scene, *seat;
+    /* Frames built and not yet freed (struct display_frame *). */
+    struct vec frames;
     struct vec hits;                       /* struct hit */
     struct vec transforms;                 /* struct transform_entry */
     struct vec diffed, seat_diffed, spare; /* struct diffed, sorted by key */
@@ -146,13 +164,63 @@ struct display {
     double built_at;
     /* Text and web node id -> exact raster scale on the last rendered frame. */
     struct idmap raster_scales, next_raster_scales;
-    /* Surfaces the frame drew, and visible ones owed a frame callback. */
-    struct vec presented, callbacks; /* struct wlr_surface * */
-    struct vec surfaces;             /* struct surface_draw: scratch while emitting */
-    struct vec gathered;             /* pixman_box32_t: damage while diffing */
+    struct vec surfaces; /* struct surface_draw: scratch while emitting */
+    struct vec gathered; /* pixman_box32_t: damage while diffing */
     /* PROSCENIUM_CHECK's full redraws, and frames found to differ from them. */
     struct render_target *check_target;
     int checked, mismatched;
+};
+
+enum { SCENE_SET, SEAT_SET, SET_COUNT };
+
+/* How an item draws, as its frame prepared it. */
+struct item_draw {
+    /* The frame draws it. */
+    bool ready;
+    /* A surface's texture; none when its name is 0. */
+    struct render_surface surface;
+    /* Text or an image drawn from a raster in SLOT (0 for none), text's at RASTER_SCALE. */
+    uint64_t slot;
+    double raster_scale;
+    /* Set where it is drawn: a surface drawn, for presentation feedback. */
+    bool presented;
+};
+
+/* What drawing found of a shader, reported back to the main thread. */
+struct frame_report {
+    int set, index;
+    struct render_report report;
+};
+
+struct display_frame {
+    struct output *output;
+    struct item_set *sets[SET_COUNT];
+    struct vec draws[SET_COUNT]; /* struct item_draw, one per item */
+    struct vec uploads;          /* struct content_upload */
+    struct vec locks;            /* struct wlr_buffer *: buffers it draws from */
+    /* Surfaces it shows, drawn or not: their mipmaps stay (uint64_t item keys). */
+    struct vec shown_keys;
+    struct vec reports;          /* struct frame_report */
+    struct vec passes;           /* struct rect */
+    /* Surfaces it drew, once drawn, and visible ones owed a frame callback once it is shown. */
+    struct vec presented, callbacks; /* struct wlr_surface * */
+    pixman_region32_t damage;
+    int width, height;
+    /* Drawn while the main thread waits: it reads the main thread's state (web pages), or
+     * is a capture. CHECK: compared with a full redraw (PROSCENIUM_CHECK). SHOWN: it changes
+     * pixels or a client waits for it. */
+    bool sync, check, shown;
+    double built_at;
+    /* Where it draws: the buffer, imported by the render thread from its dma-buf, or
+     * wlroots' framebuffer for it when the main thread draws. */
+    struct wlr_buffer *buffer;
+    struct wlr_dmabuf_attributes dmabuf;
+    bool has_dmabuf, drawn;
+    GLuint framebuffer;
+    /* Milliseconds building it took on the main thread, and drawing it. */
+    double build_ms, draw_ms;
+    void (*done)(struct display_frame *frame, void *data);
+    void *data;
 };
 
 /* Where items emitted now are clipped: in buffer pixels, and for hits in
@@ -166,7 +234,8 @@ struct emit {
     struct server *server;
     struct output *output;
     struct display *display;
-    struct vec *items;
+    /* Where items and their uniform values go. */
+    struct vec *items, *values;
     uint64_t tag;
     struct mat3 screen, to_logical; /* output-logical to buffer, and back */
     bool has_to_logical;
@@ -333,9 +402,8 @@ static void record_shading(struct emit *e, const struct shading *shading, const 
         out->output_size[0] = e->output->width;
         out->output_size[1] = e->output->height;
     }
-    out->values = (int)e->display->values.length;
-    for (int c = 0; c < shader->component_count; c++)
-        *(float *)vec_push(&e->display->values) = values[c];
+    out->values = (int)e->values->length;
+    for (int c = 0; c < shader->component_count; c++) *(float *)vec_push(e->values) = values[c];
 }
 
 /* ITEM draws SHADING as recorded: its signature takes in what the shader sees, a running
@@ -345,9 +413,8 @@ static void shading_signature(struct emit *e, struct item *item, const struct sh
     const struct shader *shader = recorded->shader;
     item->signature = hash_bytes(item->signature, recorded, offsetof(struct item_shading, values));
     if (shader->component_count)
-        item->signature =
-            hash_bytes(item->signature, vec_at(&e->display->values, (size_t)recorded->values),
-                       shader->component_count * sizeof(float));
+        item->signature = hash_bytes(item->signature, vec_at(e->values, (size_t)recorded->values),
+                                     shader->component_count * sizeof(float));
     if (shader->time && shading->running) e->animating = true;
     if (shader->pointer) e->display->pointer_shaders = true;
 }
@@ -599,6 +666,7 @@ static struct item *emit_surface(struct emit *e, struct node *node, struct windo
     item->signature = signature_of(e, &item->surface, sizeof item->surface);
     filter_item(e, item, node, filter);
     item->surface.texture = draw->texture;
+    item->surface.buffer = draw->buffer;
     item->window = window;
     window_ref(window);
     item->surface_ptr = draw->surface;
@@ -624,8 +692,6 @@ static struct item *emit_surface(struct emit *e, struct node *node, struct windo
                                  &item->opaque);
         }
     }
-    /* A display may show the surface long without drawing it again. */
-    render_touch_mipmap(e->server->renderer, item->key);
     return item;
 }
 
@@ -755,7 +821,7 @@ static void emit_text(struct emit *e, struct node *node, struct mat3 t, double w
             item->signature = signature_of(e, &item->text, sizeof item->text);
             set_node(item, node);
             filter_item(e, item, node, filter);
-            render_touch_raster(e->server->renderer, slot);
+            content_touch_raster(e->server, slot);
         }
     }
     if (hit_target(e, node)) add_hit(e, node, inverse, parent_inverse, true, width, height, NULL);
@@ -1018,6 +1084,48 @@ static void release_items(struct vec *items) {
     vec_clear(items);
 }
 
+/* Sets no frame or display holds, kept for their vectors' room. */
+static struct vec spare_sets; /* struct item_set * */
+
+static struct item_set *item_set_new(void) {
+    struct item_set *set;
+    if (spare_sets.length) {
+        set = *(struct item_set **)vec_at(&spare_sets, spare_sets.length - 1);
+        spare_sets.length--;
+    } else {
+        set = xcalloc(1, sizeof *set);
+        vec_init(&set->items, sizeof(struct item));
+        vec_init(&set->values, sizeof(float));
+    }
+    set->refs = 1;
+    return set;
+}
+
+static void item_set_release(struct item_set *set) {
+    if (--set->refs) return;
+    release_items(&set->items);
+    vec_clear(&set->values);
+    if (!spare_sets.element) vec_init(&spare_sets, sizeof(struct item_set *));
+    if (spare_sets.length < 4) {
+        *(struct item_set **)vec_push(&spare_sets) = set;
+        return;
+    }
+    vec_finish(&set->items);
+    vec_finish(&set->values);
+    free(set);
+}
+
+/* SET emptied for building anew: itself, unless a frame still draws it. */
+static struct item_set *item_set_fresh(struct item_set *set) {
+    if (set->refs == 1) {
+        release_items(&set->items);
+        vec_clear(&set->values);
+        return set;
+    }
+    item_set_release(set);
+    return item_set_new();
+}
+
 static void release_hits(struct display *display) {
     VEC_FOR(&display->hits, struct hit, hit) {
         if (hit->node) node_unref(hit->node);
@@ -1031,17 +1139,15 @@ struct display *display_create(struct output *output) {
     display->output = output;
     wlr_damage_ring_init(&display->ring);
     pixman_region32_init(&display->pending);
-    vec_init(&display->items, sizeof(struct item));
-    vec_init(&display->seat_items, sizeof(struct item));
-    vec_init(&display->values, sizeof(float));
+    display->scene = item_set_new();
+    display->seat = item_set_new();
+    vec_init(&display->frames, sizeof(struct display_frame *));
     vec_init(&display->hits, sizeof(struct hit));
     vec_init(&display->transforms, sizeof(struct transform_entry));
     vec_init(&display->diffed, sizeof(struct diffed));
     vec_init(&display->seat_diffed, sizeof(struct diffed));
     vec_init(&display->spare, sizeof(struct diffed));
     vec_init(&display->kept, sizeof(struct kept));
-    vec_init(&display->presented, sizeof(struct wlr_surface *));
-    vec_init(&display->callbacks, sizeof(struct wlr_surface *));
     vec_init(&display->surfaces, sizeof(struct surface_draw));
     vec_init(&display->gathered, sizeof(pixman_box32_t));
     idmap_init(&display->raster_scales);
@@ -1049,26 +1155,27 @@ struct display *display_create(struct output *output) {
     return display;
 }
 
+static void destroy_target(void *target) {
+    render_target_destroy(target);
+}
+
 void display_destroy(struct display *display) {
     if (!display) return;
     if (display->checked)
         wlr_log(WLR_INFO, "check: %s: %d of %d frames differed from a full redraw",
                 output_name(display->output), display->mismatched, display->checked);
-    render_target_destroy(display->check_target);
-    release_items(&display->items);
-    release_items(&display->seat_items);
+    if (display->check_target)
+        server_render(display->output->server, destroy_target, display->check_target);
+    item_set_release(display->scene);
+    item_set_release(display->seat);
+    vec_finish(&display->frames);
     release_hits(display);
-    vec_finish(&display->items);
-    vec_finish(&display->seat_items);
-    vec_finish(&display->values);
     vec_finish(&display->hits);
     vec_finish(&display->transforms);
     vec_finish(&display->diffed);
     vec_finish(&display->seat_diffed);
     vec_finish(&display->spare);
     vec_finish(&display->kept);
-    vec_finish(&display->presented);
-    vec_finish(&display->callbacks);
     vec_finish(&display->surfaces);
     vec_finish(&display->gathered);
     idmap_finish(&display->raster_scales);
@@ -1098,13 +1205,14 @@ static struct mat3 screen_transform(struct output *output) {
                                    display->buffer_height, display->transform);
 }
 
-static void emit_init(struct emit *e, struct output *output, struct vec *items, uint64_t tag) {
+static void emit_init(struct emit *e, struct output *output, struct item_set *set, uint64_t tag) {
     struct display *display = output->display;
     *e = (struct emit){
         .server = output->server,
         .output = output,
         .display = display,
-        .items = items,
+        .items = &set->items,
+        .values = &set->values,
         .tag = tag,
         .screen = screen_transform(output),
         .bounds = {0, 0, display->buffer_width, display->buffer_height},
@@ -1118,14 +1226,13 @@ static void emit_init(struct emit *e, struct output *output, struct vec *items, 
 static void build(struct output *output, struct emit *e) {
     struct server *server = output->server;
     struct display *display = output->display;
-    release_items(&display->items);
+    display->scene = item_set_fresh(display->scene);
     release_hits(display);
-    vec_clear(&display->values);
     vec_clear(&display->transforms);
     idmap_clear(&display->next_raster_scales);
     display->pointer_shaders = false;
     display->refine = false;
-    emit_init(e, output, &display->items, 0);
+    emit_init(e, output, display->scene, 0);
     struct mat3 camera = camera_transform(output), camera_inverse;
     if (!mat3_invert(camera, &camera_inverse)) camera_inverse = MAT3_IDENTITY;
     struct mat4 camera_matrix = mat4_from_mat3(camera);
@@ -1169,7 +1276,7 @@ struct hit *display_hits(struct output *output, size_t *count) {
     struct display *display = output->display;
     /* While a frame is on its way the hits stay those of the frame on screen, which is
      * what the user points at, so input during an animation never rebuilds between frames. */
-    if (!(display->items.length && output->awaiting_frame)) refresh(output);
+    if (!(display->scene->items.length && output->awaiting_frame)) refresh(output);
     *count = display->hits.length;
     return display->hits.data;
 }
@@ -1367,7 +1474,7 @@ void displays_forget_surface(struct server *server, struct wlr_surface *surface)
     wl_list_for_each(output, &server->outputs, link) {
         struct display *display = output->display;
         bool found = false;
-        struct vec *lists[] = {&display->items, &display->seat_items};
+        struct vec *lists[] = {&display->scene->items, &display->seat->items};
         for (int l = 0; l < 2; l++) {
             VEC_FOR(lists[l], struct item, item) {
                 if (item->surface_ptr == surface) {
@@ -1377,10 +1484,13 @@ void displays_forget_surface(struct server *server, struct wlr_surface *surface)
                 }
             }
         }
-        VEC_FOR(&display->presented, struct wlr_surface *, slot)
-            if (*slot == surface) *slot = NULL;
-        VEC_FOR(&display->callbacks, struct wlr_surface *, slot)
-            if (*slot == surface) *slot = NULL;
+        /* Frames on their way hold its buffer; only telling it goes. */
+        VEC_FOR(&display->frames, struct display_frame *, frame) {
+            VEC_FOR(&(*frame)->presented, struct wlr_surface *, slot)
+                if (*slot == surface) *slot = NULL;
+            VEC_FOR(&(*frame)->callbacks, struct wlr_surface *, slot)
+                if (*slot == surface) *slot = NULL;
+        }
         if (found) display->valid = false;
     }
 }
@@ -1410,10 +1520,11 @@ bool display_animating(struct output *output) {
 
 bool display_damage_node(struct output *output, struct node *node) {
     struct display *display = output->display;
-    for (size_t i = 0; i < display->items.length; i++) {
-        struct item *item = vec_at(&display->items, i);
+    struct vec *items = &display->scene->items;
+    for (size_t i = 0; i < items->length; i++) {
+        struct item *item = vec_at(items, i);
         if (item->node != node || item->kind != ITEM_TEXT) continue;
-        while (item->owner >= 0) item = vec_at(&display->items, item->owner);
+        while (item->owner >= 0) item = vec_at(items, item->owner);
         add_box_damage(display, item->bounds);
         output_request_frame(output);
         return true;
@@ -1646,9 +1757,17 @@ static int compare_holes(const void *a, const void *b) {
     return x > y ? -1 : x < y;
 }
 
-static void draw_items_range(struct server *server, struct display *display, struct vec *items,
-                             int first, int end, int owner, struct rect pass, int width,
-                             int height);
+/*
+ * Frames. A frame is what drawing reads, prepared on the main thread: the item sets it
+ * draws, held; what each item draws from (a surface's texture, its buffer locked; a
+ * raster's slot); the uploads that put rasters in place; and
+ * the passes. Drawing reads nothing else, so it can run on the render thread while the
+ * main thread builds the next frame. A frame whose items call into main-thread state
+ * while drawing (web pages) is SYNC: the main thread waits for it.
+ */
+
+static void draw_items_range(struct display_frame *frame, int set, int first, int end, int owner,
+                             struct rect pass);
 
 static void set_scissor(struct server *server, struct rect r) {
     render_set_scissor(server->renderer, r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
@@ -1661,28 +1780,22 @@ static void add_surface_once(struct vec *surfaces, struct wlr_surface *surface) 
     *(struct wlr_surface **)vec_push(surfaces) = surface;
 }
 
-static void note_presented(struct display *display, struct wlr_surface *surface) {
-    if (surface) add_surface_once(&display->presented, surface);
-}
-
 void display_prepare_shader(struct server *server, struct shader *shader) {
-    if (!shader->program && server_gl_current(server))
-        shader->program = render_shader_create(shader);
+    if (!shader->program) shader->program = render_shader_create(shader);
 }
 
-/* What the renderer draws RECORDED of DISPLAY with, into OUT; NULL without a shader or its
- * program. */
-static const struct render_shading *shading_of(struct server *server, struct display *display,
+/* What the renderer draws RECORDED of SET with, into OUT; NULL without a shader or its
+ * program, which preparing the frame made. */
+static const struct render_shading *shading_of(const struct display_frame *frame, int set,
                                                const struct item_shading *recorded,
                                                struct render_shading *out) {
     struct shader *shader = recorded->shader;
-    if (!shader) return NULL;
-    display_prepare_shader(server, shader);
-    if (!shader->program) return NULL;
+    if (!shader || !shader->program) return NULL;
     *out = (struct render_shading){
         .shader = shader->program,
-        .values =
-            shader->component_count ? vec_at(&display->values, (size_t)recorded->values) : NULL,
+        .values = shader->component_count
+                      ? vec_at(&frame->sets[set]->values, (size_t)recorded->values)
+                      : NULL,
         .size = {recorded->size[0], recorded->size[1]},
         .radius = recorded->radius,
         .time = recorded->time,
@@ -1692,6 +1805,13 @@ static const struct render_shading *shading_of(struct server *server, struct dis
         .output_size = {recorded->output_size[0], recorded->output_size[1]},
     };
     return out;
+}
+
+/* Keep what drawing found of item INDEX's shader, for the main thread. */
+static void report(struct display_frame *frame, int set, int index,
+                   const struct render_report *found) {
+    if (!found->built && !found->building && !found->error) return;
+    *(struct frame_report *)vec_push(&frame->reports) = (struct frame_report){set, index, *found};
 }
 
 /* What became of ITEM's shader, as REPORT says: one that failed is told to the director,
@@ -1715,76 +1835,68 @@ static void shader_trouble(struct server *server, struct display *display, const
     }
 }
 
-static void draw_item(struct server *server, struct display *display, struct item *item) {
+static void draw_item(struct display_frame *frame, int set, int index) {
+    struct server *server = frame->output->server;
     struct renderer *renderer = server->renderer;
+    struct item *item = vec_at(&frame->sets[set]->items, (size_t)index);
+    struct item_draw *draw = vec_at(&frame->draws[set], (size_t)index);
     struct render_shading storage;
-    const struct render_shading *shading = shading_of(server, display, &item->shading, &storage);
-    struct render_report report = {0};
+    const struct render_shading *shading = shading_of(frame, set, &item->shading, &storage);
+    struct render_report found = {0};
     switch (item->kind) {
     case ITEM_PAINT:
         if (!shading) return;
-        render_draw_paint(renderer, shading, &item->paint, &report);
+        render_draw_paint(renderer, shading, &item->paint, &found);
         break;
     case ITEM_SURFACE: {
-        /* Live windows draw their newest buffer; commits keeping the geometry need no new
-         * display. */
-        struct wlr_texture *texture =
-            item->surface_ptr ? wlr_surface_get_texture(item->surface_ptr) : item->surface.texture;
-        if (!texture) return;
-        struct wlr_gles2_texture_attribs attribs;
-        wlr_gles2_texture_get_attribs(texture, &attribs);
-        struct render_surface surface = {
-            .texture = {attribs.target, attribs.tex, texture->width, texture->height,
-                        attribs.has_alpha},
-            .source = texture,
-            .generation = item->surface_ptr ? item->surface_ptr->current.seq : 0,
-        };
-        struct render_texture_draw draw = {
+        if (!draw->surface.texture.name) return;
+        struct render_texture_draw texture = {
             item->surface.transform, item->surface.box,    item->surface.uv,
             item->surface.mask,      item->surface.radius, item->surface.opacity,
         };
-        if (render_draw_surface(renderer, &surface, &draw, shading, item->key, &report))
-            note_presented(display, item->surface_ptr);
+        if (render_draw_surface(renderer, &draw->surface, &texture, shading, item->key, &found))
+            draw->presented = true;
         break;
     }
     case ITEM_TEXT: {
-        struct render_raster *raster =
-            content_text_raster(server, item->node, display->output->index, item->text.slot,
-                                item->text.key, item->text.scale, item->text.color);
+        struct render_raster *raster = draw->slot ? render_slot_raster(renderer, draw->slot) : NULL;
         if (!raster) return;
         /* It may be one at another scale, until the worker's arrives. */
-        struct media_text_box metrics = media_text_raster_box(&item->text.metrics, raster->scale);
+        struct media_text_box metrics =
+            media_text_raster_box(&item->text.metrics, draw->raster_scale);
         struct box box = {metrics.left, metrics.top, metrics.width, metrics.height};
         render_draw_raster(renderer, raster,
                            &(struct render_texture_draw){item->text.transform, box, RENDER_FULL_UV,
                                                          box, 0, item->text.opacity},
-                           shading, &report);
+                           shading, &found);
         break;
     }
     case ITEM_IMAGE: {
-        struct render_raster *raster = content_image_raster(server, item->node);
+        struct render_raster *raster = draw->slot ? render_slot_raster(renderer, draw->slot) : NULL;
         if (!raster) return;
         render_draw_raster(renderer, raster,
                            &(struct render_texture_draw){item->image.transform, item->image.box,
                                                          item->image.uv, item->image.box,
                                                          item->image.radius, item->image.opacity},
-                           shading, &report);
+                           shading, &found);
         break;
     }
     case ITEM_WEB:
+        /* Pages draw from the main thread's state: only in a frame it waits for. */
+        if (!frame->sync) return;
         web_node_draw(server, item->node, item->web.transform, item->web.width, item->web.height,
-                      item->web.radius, item->web.opacity, shading, &report);
+                      item->web.radius, item->web.opacity, shading, &found);
         break;
     case ITEM_EFFECT: return;
     }
-    if (shading) shader_trouble(server, display, item, &report);
+    if (shading) report(frame, set, index, &found);
 }
 
 /* Draw effect item INDEX within PASS, which lies inside the item's bounds. */
-static void draw_effect(struct server *server, struct display *display, struct vec *items,
-                        int index, struct rect pass, int width, int height) {
-    struct item *item = vec_at(items, index);
-    struct pixel_box bounds = box_pixels(item->bounds, width, height);
+static void draw_effect(struct display_frame *frame, int set, int index, struct rect pass) {
+    struct server *server = frame->output->server;
+    struct item *item = vec_at(&frame->sets[set]->items, (size_t)index);
+    struct pixel_box bounds = box_pixels(item->bounds, frame->width, frame->height);
     struct pixel_box area = {pass.x0, pass.y0, pass.x1 - pass.x0, pass.y1 - pass.y0};
     struct renderer *renderer = server->renderer;
     struct render_target *content =
@@ -1796,25 +1908,26 @@ static void draw_effect(struct server *server, struct display *display, struct v
     if (!content) return;
     struct render_effect_scope scope;
     render_begin_effect(renderer, content, backdrop, area, bounds.x, bounds.y, &scope);
-    draw_items_range(server, display, items, index + 1, item->effect.end, index, pass, width,
-                     height);
+    draw_items_range(frame, set, index + 1, item->effect.end, index, pass);
     render_end_effect(renderer, &scope);
     /* While the shader cannot run, the content shows plain. */
     struct render_shading shading;
-    struct render_report report = {0};
-    render_draw_effect(renderer, shading_of(server, display, &item->shading, &shading),
-                       &item->effect.draw, content, backdrop, area, bounds.x, bounds.y, &report);
-    shader_trouble(server, display, item, &report);
+    struct render_report found = {0};
+    render_draw_effect(renderer, shading_of(frame, set, &item->shading, &shading),
+                       &item->effect.draw, content, backdrop, area, bounds.x, bounds.y, &found);
+    report(frame, set, index, &found);
 }
 
 /*
- * Paint the items OWNER draws (-1: the frame) in [FIRST, END) that overlap PASS,
+ * Paint the items OWNER draws (-1: the frame) in [FIRST, END) of SET that overlap PASS,
  * bottom first. A large item paints only where no opaque item above it covers,
  * except where a reader between them reads it.
  */
-static void draw_items_range(struct server *server, struct display *display, struct vec *items,
-                             int first, int end, int owner, struct rect pass, int width,
-                             int height) {
+static void draw_items_range(struct display_frame *frame, int set, int first, int end, int owner,
+                             struct rect pass) {
+    struct server *server = frame->output->server;
+    struct vec *items = &frame->sets[set]->items;
+    int width = frame->width, height = frame->height;
     /* Items under the topmost one painting opaquely all over the pass cannot show. */
     int start = first;
     for (int i = first; i < end; i++) {
@@ -1846,7 +1959,7 @@ static void draw_items_range(struct server *server, struct display *display, str
         struct rect box = rect_intersect(bounds, pass);
         if (item->kind == ITEM_EFFECT) {
             set_scissor(server, box);
-            draw_effect(server, display, items, i, box, width, height);
+            draw_effect(frame, set, i, box);
             set_scissor(server, pass);
             if (owner < 0) render_submit(server->renderer);
             continue;
@@ -1878,7 +1991,7 @@ static void draw_items_range(struct server *server, struct display *display, str
         bool scissored = item->clipped || part_count != 1 || memcmp(&parts[0], &box, sizeof box);
         for (int k = 0; k < part_count; k++) {
             if (scissored) set_scissor(server, parts[k]);
-            draw_item(server, display, item);
+            draw_item(frame, set, i);
         }
         if (scissored) set_scissor(server, pass);
         if (owner < 0) render_submit(server->renderer);
@@ -1887,27 +2000,176 @@ static void draw_items_range(struct server *server, struct display *display, str
     vec_finish(&readers);
 }
 
-/* Repaint PASS of the bound WIDTH x HEIGHT buffer from the bottom: what lies under
- * everything, then the scene's items and the seat's. */
-static void draw_pass(struct server *server, struct display *display, struct rect pass, int width,
-                      int height) {
+/* Repaint PASS of the bound buffer from the bottom: what lies under everything, then the
+ * scene's items and the seat's. */
+static void draw_pass(struct display_frame *frame, struct rect pass) {
+    struct server *server = frame->output->server;
     set_scissor(server, pass);
     render_clear(server->renderer, UNDERLAY[0], UNDERLAY[1], UNDERLAY[2], 1);
-    draw_items_range(server, display, &display->items, 0, (int)display->items.length, -1, pass,
-                     width, height);
-    draw_items_range(server, display, &display->seat_items, 0, (int)display->seat_items.length, -1,
-                     pass, width, height);
+    for (int set = 0; set < SET_COUNT; set++)
+        draw_items_range(frame, set, 0, (int)frame->sets[set]->items.length, -1, pass);
 }
 
-static void draw_passes(struct server *server, struct display *display, struct vec *passes,
-                        int width, int height) {
+static void draw_passes(struct display_frame *frame) {
+    struct server *server = frame->output->server;
     if (server->damage_debug) {
-        render_set_scissor(server->renderer, 0, 0, width, height);
+        render_set_scissor(server->renderer, 0, 0, frame->width, frame->height);
         render_clear(server->renderer, 0.55, 0.015, 0.08, 1);
     }
     /* Each rectangle is repainted from the bottom, so overlapping ones never
      * accumulate translucent layers twice. */
-    VEC_FOR(passes, struct rect, pass) draw_pass(server, display, *pass, width, height);
+    VEC_FOR(&frame->passes, struct rect, pass) draw_pass(frame, *pass);
+}
+
+/* Whether BOUNDS, in buffer pixels, meets any of FRAME's passes. */
+static bool meets_passes(const struct display_frame *frame, struct box bounds) {
+    struct rect rect = pixel_rect(bounds, frame->width, frame->height);
+    VEC_FOR(&frame->passes, struct rect, pass)
+        if (rects_overlap(rect, *pass)) return true;
+    return false;
+}
+
+/* Resolve on the main thread what FRAME's items draw from, as drawing finds it: every item
+ * when ALL, else those its passes reach. */
+static void prepare_frame(struct display_frame *frame, bool all) {
+    struct output *output = frame->output;
+    struct server *server = output->server;
+    content_frame_begin(server, &frame->uploads);
+    for (int set = 0; set < SET_COUNT; set++) {
+        struct vec *items = &frame->sets[set]->items;
+        struct vec *draws = &frame->draws[set];
+        for (size_t i = 0; i < items->length; i++) {
+            struct item *item = vec_at(items, i);
+            struct item_draw *draw = vec_push(draws);
+            *draw = (struct item_draw){0};
+            /* What an effect holds draws when the effect does. */
+            draw->ready = item->owner >= 0
+                              ? ((struct item_draw *)vec_at(draws, (size_t)item->owner))->ready
+                              : all || meets_passes(frame, item->bounds);
+            if (item->kind == ITEM_SURFACE)
+                *(uint64_t *)vec_push(&frame->shown_keys) = item->key;
+            if (!draw->ready) continue;
+            if (item->shading.shader) display_prepare_shader(server, item->shading.shader);
+            switch (item->kind) {
+            case ITEM_SURFACE: {
+                /* Live windows draw their newest buffer, held while the frame draws it. */
+                struct wlr_surface *surface = item->surface_ptr;
+                struct wlr_texture *texture =
+                    surface ? wlr_surface_get_texture(surface) : item->surface.texture;
+                if (!texture) break;
+                struct wlr_gles2_texture_attribs attribs;
+                wlr_gles2_texture_get_attribs(texture, &attribs);
+                draw->surface = (struct render_surface){
+                    .texture = {attribs.target, attribs.tex, texture->width, texture->height,
+                                attribs.has_alpha},
+                    .source = texture,
+                    .generation = surface ? surface->current.seq : 0,
+                };
+                /* Held while the frame draws: a live surface's texture, and the client's own
+                 * buffer, which it must not draw into again before the frame read it (a
+                 * dma-buf); or the snapshot's, which its window may let go. */
+                struct wlr_buffer *held[2] = {
+                    surface ? (surface->buffer ? &surface->buffer->base : NULL)
+                            : item->surface.buffer,
+                    surface ? surface->current.buffer : NULL,
+                };
+                for (int k = 0; k < 2; k++) {
+                    if (held[k])
+                        *(struct wlr_buffer **)vec_push(&frame->locks) = wlr_buffer_lock(held[k]);
+                }
+                break;
+            }
+            case ITEM_TEXT:
+                if (content_text_prepare_raster(server, item->node, output->index,
+                                                       item->text.slot, item->text.key,
+                                                       item->text.scale, item->text.color,
+                                                       &frame->uploads, &draw->raster_scale)) {
+                    draw->slot = item->text.slot;
+                }
+                break;
+            case ITEM_IMAGE:
+                if (!content_image_prepare(server, item->node, &frame->uploads, &draw->slot))
+                    draw->slot = 0;
+                break;
+            case ITEM_WEB: frame->sync = true; break;
+            default: break;
+            }
+        }
+    }
+}
+
+/* A frame drawing OUTPUT's display as it is now, its passes to come. */
+static struct display_frame *frame_new(struct output *output) {
+    struct display *display = output->display;
+    struct display_frame *frame = xcalloc(1, sizeof *frame);
+    frame->output = output;
+    frame->sets[SCENE_SET] = display->scene;
+    frame->sets[SEAT_SET] = display->seat;
+    for (int set = 0; set < SET_COUNT; set++) {
+        frame->sets[set]->refs++;
+        vec_init(&frame->draws[set], sizeof(struct item_draw));
+    }
+    vec_init(&frame->uploads, sizeof(struct content_upload));
+    vec_init(&frame->locks, sizeof(struct wlr_buffer *));
+    vec_init(&frame->shown_keys, sizeof(uint64_t));
+    vec_init(&frame->reports, sizeof(struct frame_report));
+    vec_init(&frame->passes, sizeof(struct rect));
+    vec_init(&frame->presented, sizeof(struct wlr_surface *));
+    vec_init(&frame->callbacks, sizeof(struct wlr_surface *));
+    pixman_region32_init(&frame->damage);
+    frame->width = display->buffer_width;
+    frame->height = display->buffer_height;
+    *(struct display_frame **)vec_push(&display->frames) = frame;
+    return frame;
+}
+
+/* What drawing FRAME found, back on the main thread: shader reports, the surfaces it drew
+ * (those not gone since), then the buffers it held and its uploads go. Once only. */
+static void take_results(struct display_frame *frame) {
+    struct server *server = frame->output->server;
+    struct display *display = frame->output->display;
+    VEC_FOR(&frame->reports, struct frame_report, found) {
+        struct item *item = vec_at(&frame->sets[found->set]->items, (size_t)found->index);
+        shader_trouble(server, display, item, &found->report);
+    }
+    vec_clear(&frame->reports);
+    for (int set = 0; set < SET_COUNT; set++) {
+        for (size_t i = 0; i < frame->draws[set].length; i++) {
+            struct item_draw *draw = vec_at(&frame->draws[set], i);
+            struct item *item = vec_at(&frame->sets[set]->items, i);
+            if (draw->presented && item->surface_ptr)
+                add_surface_once(&frame->presented, item->surface_ptr);
+            draw->presented = false;
+        }
+    }
+    VEC_FOR(&frame->locks, struct wlr_buffer *, buffer) wlr_buffer_unlock(*buffer);
+    vec_clear(&frame->locks);
+    content_free_uploads(&frame->uploads);
+}
+
+void display_frame_free(struct display_frame *frame) {
+    if (!frame) return;
+    struct display *display = frame->output->display;
+    take_results(frame);
+    for (size_t i = 0; i < display->frames.length; i++) {
+        if (*(struct display_frame **)vec_at(&display->frames, i) == frame) {
+            vec_remove(&display->frames, i);
+            break;
+        }
+    }
+    for (int set = 0; set < SET_COUNT; set++) {
+        item_set_release(frame->sets[set]);
+        vec_finish(&frame->draws[set]);
+    }
+    vec_finish(&frame->uploads);
+    vec_finish(&frame->locks);
+    vec_finish(&frame->shown_keys);
+    vec_finish(&frame->reports);
+    vec_finish(&frame->passes);
+    vec_finish(&frame->presented);
+    vec_finish(&frame->callbacks);
+    pixman_region32_fini(&frame->damage);
+    free(frame);
 }
 
 /* Track which outputs show each window; surfaces enter and leave them accordingly. */
@@ -1940,9 +2202,9 @@ static void drag_surface(struct wlr_surface *surface, int x, int y, void *data) 
 static void emit_seat_items(struct output *output) {
     struct server *server = output->server;
     struct display *display = output->display;
-    release_items(&display->seat_items);
+    display->seat = item_set_fresh(display->seat);
     struct emit e;
-    emit_init(&e, output, &display->seat_items, 3);
+    emit_init(&e, output, display->seat, 3);
     struct wlr_surface *icon;
     double x, y;
     if (input_drag_icon(server, output, &icon, &x, &y)) {
@@ -1976,25 +2238,27 @@ static struct render_target *fitted_target(struct render_target **slot, int widt
 
 /*
  * PROSCENIUM_CHECK: compare the frame just drawn into FRAMEBUFFER with a full
- * redraw of the same display, which damage tracking must reproduce exactly.
- * The software cursor's surroundings are left out.
+ * redraw of the same frame, which damage tracking must reproduce exactly. The
+ * software cursor's surroundings are left out. Checked frames are drawn while the
+ * main thread waits.
  */
-static void check_frame(struct output *output, GLuint framebuffer) {
+static void check_frame(struct display_frame *frame, GLuint framebuffer) {
+    struct output *output = frame->output;
     struct server *server = output->server;
     struct display *display = output->display;
-    int width = display->buffer_width, height = display->buffer_height;
+    int width = frame->width, height = frame->height;
     size_t size = (size_t)width * height * 4;
-    unsigned char *frame = xmalloc(size), *full = xmalloc(size);
+    unsigned char *pixels = xmalloc(size), *full = xmalloc(size);
     glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
-    gl_read_pixels(0, 0, width, height, frame);
+    gl_read_pixels(0, 0, width, height, pixels);
     struct render_target *target = fitted_target(&display->check_target, width, height);
     if (!target) goto out;
     struct gl_binding saved;
     render_target_bind(target, &saved);
     render_begin_frame(server->renderer, width, height);
-    /* With no spare time, the redraw uses the rasters and mipmaps the frame had. */
+    /* With no spare time, the redraw uses the mipmaps the frame had. */
     render_spend_spare_time(server->renderer, now_seconds() - 1);
-    draw_pass(server, display, (struct rect){0, 0, width, height}, width, height);
+    draw_pass(frame, (struct rect){0, 0, width, height});
     render_finish_frame(server->renderer);
     gl_read_pixels(0, 0, width, height, full);
     gl_restore_binding(&saved);
@@ -2006,7 +2270,7 @@ static void check_frame(struct output *output, GLuint framebuffer) {
     for (int y = 0; y < height; y++) {
         for (int x = 0; x < width; x++) {
             if (fabs(x - cx) < 64 && fabs(y - cy) < 64) continue;
-            const unsigned char *a = frame + ((size_t)y * width + x) * 4,
+            const unsigned char *a = pixels + ((size_t)y * width + x) * 4,
                                 *b = full + ((size_t)y * width + x) * 4;
             if (abs(a[0] - b[0]) > 2 || abs(a[1] - b[1]) > 2 || abs(a[2] - b[2]) > 2) {
                 if (!differing++) first_x = x, first_y = y;
@@ -2021,18 +2285,52 @@ static void check_frame(struct output *output, GLuint framebuffer) {
                 output_name(output), display->checked, differing, first_x, first_y);
     }
 out:
-    free(frame);
+    free(pixels);
     free(full);
 }
 
-bool display_render(struct output *output, struct wlr_buffer *buffer, pixman_region32_t *damage) {
+/* Draw FRAME where the renderer draws: its uploads first, then its passes. */
+static void draw_frame(void *data) {
+    struct display_frame *frame = data;
+    struct output *output = frame->output;
+    struct server *server = output->server;
+    struct renderer *renderer = server->renderer;
+    double started = now_seconds();
+    content_apply_uploads(renderer, &frame->uploads);
+    GLuint framebuffer = frame->framebuffer;
+    if (server->render_thread)
+        framebuffer = render_buffer_framebuffer(renderer, frame->buffer,
+                                                frame->has_dmabuf ? &frame->dmabuf : NULL);
+    if (framebuffer && frame->passes.length) {
+        glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+        output_draw_begin(output);
+        render_begin_frame(renderer, frame->width, frame->height);
+        draw_passes(frame);
+        render_finish_frame(renderer);
+        output_draw_end(output);
+        if (frame->check) check_frame(frame, framebuffer);
+        if (server->render_thread) render_thread_fence_render(server->render_thread);
+        frame->drawn = true;
+    }
+    /* Mipmaps of surfaces shown but not drawn stay; the rest go once unused a while. */
+    VEC_FOR(&frame->shown_keys, uint64_t, key) render_touch_mipmap(renderer, *key);
+    render_sweep(renderer, frame->built_at);
+    frame->draw_ms = (now_seconds() - started) * 1e3;
+}
+
+/* Back on the main thread once FRAME is drawn. */
+static void frame_finished(void *data) {
+    struct display_frame *frame = data;
+    take_results(frame);
+    if (frame->done) frame->done(frame, frame->data);
+}
+
+struct display_frame *display_build(struct output *output, struct wlr_buffer *buffer) {
     struct server *server = output->server;
     struct display *display = output->display;
     struct wlr_output *wlr_output = output->wlr_output;
+    double started = now_seconds();
     output->awaiting_frame = false;
-    /* Building the frame may upload a cursor image, which binds wlroots' framebuffers. */
-    GLint framebuffer;
-    glGetIntegerv(GL_FRAMEBUFFER_BINDING, &framebuffer);
     if (display->buffer_width != wlr_output->width ||
         display->buffer_height != wlr_output->height ||
         display->transform != (int)wlr_output->transform) {
@@ -2054,12 +2352,12 @@ bool display_render(struct output *output, struct wlr_buffer *buffer, pixman_reg
         struct idmap swap = display->raster_scales;
         display->raster_scales = display->next_raster_scales;
         display->next_raster_scales = swap;
-        diff_items(display, &display->items, &display->diffed);
+        diff_items(display, &display->scene->items, &display->diffed);
         display->diffed_current = true;
         input_repick(server, output);
     }
     emit_seat_items(output);
-    diff_items(display, &display->seat_items, &display->seat_diffed);
+    diff_items(display, &display->seat->items, &display->seat_diffed);
 
     pixman_region32_intersect_rect(&display->pending, &display->pending, 0, 0,
                                    display->buffer_width, display->buffer_height);
@@ -2072,96 +2370,164 @@ bool display_render(struct output *output, struct wlr_buffer *buffer, pixman_reg
         pixman_region32_union_rect(&repair, &repair, 0, 0, display->buffer_width,
                                    display->buffer_height);
 
-    vec_clear(&display->presented);
-    struct vec passes;
-    vec_init(&passes, sizeof(struct rect));
-    frame_passes(&repair, &display->items, display->buffer_width, display->buffer_height, &passes);
-    if (passes.length) {
-        glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)framebuffer);
-        render_begin_frame(server->renderer, display->buffer_width, display->buffer_height);
-        draw_passes(server, display, &passes, display->buffer_width, display->buffer_height);
-        render_finish_frame(server->renderer);
-        if (server->check) check_frame(output, (GLuint)framebuffer);
-    }
-    pixman_region32_clear(damage);
-    VEC_FOR(&passes, struct rect, r)
-        pixman_region32_union_rect(damage, damage, r->x0, r->y0, r->x1 - r->x0, r->y1 - r->y0);
-    vec_finish(&passes);
+    struct display_frame *frame = frame_new(output);
+    frame->buffer = buffer;
+    frame->check = server->check;
+    frame_passes(&repair, &display->scene->items, frame->width, frame->height, &frame->passes);
     pixman_region32_fini(&repair);
-
+    VEC_FOR(&frame->passes, struct rect, r)
+        pixman_region32_union_rect(&frame->damage, &frame->damage, r->x0, r->y0, r->x1 - r->x0,
+                                   r->y1 - r->y0);
     /* Visible clients waiting for a frame progress even when their pixels were not repainted. */
-    vec_clear(&display->callbacks);
-    struct vec *lists[] = {&display->items, &display->seat_items};
-    for (int l = 0; l < 2; l++) {
-        VEC_FOR(lists[l], struct item, item) {
+    for (int set = 0; set < SET_COUNT; set++) {
+        VEC_FOR(&frame->sets[set]->items, struct item, item) {
             struct wlr_surface *surface = item->surface_ptr;
             if (surface && !wl_list_empty(&surface->current.frame_callback_list))
-                add_surface_once(&display->callbacks, surface);
+                add_surface_once(&frame->callbacks, surface);
         }
     }
-    /* A raster any output's cached display uses was touched when that display was built. */
-    render_sweep(server->renderer, displays_built_at(server));
+    frame->shown = pixman_region32_not_empty(&frame->damage) || frame->callbacks.length;
+    if (frame->passes.length) {
+        /* A checked frame redraws all of itself: every item is drawn from. */
+        prepare_frame(frame, frame->check);
+        if (frame->check) frame->sync = true;
+        if (server->render_thread) {
+            frame->has_dmabuf = wlr_buffer_get_dmabuf(buffer, &frame->dmabuf);
+        } else {
+            frame->framebuffer = wlr_gles2_renderer_get_buffer_fbo(server->wlr_renderer, buffer);
+        }
+    }
+    frame->built_at = displays_built_at(server);
     content_release_stale(server);
-    return pixman_region32_not_empty(damage) || display->callbacks.length;
+    frame->build_ms = (now_seconds() - started) * 1e3;
+    return frame;
 }
 
-void display_frame_feedback(struct output *output) {
-    VEC_FOR(&output->display->presented, struct wlr_surface *, surface) {
-        if (*surface) wlr_presentation_surface_textured_on_output(*surface, output->wlr_output);
+void display_draw(struct display_frame *frame,
+                  void (*done)(struct display_frame *frame, void *data), void *data) {
+    struct server *server = frame->output->server;
+    frame->done = done;
+    frame->data = data;
+    if (!frame->passes.length) {
+        frame_finished(frame);
+        return;
+    }
+    if (!server->render_thread || frame->sync) {
+        server_render(server, draw_frame, frame);
+        frame_finished(frame);
+        return;
+    }
+    /* What the main context did so far (client buffers, imports) is fenced for the draw. */
+    if (server_gl_current(server)) render_thread_fence_main(server->render_thread);
+    render_thread_queue(server->render_thread, draw_frame, frame_finished, frame);
+}
+
+bool display_frame_shown(const struct display_frame *frame) {
+    return frame->shown;
+}
+
+bool display_frame_drew(const struct display_frame *frame) {
+    return frame->drawn || !frame->passes.length;
+}
+
+const pixman_region32_t *display_frame_damage(const struct display_frame *frame) {
+    return &frame->damage;
+}
+
+void display_frame_times(const struct display_frame *frame, double *build_ms, double *draw_ms) {
+    *build_ms = frame->build_ms;
+    *draw_ms = frame->draw_ms;
+}
+
+void display_frame_feedback(struct display_frame *frame) {
+    VEC_FOR(&frame->presented, struct wlr_surface *, surface) {
+        if (*surface)
+            wlr_presentation_surface_textured_on_output(*surface, frame->output->wlr_output);
     }
 }
 
-void display_frame_done(struct output *output, bool committed, const pixman_region32_t *damage) {
-    struct display *display = output->display;
+void display_frame_done(struct display_frame *frame, bool committed) {
+    struct output *output = frame->output;
     if (!committed) {
-        wlr_damage_ring_add(&display->ring, damage);
-        output_request_frame(output);
+        /* The next frame repaints it; when it starts is the caller's. */
+        wlr_damage_ring_add(&output->display->ring, &frame->damage);
         return;
     }
     struct timespec when;
     clock_gettime(CLOCK_MONOTONIC, &when);
-    VEC_FOR(&display->callbacks, struct wlr_surface *, surface) {
+    VEC_FOR(&frame->callbacks, struct wlr_surface *, surface) {
         if (*surface) wlr_surface_send_frame_done(*surface, &when);
     }
 }
 
 /* Captures, through offscreen targets, so they never force an output frame. */
 
-void display_release_targets(struct display_targets *targets) {
+static void release_targets(void *data) {
+    struct display_targets *targets = data;
     render_target_destroy(targets->full);
     render_target_destroy(targets->scaled);
+}
+
+void display_release_targets(struct server *server, struct display_targets *targets) {
+    if (targets->full || targets->scaled) server_render(server, release_targets, targets);
     *targets = (struct display_targets){0};
 }
+
+struct region_read {
+    struct display_frame *frame;
+    struct box region;
+    int width, height;
+    void *pixels;
+    struct display_targets *targets;
+    bool done;
+};
+
+static void read_region(void *data);
 
 bool display_read_region(struct output *output, struct box region, int width, int height,
                          void *pixels, struct display_targets *targets) {
     struct server *server = output->server;
     struct display *display = output->display;
-    struct renderer *renderer = server->renderer;
     int buffer_width = display->buffer_width, buffer_height = display->buffer_height;
     if (buffer_width <= 0 || buffer_height <= 0) return false;
     refresh(output);
     emit_seat_items(output);
-    struct render_target *full = fitted_target(&targets->full, buffer_width, buffer_height);
-    struct render_target *scaled = fitted_target(&targets->scaled, width, height);
-    if (!full || !scaled) return false;
     /* Only the region, and what its readers sample, is drawn. */
     struct mat3 to_buffer = screen_transform(output);
     struct pixel_box area =
         box_pixels(mat3_box_bounds(to_buffer, region, 0), buffer_width, buffer_height);
     pixman_region32_t repair;
     pixman_region32_init_rect(&repair, area.x, area.y, (unsigned)area.width, (unsigned)area.height);
-    struct vec passes;
-    vec_init(&passes, sizeof(struct rect));
-    frame_passes(&repair, &display->items, buffer_width, buffer_height, &passes);
+    struct display_frame *frame = frame_new(output);
+    frame_passes(&repair, &display->scene->items, buffer_width, buffer_height, &frame->passes);
     pixman_region32_fini(&repair);
+    prepare_frame(frame, false);
+    frame->sync = true;
+    struct region_read read = {frame, region, width, height, pixels, targets, false};
+    server_render(server, read_region, &read);
+    display_frame_free(frame);
+    return read.done;
+}
+
+static void read_region(void *data) {
+    struct region_read *read = data;
+    struct display_frame *frame = read->frame;
+    struct output *output = frame->output;
+    struct server *server = output->server;
+    struct renderer *renderer = server->renderer;
+    struct box region = read->region;
+    int width = read->width, height = read->height;
+    int buffer_width = frame->width, buffer_height = frame->height;
+    content_apply_uploads(renderer, &frame->uploads);
+    struct render_target *full = fitted_target(&read->targets->full, buffer_width, buffer_height);
+    struct render_target *scaled = fitted_target(&read->targets->scaled, width, height);
+    if (!full || !scaled) return;
+    struct mat3 to_buffer = screen_transform(output);
     struct gl_binding saved;
     render_target_bind(full, &saved);
     render_begin_frame(renderer, buffer_width, buffer_height);
-    VEC_FOR(&passes, struct rect, pass)
-        draw_pass(server, display, *pass, buffer_width, buffer_height);
+    VEC_FOR(&frame->passes, struct rect, pass) draw_pass(frame, *pass);
     render_finish_frame(renderer);
-    vec_finish(&passes);
     /* Corner UVs follow the output transform, so the capture stays upright. */
     double corners[4][2] = {{region.x, region.y},
                             {box_right(region), region.y},
@@ -2185,26 +2551,51 @@ bool display_read_region(struct output *output, struct box region, int width, in
                         &(struct render_texture_draw){MAT3_IDENTITY, whole, uv, whole, 0, 1}, NULL,
                         NULL);
     render_finish_frame(renderer);
-    gl_read_pixels(0, 0, width, height, pixels);
+    gl_read_pixels(0, 0, width, height, read->pixels);
     gl_restore_binding(&saved);
-    return true;
+    read->done = true;
 }
+
+struct window_read {
+    struct server *server;
+    struct box bounds;
+    int width, height;
+    void *pixels;
+    struct display_targets *targets;
+    struct vec *surfaces;
+    bool done;
+};
+
+static void read_window(void *data);
 
 bool display_read_window(struct server *server, struct window *window, struct box bounds, int width,
                          int height, void *pixels, struct display_targets *targets) {
-    struct renderer *renderer = server->renderer;
-    struct render_target *scaled = fitted_target(&targets->scaled, width, height);
-    if (!scaled || !(bounds.width > 0 && bounds.height > 0)) return false;
+    if (!(bounds.width > 0 && bounds.height > 0)) return false;
     struct vec surfaces;
     vec_init(&surfaces, sizeof(struct surface_draw));
     window_surfaces(window, &surfaces);
+    struct window_read read = {server, bounds, width, height, pixels, targets, &surfaces, false};
+    server_render(server, read_window, &read);
+    vec_finish(&surfaces);
+    return read.done;
+}
+
+/* The surfaces' textures are read while the main thread waits: nothing changes them. */
+static void read_window(void *data) {
+    struct window_read *read = data;
+    struct server *server = read->server;
+    struct renderer *renderer = server->renderer;
+    struct box bounds = read->bounds;
+    int width = read->width, height = read->height;
+    struct render_target *scaled = fitted_target(&read->targets->scaled, width, height);
+    if (!scaled) return;
     double sx = width / bounds.width, sy = height / bounds.height;
     struct mat3 transform = mat3_affine(sx, 0, 0, sy, -bounds.x * sx, -bounds.y * sy);
     struct gl_binding saved;
     render_target_bind(scaled, &saved);
     render_begin_frame(renderer, width, height);
     render_clear(renderer, 0.035, 0.04, 0.05, 1);
-    VEC_FOR(&surfaces, struct surface_draw, draw) {
+    VEC_FOR(read->surfaces, struct surface_draw, draw) {
         struct wlr_texture *texture =
             draw->surface ? wlr_surface_get_texture(draw->surface) : draw->texture;
         if (!texture) continue;
@@ -2220,8 +2611,7 @@ bool display_read_window(struct server *server, struct window *window, struct bo
                             NULL);
     }
     render_finish_frame(renderer);
-    gl_read_pixels(0, 0, width, height, pixels);
+    gl_read_pixels(0, 0, width, height, read->pixels);
     gl_restore_binding(&saved);
-    vec_finish(&surfaces);
-    return true;
+    read->done = true;
 }

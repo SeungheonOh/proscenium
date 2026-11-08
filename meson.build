@@ -93,6 +93,7 @@ sources = files(
   'src/output.c',
   'src/props.c',
   'src/render.c',
+  'src/renderthread.c',
   'src/scene.c',
   'src/shader.c',
   'src/screencast.c',

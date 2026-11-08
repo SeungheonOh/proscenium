@@ -133,7 +133,7 @@ void capture_for_director(struct server *server, int64_t id, const struct captur
         capture_read(server, source,
                      source->window ? box_of(window_bounds(source->window)) : (struct box){0},
                      width, height, pixels, &targets);
-    if (server_gl_current(server)) display_release_targets(&targets);
+    if (server_gl_current(server)) display_release_targets(server, &targets);
     if (!read) send_captured(server, id, NULL, 0, 0, "The capture could not be rendered.");
     else if (!write_file(path, pixels, (size_t)width * height * 4))
         send_captured(server, id, NULL, 0, 0, strerror(errno));

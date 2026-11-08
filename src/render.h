@@ -7,10 +7,12 @@
  * shaders (shader.h), evaluated in local units. Colors are premultiplied RGBA
  * in 0..1.
  *
- * GL state: the caller makes the EGL context current and binds the frame's
- * framebuffer; render_begin_frame sets the viewport, premultiplied blending and
- * the scissor test, and render_finish_frame disables the scissor test and the
- * vertex arrays again. Blending stays enabled, as wlroots sets its own per draw.
+ * GL state: everything here runs where the renderer's context is current (the
+ * render thread, or the main thread in wlroots' context without one), and the
+ * caller binds the frame's framebuffer; render_begin_frame sets the viewport,
+ * premultiplied blending and the scissor test, and render_finish_frame disables the
+ * scissor test and the vertex arrays again. Blending stays enabled, as wlroots sets
+ * its own per draw.
  * Buffer pixel (0, 0) is GL window pixel (0, 0): rows run in buffer order, as
  * they lie in memory.
  */
@@ -47,9 +49,21 @@ struct render_surface {
 /* Texture coordinates of the top-left, top-right, bottom-left and bottom-right corners. */
 extern const double RENDER_FULL_UV[8];
 
+struct wlr_dmabuf_attributes;
+
+/*
+ * The framebuffer drawing into the dma-buf DMABUF of an output buffer, imported the
+ * first time KEY (the buffer) is asked for; 0 when it cannot be, asked again next
+ * time. Framebuffers belong to the context they were made in: the renderer's.
+ */
+GLuint render_buffer_framebuffer(struct renderer *renderer, const void *key,
+                                 const struct wlr_dmabuf_attributes *dmabuf);
+/* Delete KEY's framebuffer, if any: its buffer is gone, and its address may come again. */
+void render_forget_buffer(struct renderer *renderer, const void *key);
+
 /* Compile the programs; NULL when the context cannot run them. */
 struct renderer *render_create(void);
-/* Free every program, texture and target; the context must be current. */
+/* Free every program, texture and target, in the renderer's context. */
 void render_destroy(struct renderer *renderer);
 
 /*
@@ -82,9 +96,9 @@ struct shader;
 struct render_shader;
 
 /*
- * Start building SHADER's program on the driver's threads, where it has them:
- * a paint's or an effect's, or a filter's over ordinary textures (external
- * images get theirs when first drawn).
+ * SHADER as the renderer draws it. Its programs start building on the driver's
+ * threads, where it has them, when it is first drawn: a paint's or an effect's, or a
+ * filter's over ordinary textures or external images. Touches no GL: any thread.
  */
 struct render_shader *render_shader_create(const struct shader *shader);
 void render_shader_destroy(struct render_shader *shader);
@@ -147,7 +161,7 @@ bool render_draw_texture(struct renderer *renderer, const struct render_texture 
  */
 GLuint render_surface_mipmap(struct renderer *renderer, uint64_t slot,
                              const struct render_surface *surface);
-/* Keep SLOT's mipmap, if it has one, while a display showing its surface is built. */
+/* Keep SLOT's mipmap, if it has one: a frame drawn shows its surface. */
 void render_touch_mipmap(struct renderer *renderer, uint64_t slot);
 /*
  * Draw a client surface as render_draw_texture does. Drawn at half size or less,
@@ -159,47 +173,25 @@ bool render_draw_surface(struct renderer *renderer, const struct render_surface 
                          const struct render_shading *filter, uint64_t slot,
                          struct render_report *report);
 
-/* A texture the compositor uploads itself, such as rendered text or a decoded image. */
+/*
+ * A texture the compositor uploads itself, such as rendered text or a decoded image, in a
+ * slot. What each slot holds, and when it goes, the main thread decides (content.c).
+ */
 struct render_raster {
     GLuint texture;
     int width, height;
-    uint64_t key;
-    /* When last drawn or touched, and seconds it survives without that. */
-    double used, lifetime;
-    /*
-     * The caller's, set to 0 and 1 by render_install_raster: text keeps here what
-     * the key holds less the scale, and the scale it was rasterized at, so it can
-     * show a raster at another scale until its own arrives.
-     */
-    uint64_t family;
-    double scale;
 };
 
-/* The raster SLOT holds, whatever its key; valid until render_sweep. */
+/* The raster SLOT holds, or NULL. */
 struct render_raster *render_slot_raster(struct renderer *renderer, uint64_t slot);
-/*
- * Upload PIXELS, WIDTH x HEIGHT tightly packed in FORMAT (GL_RGBA or
- * GL_BGRA_EXT, premultiplied), as SLOT's raster, now holding KEY.
- */
-struct render_raster *render_install_raster(struct renderer *renderer, uint64_t slot, uint64_t key,
-                                            const void *pixels, int width, int height,
-                                            GLenum format);
-/* Makes SLOT's raster for KEY with render_install_raster, or declines. */
-typedef void (*render_raster_producer)(struct renderer *renderer, uint64_t slot, uint64_t key,
-                                       void *data);
-/*
- * The raster in SLOT holding KEY, kept LIFETIME seconds past its last use. When
- * SLOT holds anything else, PRODUCER (if any) is called first; NULL while none
- * holds KEY.
- */
-struct render_raster *render_raster(struct renderer *renderer, uint64_t slot, uint64_t key,
-                                    double lifetime, render_raster_producer producer, void *data);
-/* Mark SLOT's raster, if any, used now. */
-void render_touch_raster(struct renderer *renderer, uint64_t slot);
-/*
- * Delete rasters unused for their lifetime before NOW; blur chains, effect
- * targets and mipmaps unused for two seconds.
- */
+/* Upload PIXELS, WIDTH x HEIGHT tightly packed in FORMAT (GL_RGBA or GL_BGRA_EXT,
+ * premultiplied), as SLOT's raster. */
+void render_install_raster(struct renderer *renderer, uint64_t slot, const void *pixels, int width,
+                           int height, GLenum format);
+/* Delete SLOT's raster, if any. */
+void render_drop_raster(struct renderer *renderer, uint64_t slot);
+/* Delete blur chains, effect targets and mipmaps unused for two seconds before NOW. Rasters
+ * go when render_drop_raster says. */
 void render_sweep(struct renderer *renderer, double now);
 /* Draw RASTER as render_draw_texture does. */
 void render_draw_raster(struct renderer *renderer, const struct render_raster *raster,

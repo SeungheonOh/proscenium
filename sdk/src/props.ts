@@ -18,7 +18,7 @@ import { isMotion, type Motion, wireMotion } from "./motion.js";
 import { backdropBlur, boxPaint, boxShadow, dimFilter, planePaint, type Shading, type UniformValue,
   wireShading, wireUniforms } from "./shader.js";
 import type { WireProps, WireValue } from "./protocol.js";
-import { radians, type Transform, wireTransform } from "./transform.js";
+import { radians, type Transform, type TransformFunction, wireTransform } from "./transform.js";
 
 /** A solid color, or a two-stop linear gradient; ANGLE is in degrees, 0 = left to right. */
 export type Paint = Color | { from: Color; to: Color; angle?: number };
@@ -956,12 +956,33 @@ export function normalizeProps(type: HostType, given: Props): Normalized {
       wire[key] = values;
     }
   }
+  // The compositor starts from `initial` only the props a node sets: one left at its default
+  // (opacity 1, no transform) is set to it, so it too starts from `initial`.
+  const initial = props.initial as AnimatedValues | undefined;
+  if (initial?.opacity !== undefined && props.opacity === undefined) writeFields(type, { opacity: 1 }, wire);
+  if (initial?.transform !== undefined && props.transform === undefined) {
+    writeFields(type, { transform: unmoved(initial.transform) }, wire);
+  }
   if (props.animate) wire.animate = wireAnimations(props.animate as Animation | Animation[], type);
   if (typeof props.layoutId === "string") wire.layoutId = props.layoutId;
   const onLayout = typeof props.onLayout === "function"
     ? props.onLayout as (layout: LayoutBox) => void
     : null;
   return { wire, handlers, style, onLayout };
+}
+
+/** TRANSFORM's functions, each doing nothing: what a node with no transform of its own shows. */
+function unmoved(transform: Transform): Transform {
+  const functions = (typeof transform[0] === "string" ? [transform] : transform) as readonly TransformFunction[];
+  return functions.map(([name, ...parameters]): TransformFunction => {
+    switch (name) {
+      case "translate": return [name, 0, 0, 0];
+      case "scale": return [name, 1, 1, 1];
+      case "rotate": return [name, ...parameters.slice(0, 3), 0];
+      case "skew": return [name, 0, 0];
+      default: return [name, ...parameters];
+    }
+  });
 }
 
 function sameValue(left: WireValue | undefined, right: WireValue | undefined): boolean {

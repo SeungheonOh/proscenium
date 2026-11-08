@@ -8,7 +8,7 @@ import { Container, createRoot, reconciler } from "../dist/host.js";
 import { normalizeProps } from "../dist/props.js";
 import { ease, spring, tween } from "../dist/motion.js";
 import { backdropBlur, boxPaint, boxShadow, dimFilter, effectShader, filterShader, paintShader, planePaint } from "../dist/shader.js";
-import { perspective, rotate, rotateY, scale } from "../dist/transform.js";
+import { perspective, rotate, rotateY, scale, translate } from "../dist/transform.js";
 
 function mount(measure) {
   const commits = [];
@@ -311,6 +311,16 @@ test("the latest keyboard grab hears keys until it lets go, and watchers hear in
   } finally {
     session.stop();
   }
+});
+
+test("initial starts props a node leaves at their defaults", () => {
+  // The compositor starts from `initial` only props the node sets: unset ones are set to what they show.
+  const { wire } = normalizeProps("box", { initial: { opacity: 0, transform: [translate(0, 6), scale(0.9)] } });
+  assert.equal(wire.opacity, 1);
+  assert.deepEqual(wire.transform, normalizeProps("box", { transform: [translate(0, 0), scale(1)] }).wire.transform);
+  // Props the node sets keep their own values.
+  assert.equal(normalizeProps("box", { opacity: 0.5, initial: { opacity: 0 } }).wire.opacity, 0.5);
+  assert.equal(normalizeProps("box", { initial: { x: 4 } }).wire.opacity, undefined);
 });
 
 test("a spring may start at a velocity of its own", () => {

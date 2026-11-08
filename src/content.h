@@ -31,32 +31,53 @@ uint64_t content_text_key(const struct media_text_layout *layout, const double c
 double content_raster_scale(double exact, bool changing, double extent);
 /*
  * Frames. The main thread decides what is uploaded where the renderer draws: rasters by
- * slot. What a frame needs goes with it as uploads, put in place before it draws, in
- * order.
+ * slot and glyphs on the atlas. What a frame needs goes with it as uploads, put in
+ * place before it draws, in order.
  */
 enum content_upload_kind {
     CONTENT_RASTER,
+    CONTENT_GLYPH,
     CONTENT_DROP_RASTER,
+    CONTENT_CLEAR_ATLAS,
 };
 
 struct content_upload {
     enum content_upload_kind kind;
+    /* Rasters: the slot. */
     uint64_t slot;
-    /* A raster's pixels, owned, in FORMAT. */
+    /* The pixels, owned: a raster's in FORMAT, a glyph's premultiplied RGBA. */
     struct media_pixels pixels;
     GLenum format;
+    /* Glyphs: where on which atlas page. */
+    int page, x, y;
+};
+
+/* A glyph a text item draws: its place on the atlas, and its box in the text's units. */
+struct content_glyph {
+    int page, x, y, width, height;
+    bool colored;
+    struct box box;
 };
 
 /* Keep SLOT's raster, if any: its text is shown, if not drawn again. */
 void content_touch_raster(struct server *server, uint64_t slot);
-/* Start preparing a frame: UPLOADS takes what earlier work left (rasters dropped), and the
- * frame's time for rasterizing new text starts. */
+/* Start preparing a frame: UPLOADS takes what earlier work left (rasters dropped, the atlas
+ * starting over), and the frame's time for rasterizing new text starts. */
 void content_frame_begin(struct server *server, struct vec *uploads);
 /* Put UPLOADS in place, where the renderer draws. */
 void content_apply_uploads(struct renderer *renderer, const struct vec *uploads);
 /* Free what UPLOADS hold, on the main thread. */
 void content_free_uploads(struct vec *uploads);
 
+/* Whether NODE's text draws as glyphs from the atlas at SCALE, rather than as a raster. */
+bool content_text_glyphs(struct server *server, struct node *node, double scale);
+/*
+ * NODE's text as glyphs at SCALE, appended to GLYPHS, with what they need in UPLOADS. False
+ * when the frame had no time or atlas room left for some: they stand in from the scale it
+ * last drew at, or the text is left out, until a later frame.
+ */
+bool content_text_prepare_glyphs(struct server *server, struct node *node, double scale,
+                                 struct vec *glyphs, struct vec *uploads);
 /*
  * Whether SLOT holds a raster of NODE's text to draw: KEY's, or one at another scale
  * while the worker renders it, at RASTER_SCALE; with what it needs in UPLOADS.

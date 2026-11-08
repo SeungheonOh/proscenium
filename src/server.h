@@ -245,9 +245,11 @@ struct server {
     struct wl_event_source *media_source;
     /* Text rasters the media worker is making, by raster slot. */
     struct idmap text_jobs;
-    /* What is uploaded where the renderer draws (content.c): rasters by slot; uploads
-     * waiting for the next frame; this frame's time left for rasterizing text. */
+    /* What is uploaded where the renderer draws (content.c): rasters by slot, and the
+     * glyph atlas; uploads waiting for the next frame; this frame's time left for
+     * rasterizing text and glyphs. */
     struct idmap rasters;
+    struct atlas *atlas;
     struct vec pending_uploads;
     double text_spare;
     struct web *web;

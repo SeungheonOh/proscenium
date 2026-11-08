@@ -198,6 +198,25 @@ void render_draw_raster(struct renderer *renderer, const struct render_raster *r
                         const struct render_texture_draw *draw, const struct render_shading *filter,
                         struct render_report *report);
 
+/*
+ * Glyphs. Text draws as quads from atlas pages of the glyphs it uses, one per font,
+ * scale and quarter-pixel phase, batched like paints: everything on screen in one
+ * font set goes to the GPU in a draw or two. The main thread places glyphs on the
+ * pages (content.c); here are the pages' textures.
+ */
+#define RENDER_ATLAS_SIZE 1024
+#define RENDER_ATLAS_PAGES 4
+
+/* Put a glyph's premultiplied RGBA PIXELS, WIDTH x HEIGHT tightly packed, at (X, Y) of PAGE. */
+void render_atlas_upload(struct renderer *renderer, int page, int x, int y, int width, int height,
+                         const void *pixels);
+/* Clear every page, for the atlas to start over. */
+void render_atlas_clear(struct renderer *renderer);
+/* Queue the glyph at (X, Y), WIDTH x HEIGHT, of PAGE over the local BOX through TRANSFORM, in
+ * premultiplied COLOR, or in its own colors when COLORED. */
+void render_draw_glyph(struct renderer *renderer, int page, int x, int y, int width, int height,
+                       bool colored, struct mat3 transform, struct box box, const float color[4]);
+
 /* How far beyond what it blurs a backdrop blur of RADIUS output pixels samples; a blur of
  * under a pixel reads the backdrop as it is. */
 int render_blur_margin(double radius);

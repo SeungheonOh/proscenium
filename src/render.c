@@ -83,6 +83,37 @@ static const char texture_main[] =
     "}\n";
 
 /*
+ * Glyphs from the atlas: a white glyph tinted by the text's premultiplied color, or a
+ * colored one (emoji) faded by its alpha.
+ */
+static const char glyph_vertex_shader[] =
+    "attribute vec3 a_position;\n"
+    "attribute vec2 a_uv;\n"
+    "attribute vec4 a_color;\n"
+    "attribute float a_tint;\n"
+    "uniform vec2 u_viewport;\n"
+    "varying vec2 v_uv;\n"
+    "varying vec4 v_color;\n"
+    "varying float v_tint;\n"
+    "void main() {\n"
+    "  gl_Position = vec4(a_position.xy / u_viewport * 2.0 - a_position.z, 0.0, a_position.z);\n"
+    "  v_uv = a_uv;\n"
+    "  v_color = a_color;\n"
+    "  v_tint = a_tint;\n"
+    "}\n";
+
+static const char glyph_fragment[] =
+    "precision highp float;\n"
+    "varying vec2 v_uv;\n"
+    "varying vec4 v_color;\n"
+    "varying float v_tint;\n"
+    "uniform sampler2D u_texture;\n"
+    "void main() {\n"
+    "  vec4 texel = texture2D(u_texture, v_uv);\n"
+    "  gl_FragColor = mix(texel * v_color.a, v_color * texel.a, v_tint);\n"
+    "}\n";
+
+/*
  * Dual Kawase blur (Bjørge, "Bandwidth-Efficient Rendering", 2015): each
  * downsample halves the image, each upsample doubles it back, and the passes
  * sample between texels so a few taps give a wide, smooth kernel.
@@ -162,6 +193,10 @@ static const struct shader passthrough_effect = {
 #define MAX_BLUR_PASSES 5
 /* Vertices of the most triangles one draw takes: a ring's eight. */
 #define MAX_VERTICES 24
+#define ATLAS_SIZE RENDER_ATLAS_SIZE
+#define ATLAS_PAGES RENDER_ATLAS_PAGES
+/* Floats a glyph's vertex holds: buffer position, atlas coordinates, color and tint. */
+#define GLYPH_STRIDE 10
 /* Floats a batch of paints holds before it is drawn: 4 MB. */
 #define BATCH_FLOATS (1 << 20)
 /* Buffer pixels a paint covers at most to be batched. Varyings cost the GPU per pixel what
@@ -321,6 +356,15 @@ struct buffer_target {
     GLuint renderbuffer, framebuffer;
 };
 
+struct atlas_page {
+    GLuint texture;
+};
+
+enum batch_kind {
+    BATCH_PAINTS,
+    BATCH_GLYPHS,
+};
+
 struct render_shader {
     const struct shader *shader;
     /* A paint's or effect's program; a filter's over ordinary textures, then over
@@ -361,10 +405,12 @@ struct renderer {
     double spare;
     /* When drawing last handed its commands to the GPU. */
     double submitted_at;
-    /* Paints of one batched program drawn and not yet sent: VERTICES of STRIDE floats in
-     * BATCH, which holds CAPACITY. Anything else that draws or changes GL state sends them
-     * first (flush_batch). */
+    /* Paints of one batched program, or glyphs of one atlas page, drawn and not yet sent:
+     * VERTICES of STRIDE floats in BATCH, which holds CAPACITY. Anything else that draws
+     * or changes GL state sends them first (flush_batch). */
+    enum batch_kind batch_kind;
     struct shaded *batch_shaded;
+    int batch_page;
     int batch_vertices, batch_stride;
     float *batch;
     size_t batch_capacity;
@@ -375,6 +421,10 @@ struct renderer {
     bool scissor_set;
     /* Framebuffers drawing into output buffers, imported once each (struct buffer_target). */
     struct vec buffer_targets;
+    /* Glyphs: the program drawing them, and the atlas pages' textures. */
+    struct program glyph_program;
+    struct atlas_page pages[ATLAS_PAGES];
+    int page_count;
 };
 
 const double RENDER_FULL_UV[8] = {0, 0, 1, 0, 0, 1, 1, 1};
@@ -891,18 +941,22 @@ struct renderer *render_create(void) {
                   "#extension GL_OES_EGL_image_external : require\n"
                   "uniform samplerExternalOES u_texture;\n%s#define STAGE_FILTER\n%s",
                   texture_prelude, texture_main);
+    static const char *const glyph_attributes[] = {"a_position", "a_uv", "a_color", "a_tint",
+                                                   NULL};
     struct {
         struct program *program;
-        const char *fragment;
+        const char *vertex, *fragment;
+        const char *const *attributes;
     } programs[] = {
-        {&renderer->texture, texture.data},
-        {&renderer->blur_down, blur_down_fragment},
-        {&renderer->blur_up, blur_up_fragment},
+        {&renderer->texture, vertex_shader, texture.data, shared_attributes},
+        {&renderer->blur_down, vertex_shader, blur_down_fragment, shared_attributes},
+        {&renderer->blur_up, vertex_shader, blur_up_fragment, shared_attributes},
+        {&renderer->glyph_program, glyph_vertex_shader, glyph_fragment, glyph_attributes},
     };
     /* Every program is started before any is waited for, so they build together. */
     struct build builds[ARRAY_LENGTH(programs) + 1];
     for (size_t i = 0; i < ARRAY_LENGTH(programs); i++)
-        builds[i] = start_shared(programs[i].fragment);
+        builds[i] = start_program(programs[i].vertex, programs[i].fragment, programs[i].attributes);
     builds[ARRAY_LENGTH(programs)] = start_shared(external.data);
     renderer->passthrough = start_shaded(NULL, &passthrough_effect, false, false);
     struct strbuf error;
@@ -955,7 +1009,7 @@ static void destroy_blur_chain(struct blur_chain *chain) {
 void render_destroy(struct renderer *renderer) {
     if (!renderer) return;
     struct program *programs[] = {&renderer->texture, &renderer->external, &renderer->blur_down,
-                                  &renderer->blur_up};
+                                  &renderer->blur_up, &renderer->glyph_program};
     for (size_t i = 0; i < ARRAY_LENGTH(programs); i++) destroy_program(programs[i]);
     destroy_shaded(renderer->passthrough);
     VEC_FOR(&renderer->rasters, struct slot_entry, entry) destroy_raster(entry->value);
@@ -970,6 +1024,7 @@ void render_destroy(struct renderer *renderer) {
     vec_finish(&renderer->effect_targets);
     free(renderer->batch);
     if (renderer->batch_buffer) glDeleteBuffers(1, &renderer->batch_buffer);
+    for (int i = 0; i < renderer->page_count; i++) gl_delete_texture(renderer->pages[i].texture);
     while (renderer->buffer_targets.length)
         render_forget_buffer(renderer,
                              ((struct buffer_target *)renderer->buffer_targets.data)->key);
@@ -1086,7 +1141,8 @@ static void point_attributes(struct renderer *renderer) {
 /* Draw what is batched so far, as one draw, and point the attributes back. */
 static void flush_batch(struct renderer *renderer) {
     if (!renderer->batch_vertices) return;
-    use(renderer, &renderer->batch_shaded->program);
+    bool glyphs = renderer->batch_kind == BATCH_GLYPHS;
+    use(renderer, glyphs ? &renderer->glyph_program : &renderer->batch_shaded->program);
     int stride = renderer->batch_stride, data = (stride - BATCH_GEOMETRY) / 4;
     size_t floats = (size_t)renderer->batch_vertices * stride;
     /* A big batch goes up in one copy, where the driver would copy client arrays attribute
@@ -1105,8 +1161,15 @@ static void flush_batch(struct renderer *renderer) {
     const GLsizei bytes = stride * (GLsizei)sizeof(float);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(0));
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(3));
+    if (glyphs) {
+        glVertexAttribPointer(2, 4, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(5));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 1, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(9));
+        glBindTexture(GL_TEXTURE_2D, renderer->pages[renderer->batch_page].texture);
+        data = 2;
+    }
     /* Values from attribute 2 on, which unbatched draws read as texture coordinates. */
-    for (int k = 0; k < data; k++) {
+    for (int k = 0; k < data && !glyphs; k++) {
         if (k) glEnableVertexAttribArray((GLuint)(2 + k));
         glVertexAttribPointer((GLuint)(2 + k), 4, GL_FLOAT, GL_FALSE, bytes,
                               AT_FLOAT(BATCH_GEOMETRY + 4 * k));
@@ -1140,12 +1203,13 @@ static void pack_batch_values(const struct render_shading *shading, double opaci
                layout->counts[i] * sizeof(float));
 }
 
-/* Room for COUNT more vertices of STRIDE floats in the batch of PROGRAM's paints; a batch
- * of another program is drawn first. */
-static float *batch_reserve(struct renderer *renderer, struct shaded *program, int stride,
-                            int count) {
+/* Room for COUNT more vertices of STRIDE floats in a batch of KIND, of PROGRAM's paints
+ * or of PAGE's glyphs; a batch of anything else is drawn first. */
+static float *batch_reserve(struct renderer *renderer, enum batch_kind kind, struct shaded *program,
+                            int page, int stride, int count) {
     if (renderer->batch_vertices &&
-        (renderer->batch_shaded != program || renderer->batch_stride != stride ||
+        (renderer->batch_kind != kind || renderer->batch_shaded != program ||
+         renderer->batch_page != page || renderer->batch_stride != stride ||
          (size_t)(renderer->batch_vertices + count) * stride > BATCH_FLOATS))
         flush_batch(renderer);
     size_t need = (size_t)(renderer->batch_vertices + count) * stride;
@@ -1155,7 +1219,9 @@ static float *batch_reserve(struct renderer *renderer, struct shaded *program, i
         renderer->batch = xrealloc(renderer->batch, capacity * sizeof(float));
         renderer->batch_capacity = capacity;
     }
+    renderer->batch_kind = kind;
     renderer->batch_shaded = program;
+    renderer->batch_page = page;
     renderer->batch_stride = stride;
     float *out = renderer->batch + (size_t)renderer->batch_vertices * stride;
     renderer->batch_vertices += count;
@@ -1167,11 +1233,69 @@ static float *batch_reserve(struct renderer *renderer, struct shaded *program, i
 static void batch_paint(struct renderer *renderer, struct shaded *shaded, const float *values,
                         int components, int count) {
     int stride = BATCH_GEOMETRY + components;
-    float *out = batch_reserve(renderer, shaded, stride, count);
+    float *out = batch_reserve(renderer, BATCH_PAINTS, shaded, 0, stride, count);
     const float *in = renderer->vertices;
     for (int i = 0; i < count; i++, out += stride, in += 7) {
         memcpy(out, in, BATCH_GEOMETRY * sizeof(float));
         memcpy(out + BATCH_GEOMETRY, values, components * sizeof(float));
+    }
+}
+
+/* Glyphs: the atlas pages' textures; the main thread places glyphs on them. */
+
+/* TEXTURE, a page, cleared to transparent pixels; a new one when 0. A glyph's quad samples
+ * the empty pixels around it, which must be transparent. */
+static GLuint clear_page(GLuint texture) {
+    void *zeros = xcalloc((size_t)ATLAS_SIZE * ATLAS_SIZE, 4);
+    if (texture) gl_upload_texture(texture, ATLAS_SIZE, ATLAS_SIZE, zeros, GL_RGBA);
+    else texture = gl_create_texture(ATLAS_SIZE, ATLAS_SIZE, zeros, GL_RGBA);
+    free(zeros);
+    return texture;
+}
+
+void render_atlas_upload(struct renderer *renderer, int page, int x, int y, int width, int height,
+                         const void *pixels) {
+    if (page < 0 || page >= ATLAS_PAGES) return;
+    flush_batch(renderer);
+    /* A page is made when the main thread first places a glyph on it. */
+    while (renderer->page_count <= page)
+        renderer->pages[renderer->page_count++].texture = clear_page(0);
+    glBindTexture(GL_TEXTURE_2D, renderer->pages[page].texture);
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, x, y, width, height, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+    glBindTexture(GL_TEXTURE_2D, 0);
+}
+
+void render_atlas_clear(struct renderer *renderer) {
+    flush_batch(renderer);
+    for (int i = 0; i < renderer->page_count; i++) clear_page(renderer->pages[i].texture);
+}
+
+void render_draw_glyph(struct renderer *renderer, int page, int gx, int gy, int width, int height,
+                       bool colored, struct mat3 t, struct box box, const float color[4]) {
+    /* A glyph's page was uploaded to before it is drawn from. */
+    if (!width || !height || page < 0 || page >= renderer->page_count) return;
+    float *out = batch_reserve(renderer, BATCH_GLYPHS, NULL, page, GLYPH_STRIDE, 6);
+    static const int corners[6] = {0, 1, 2, 1, 3, 2};
+    /* One empty texel around the glyph: drawn scaled, its edge fades into it. */
+    double texel_x = box.width / width, texel_y = box.height / height;
+    box = (struct box){box.x - texel_x, box.y - texel_y, box.width + 2 * texel_x,
+                       box.height + 2 * texel_y};
+    float u0 = (float)(gx - 1) / ATLAS_SIZE, v0 = (float)(gy - 1) / ATLAS_SIZE;
+    float u1 = (float)(gx + width + 1) / ATLAS_SIZE;
+    float v1 = (float)(gy + height + 1) / ATLAS_SIZE;
+    float tint = colored ? 0 : 1;
+    for (int i = 0; i < 6; i++, out += GLYPH_STRIDE) {
+        int corner = corners[i];
+        double x = corner & 1 ? box.x + box.width : box.x;
+        double y = corner >= 2 ? box.y + box.height : box.y;
+        out[0] = (float)(t.a * x + t.c * y + t.e);
+        out[1] = (float)(t.b * x + t.d * y + t.f);
+        out[2] = (float)(t.g * x + t.h * y + t.i);
+        out[3] = corner & 1 ? u1 : u0;
+        out[4] = corner >= 2 ? v1 : v0;
+        memcpy(out + 5, color, 4 * sizeof(float));
+        out[9] = tint;
     }
 }
 

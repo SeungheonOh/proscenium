@@ -97,6 +97,8 @@ struct item {
             uint64_t slot, key;
             double scale, opacity, color[4];
             struct media_text_metrics metrics;
+            /* Drawn as glyphs from the atlas rather than as a raster. */
+            bool glyphs;
         } text;
         struct {
             struct mat3 transform;
@@ -182,6 +184,8 @@ struct item_draw {
     /* Text or an image drawn from a raster in SLOT (0 for none), text's at RASTER_SCALE. */
     uint64_t slot;
     double raster_scale;
+    /* Text drawn as glyphs: COUNT from FIRST of the frame's glyphs. */
+    size_t first, count;
     /* Set where it is drawn: a surface drawn, for presentation feedback. */
     bool presented;
 };
@@ -196,6 +200,7 @@ struct display_frame {
     struct output *output;
     struct item_set *sets[SET_COUNT];
     struct vec draws[SET_COUNT]; /* struct item_draw, one per item */
+    struct vec glyphs;           /* struct content_glyph */
     struct vec uploads;          /* struct content_upload */
     struct vec locks;            /* struct wlr_buffer *: buffers it draws from */
     /* Surfaces it shows, drawn or not: their mipmaps stay (uint64_t item keys). */
@@ -818,10 +823,14 @@ static void emit_text(struct emit *e, struct node *node, struct mat3 t, double w
             item->text.opacity = opacity;
             memcpy(item->text.color, color, sizeof color);
             item->text.metrics = *metrics;
+            /* Text through a filter stays a raster: filters are compiled into the
+             * programs drawing textures. */
+            item->text.glyphs =
+                !filter->shading && content_text_glyphs(e->server, node, raster_scale);
             item->signature = signature_of(e, &item->text, sizeof item->text);
             set_node(item, node);
             filter_item(e, item, node, filter);
-            content_touch_raster(e->server, slot);
+            if (!item->text.glyphs) content_touch_raster(e->server, slot);
         }
     }
     if (hit_target(e, node)) add_hit(e, node, inverse, parent_inverse, true, width, height, NULL);
@@ -1760,7 +1769,7 @@ static int compare_holes(const void *a, const void *b) {
 /*
  * Frames. A frame is what drawing reads, prepared on the main thread: the item sets it
  * draws, held; what each item draws from (a surface's texture, its buffer locked; a
- * raster's slot); the uploads that put rasters in place; and
+ * raster's slot; text's glyphs); the uploads that put rasters and glyphs in place; and
  * the passes. Drawing reads nothing else, so it can run on the render thread while the
  * main thread builds the next frame. A frame whose items call into main-thread state
  * while drawing (web pages) is SYNC: the main thread waits for it.
@@ -1859,6 +1868,19 @@ static void draw_item(struct display_frame *frame, int set, int index) {
         break;
     }
     case ITEM_TEXT: {
+        if (item->text.glyphs) {
+            double alpha = item->text.color[3] * item->text.opacity;
+            const float color[4] = {(float)(item->text.color[0] * alpha),
+                                    (float)(item->text.color[1] * alpha),
+                                    (float)(item->text.color[2] * alpha), (float)alpha};
+            for (size_t g = draw->first; g < draw->first + draw->count; g++) {
+                const struct content_glyph *glyph = vec_at(&frame->glyphs, g);
+                render_draw_glyph(renderer, glyph->page, glyph->x, glyph->y, glyph->width,
+                                  glyph->height, glyph->colored, item->text.transform, glyph->box,
+                                  color);
+            }
+            break;
+        }
         struct render_raster *raster = draw->slot ? render_slot_raster(renderer, draw->slot) : NULL;
         if (!raster) return;
         /* It may be one at another scale, until the worker's arrives. */
@@ -2080,7 +2102,20 @@ static void prepare_frame(struct display_frame *frame, bool all) {
                 break;
             }
             case ITEM_TEXT:
-                if (content_text_prepare_raster(server, item->node, output->index,
+                if (item->text.glyphs) {
+                    draw->first = frame->glyphs.length;
+                    bool complete = content_text_prepare_glyphs(
+                        server, item->node, item->text.scale, &frame->glyphs, &frame->uploads);
+                    draw->count = frame->glyphs.length - draw->first;
+                    /* Text short of time or atlas room this frame (left out, or resampled
+                     * from another scale) draws again with a later one. */
+                    if (!complete) {
+                        const struct item *root = item;
+                        while (root->owner >= 0) root = vec_at(items, (size_t)root->owner);
+                        add_box_damage(output->display, root->bounds);
+                        output_request_frame(output);
+                    }
+                } else if (content_text_prepare_raster(server, item->node, output->index,
                                                        item->text.slot, item->text.key,
                                                        item->text.scale, item->text.color,
                                                        &frame->uploads, &draw->raster_scale)) {
@@ -2109,6 +2144,7 @@ static struct display_frame *frame_new(struct output *output) {
         frame->sets[set]->refs++;
         vec_init(&frame->draws[set], sizeof(struct item_draw));
     }
+    vec_init(&frame->glyphs, sizeof(struct content_glyph));
     vec_init(&frame->uploads, sizeof(struct content_upload));
     vec_init(&frame->locks, sizeof(struct wlr_buffer *));
     vec_init(&frame->shown_keys, sizeof(uint64_t));
@@ -2161,6 +2197,7 @@ void display_frame_free(struct display_frame *frame) {
         item_set_release(frame->sets[set]);
         vec_finish(&frame->draws[set]);
     }
+    vec_finish(&frame->glyphs);
     vec_finish(&frame->uploads);
     vec_finish(&frame->locks);
     vec_finish(&frame->shown_keys);

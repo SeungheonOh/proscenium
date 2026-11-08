@@ -16,7 +16,7 @@ renders it with GLES and routes input.
 - **Render thread** (`renderthread.c`): an EGL context of its own in wlroots'
   share group, where every frame is drawn. The main thread builds a frame (the
   item sets it draws, held; client textures resolved and their buffers held;
-  rasters to upload; the passes), hands it over, and builds the next
+  rasters and glyphs to upload; the passes), hands it over, and builds the next
   one while it draws, at most two ahead of the screen. Fences order each side's
   GL work before the other reads it. A frame drawing web pages, a checked frame
   and a capture draw while the main thread waits. `PROSCENIUM_RENDER_THREAD=0`
@@ -49,10 +49,10 @@ renders it with GLES and routes input.
 | `window.c` | Windows: ids, metadata, configure, focus, snapshots. |
 | `xdg.c`, `xwayland.c` | xdg-shell and X11 clients as windows; popups, decorations, override-redirect children. |
 | `display.c` | Per-output display lists, damage, repair passes, occlusion, effects, hits, captures; frames: building, preparing, drawing. |
-| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints, output buffers as framebuffers; render targets. |
+| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints, the glyph atlas's pages, output buffers as framebuffers; render targets. |
 | `renderthread.c` | The render thread: its context, the job queue, fences between the two contexts. |
-| `content.c` | Text and image nodes on top of `media.c`; what is uploaded where frames draw: rasters by slot. |
-| `media.c` | Pango text layout and rasters, image decoding, the worker. |
+| `content.c` | Text and image nodes on top of `media.c`; what is uploaded where frames draw: rasters by slot, glyphs on the atlas. |
+| `media.c` | Pango text layout (laid out once per style, shared by measuring, layout and drawing), glyph lists and glyph rasters, text rasters, image decoding, the worker. |
 | `webnode.c`, `web.c` | Web nodes: pages on the CEF helper (`web/`), their frames and input. |
 | `input.c` | Keyboards, pointer, gestures; shortcuts, bindings, picking, events, cursors, drags. |
 | `manip.c` | Native moves, resizes, pans and zooms. |

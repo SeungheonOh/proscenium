@@ -8,6 +8,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 /* Longest edge of any text or image texture, in pixels. */
@@ -134,9 +135,15 @@ struct media_text_layout {
     uint64_t serial;
     /* The node prop revision it was last found current for. */
     uint64_t prop_revision;
+    /* Private: the owner thread's laid-out text, held while this layout is current. */
+    struct media_laid_out *laid_out;
 };
 
-/* Lay STYLE out on the owner thread and return its metrics, as a text node would show it. */
+/*
+ * Lay STYLE out on the owner thread and return its metrics, as a text node would show it.
+ * The owner thread keeps what it laid out for a while: measuring a text, laying its node
+ * out and rasterizing it on the owner thread lay it out once.
+ */
 void media_text_measure(struct media *media, const struct media_text_style *style,
                         struct media_text_metrics *metrics);
 /*
@@ -162,6 +169,49 @@ struct media_text_box media_text_raster_box(const struct media_text_metrics *met
 bool media_text_rasterize(struct media *media, const struct media_text_style *style,
                           const struct media_text_metrics *metrics, struct media_color color,
                           double scale, struct media_text_raster *raster);
+/* A glyph a text draws: MEDIA's number for its font, its index in the font, and its
+ * origin in logical pixels from the layout's origin. Glyphs, their fonts and their
+ * numbers belong to the owner thread. */
+struct media_glyph {
+    uint32_t font, glyph;
+    double x, y;
+};
+
+/*
+ * The glyphs LAYOUT draws, in order, for drawing them one by one from an atlas, with
+ * COUNT set; NULL when Pango has to draw it: markup, or a glyph its fonts lack, which
+ * Pango draws as a box. Valid while LAYOUT holds its laid-out text, until
+ * media_glyphs_start_over.
+ */
+const struct media_glyph *media_text_glyphs(struct media *media,
+                                            const struct media_text_layout *layout, size_t *count);
+/*
+ * Past a few hundred fonts held for glyphs, let them go: font numbers start over, and
+ * texts find their glyphs again. True when it did, for whatever glyphs were kept by
+ * font number (an atlas) to start over too.
+ */
+bool media_glyphs_start_over(struct media *media);
+
+/* One glyph as cairo draws it: premultiplied RGBA, WIDTH x HEIGHT tightly packed, its
+ * first pixel (LEFT, TOP) device pixels from its origin's whole pixel. COLORED glyphs
+ * (emoji) keep their colors; the rest are white, for the text's color to tint. */
+struct media_glyph_mask {
+    uint8_t *pixels;
+    int width, height, left, top;
+    bool colored;
+};
+
+/*
+ * Rasterize GLYPH of FONT at SCALE device pixels per logical pixel with its origin
+ * PHASE_X and PHASE_Y (0 to 3) quarter pixels past a whole pixel, which is where cairo
+ * draws a glyph at any position, rounded to the nearest quarter pixel. Cairo draws a
+ * colored glyph at the nearest whole pixel instead, so its image at phase 0 serves
+ * every phase. A glyph without ink comes out 0x0. False when it cannot; free MASK's
+ * pixels with free().
+ */
+bool media_glyph_rasterize(struct media *media, uint32_t font, uint32_t glyph, double scale,
+                           int phase_x, int phase_y, struct media_glyph_mask *mask);
+
 /*
  * Rasterize on the worker; DONE runs from media_dispatch with the raster, which
  * the callee then owns, or with a cleared raster and an error. The job copies

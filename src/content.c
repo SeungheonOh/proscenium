@@ -1,18 +1,20 @@
 /*
  * Text and image nodes.
  *
- * A text node measures again only when a layout property changes, and keeps one
- * raster per output, made again when its text, color or raster scale changes.
- * While its on-screen scale changes from frame to frame the raster scale snaps
- * to half-octave steps; the first still frame renders it exactly. Text only
- * rescaled is rasterized on the media worker while the raster at hand is drawn
- * scaled; new text is rasterized at once while the frame has spare time, unless
- * it is large enough to take a frame's worth of it, which the worker does. Images
- * are shared by path, decode on the worker, and release their textures a while
- * after they were last on screen.
+ * A text node measures again only when a layout property changes. Plain text of a
+ * modest size draws as glyphs from a shared atlas; other text keeps one raster per
+ * output, made again when its text, color or raster scale changes. While its
+ * on-screen scale changes from frame to frame the raster scale snaps to half-octave
+ * steps; the first still frame renders it exactly. Text only rescaled is rasterized
+ * on the media worker while the raster at hand is drawn scaled; new text is
+ * rasterized at once while the frame has spare time, unless it is large enough to
+ * take a frame's worth of it, which the worker does. Images are shared by path,
+ * decode on the worker, and release their textures a while after they were last on
+ * screen.
  *
- * The main thread decides what each texture holds (the raster mirror) and hands the
- * pixels to the frame as uploads, which the renderer puts in place where it draws.
+ * The main thread decides what each texture holds (the raster mirror, the atlas's
+ * packing) and hands the pixels to the frame as uploads, which the renderer puts in
+ * place where it draws.
  */
 #include "content.h"
 
@@ -26,13 +28,21 @@
 
 /* Device pixels of new text rasterized during a frame; larger text goes to the worker. */
 #define INLINE_TEXT_PIXELS (512 * 256)
-/* Seconds a frame may spend rasterizing new text itself. */
+/* Seconds a frame may spend rasterizing text and glyphs itself. */
 #define TEXT_SPARE 0.003
+/* Font size in device pixels above which text is a raster rather than glyphs, which
+ * would fill the atlas. */
+#define GLYPH_PIXELS_MAX 192
 
 struct text_cache {
     struct media_text_layout layout;
     /* The layout serial last reported through a measure event. */
     uint64_t reported;
+    /* The scale its glyphs last all drew at: they stand in for ones not made yet at another. */
+    double glyph_scale;
+    /* The layout serial whose glyphs cannot all be on the atlas (no room, or one cairo
+     * cannot draw alone): that layout draws as a raster. */
+    uint64_t raster_only;
 };
 
 struct image_cache {
@@ -177,6 +187,221 @@ static struct raster_entry *raster_entry(struct server *server, uint64_t slot) {
 void content_touch_raster(struct server *server, uint64_t slot) {
     struct raster_entry *entry = raster_entry(server, slot);
     if (entry) entry->used = now_seconds();
+}
+
+/* Glyphs: the atlas's pages as the main thread packs them; the textures are the renderer's. */
+#define ATLAS_SHELVES 128
+
+struct atlas_shelf {
+    int y, height, x;
+};
+
+struct atlas_page {
+    int shelf_count, bottom;
+    struct atlas_shelf shelves[ATLAS_SHELVES];
+};
+
+struct atlas_glyph {
+    uint64_t key;
+    /* Where it lies on which page; 0x0 for a glyph without ink. */
+    int page, x, y, width, height;
+    /* Its first pixel's place from the glyph's origin, in device pixels. */
+    int left, top;
+    bool colored;
+};
+
+struct atlas {
+    struct atlas_page pages[RENDER_ATLAS_PAGES];
+    int page_count;
+    struct idmap glyphs; /* struct atlas_glyph * by key */
+    /* No room was left: the next frame starts it over. */
+    bool full;
+};
+
+static void reset_atlas(struct atlas *atlas) {
+    size_t index = 0;
+    int64_t key;
+    void *value;
+    while (idmap_next(&atlas->glyphs, &index, &key, &value)) free(value);
+    idmap_clear(&atlas->glyphs);
+    atlas->page_count = 0;
+    atlas->full = false;
+}
+
+/* Where WIDTH x HEIGHT pixels go on PAGE, two empty pixels from the rest; false if they do not
+ * fit. A glyph drawn scaled samples the empty pixel around it, so it fades out as a raster does. */
+static bool page_place(struct atlas_page *page, int width, int height, int *x, int *y) {
+    int w = width + 2, h = height + 2;
+    struct atlas_shelf *best = NULL;
+    for (int i = 0; i < page->shelf_count; i++) {
+        struct atlas_shelf *shelf = &page->shelves[i];
+        if (shelf->height >= h && shelf->height <= h + h / 4 + 2 &&
+            shelf->x + w <= RENDER_ATLAS_SIZE && (!best || shelf->height < best->height))
+            best = shelf;
+    }
+    if (!best) {
+        int shelf_height = (h + 3) / 4 * 4;
+        if (page->shelf_count == ATLAS_SHELVES || page->bottom + shelf_height > RENDER_ATLAS_SIZE)
+            return false;
+        best = &page->shelves[page->shelf_count++];
+        *best = (struct atlas_shelf){page->bottom, shelf_height, 2};
+        page->bottom += shelf_height;
+    }
+    *x = best->x;
+    *y = best->y;
+    best->x += w;
+    return true;
+}
+
+/* A place for WIDTH x HEIGHT pixels: on the last page, or a new one; false when full. */
+static bool atlas_place(struct atlas *atlas, int width, int height, int *page, int *x, int *y) {
+    if (width > RENDER_ATLAS_SIZE - 4 || height > RENDER_ATLAS_SIZE - 4) return false;
+    *page = atlas->page_count - 1;
+    if (*page >= 0 && page_place(&atlas->pages[*page], width, height, x, y)) return true;
+    if (atlas->page_count == RENDER_ATLAS_PAGES) {
+        atlas->full = true;
+        return false;
+    }
+    *page = atlas->page_count++;
+    atlas->pages[*page] = (struct atlas_page){.bottom = 2};
+    return page_place(&atlas->pages[*page], width, height, x, y);
+}
+
+static uint64_t glyph_key(const struct media_glyph *glyph, double scale, int phase_x, int phase_y) {
+    uint32_t parts[4] = {glyph->font, glyph->glyph, (uint32_t)phase_x, (uint32_t)phase_y};
+    return hash_bytes(hash_bytes(HASH_SEED, parts, sizeof parts), &scale, sizeof scale);
+}
+
+/*
+ * GLYPH at SCALE and phase on the atlas. One not there yet is rasterized when RASTERIZE, its
+ * time charged to the frame's, and uploaded by UPLOADS. NULL when it is not made; and when it
+ * cannot be (no room on the atlas until the next frame, or cairo failed), clears POSSIBLE. A
+ * colored glyph, which cairo draws at a whole pixel whatever the phase, shares its image at
+ * phase 0.
+ */
+static const struct atlas_glyph *atlas_glyph(struct server *server, const struct media_glyph *glyph,
+                                             double scale, int phase_x, int phase_y,
+                                             bool rasterize, struct vec *uploads, bool *possible) {
+    struct atlas *atlas = server->atlas;
+    uint64_t key = glyph_key(glyph, scale, phase_x, phase_y);
+    struct atlas_glyph *entry = idmap_get(&atlas->glyphs, (int64_t)key);
+    if (entry) return entry;
+    if (atlas->full) *possible = false;
+    if (!rasterize || atlas->full) return NULL;
+    double since = now_seconds();
+    struct media_glyph_mask mask;
+    bool made = media_glyph_rasterize(server->media, glyph->font, glyph->glyph, scale, phase_x,
+                                      phase_y, &mask);
+    server->text_spare -= now_seconds() - since;
+    if (!made) {
+        *possible = false;
+        return NULL;
+    }
+    struct atlas_glyph placed = {.key = key,
+                                 .width = mask.width,
+                                 .height = mask.height,
+                                 .left = mask.left,
+                                 .top = mask.top,
+                                 .colored = mask.colored};
+    if (mask.colored && (phase_x || phase_y)) {
+        free(mask.pixels);
+        const struct atlas_glyph *base =
+            atlas_glyph(server, glyph, scale, 0, 0, rasterize, uploads, possible);
+        if (!base) return NULL;
+        placed = *base;
+        placed.key = key;
+    } else if (mask.width) {
+        if (!atlas_place(atlas, mask.width, mask.height, &placed.page, &placed.x, &placed.y)) {
+            free(mask.pixels);
+            *possible = false;
+            return NULL;
+        }
+        *(struct content_upload *)vec_push(uploads) = (struct content_upload){
+            .kind = CONTENT_GLYPH,
+            .page = placed.page,
+            .x = placed.x,
+            .y = placed.y,
+            .pixels = {.data = mask.pixels,
+                       .width = mask.width,
+                       .height = mask.height,
+                       .stride = mask.width * 4,
+                       .format = MEDIA_PIXELS_RGBA,
+                       .owner = mask.pixels,
+                       .release = free},
+        };
+    } else {
+        free(mask.pixels);
+    }
+    entry = xmalloc(sizeof *entry);
+    *entry = placed;
+    idmap_put(&atlas->glyphs, (int64_t)key, entry);
+    return entry;
+}
+
+/* GLYPH as drawn at SCALE, into OUT; false when it is not on the atlas and not made now. */
+static bool place_glyph(struct server *server, const struct media_glyph *glyph, double scale,
+                        bool rasterize, struct vec *uploads, bool *possible,
+                        struct content_glyph *out) {
+    /* Where cairo draws a glyph: its origin rounded to the nearest quarter device pixel,
+     * which picks one of four phases each way; a colored one at the nearest whole pixel. */
+    double device_x = glyph->x * scale, device_y = glyph->y * scale;
+    long quarter_x = lround(device_x * 4), quarter_y = lround(device_y * 4);
+    int phase_x = (int)(quarter_x & 3), phase_y = (int)(quarter_y & 3);
+    const struct atlas_glyph *entry =
+        atlas_glyph(server, glyph, scale, phase_x, phase_y, rasterize, uploads, possible);
+    if (!entry) return false;
+    long x = entry->colored ? lround(device_x) : (quarter_x - phase_x) / 4;
+    long y = entry->colored ? lround(device_y) : (quarter_y - phase_y) / 4;
+    *out = (struct content_glyph){
+        .page = entry->page,
+        .x = entry->x,
+        .y = entry->y,
+        .width = entry->width,
+        .height = entry->height,
+        .colored = entry->colored,
+        .box = {(x + entry->left) / scale, (y + entry->top) / scale, entry->width / scale,
+                entry->height / scale},
+    };
+    return true;
+}
+
+bool content_text_glyphs(struct server *server, struct node *node, double scale) {
+    struct text_cache *cache = node->cache;
+    if (!cache || cache->raster_only == cache->layout.serial) return false;
+    double size = cache->layout.style.size;
+    if (!(size * scale <= GLYPH_PIXELS_MAX)) return false;
+    size_t count;
+    return media_text_glyphs(server->media, &cache->layout, &count) != NULL;
+}
+
+bool content_text_prepare_glyphs(struct server *server, struct node *node, double scale,
+                                 struct vec *glyphs, struct vec *uploads) {
+    struct text_cache *cache = node->cache;
+    size_t count;
+    const struct media_glyph *list =
+        cache ? media_text_glyphs(server->media, &cache->layout, &count) : NULL;
+    if (!list) return true;
+    size_t first = glyphs->length;
+    bool sharp = true, whole = true, possible = true;
+    for (size_t i = 0; i < count && whole; i++) {
+        struct content_glyph placed;
+        if (!place_glyph(server, &list[i], scale, server->text_spare > 0, uploads, &possible,
+                         &placed)) {
+            /* Out of time: the glyph from the scale the text last drew whole at, resampled. */
+            sharp = false;
+            double before = cache->glyph_scale;
+            whole = before > 0 && before != scale &&
+                    place_glyph(server, &list[i], before, false, uploads, &possible, &placed);
+            if (!whole) break;
+        }
+        if (placed.width) *(struct content_glyph *)vec_push(glyphs) = placed;
+    }
+    /* Text short of a glyph waits whole; one whose glyphs cannot all be had is a raster. */
+    if (!whole) glyphs->length = first;
+    if (!possible) cache->raster_only = cache->layout.serial;
+    if (!sharp) return false;
+    cache->glyph_scale = scale;
+    return true;
 }
 
 struct text_request {
@@ -373,7 +598,12 @@ void content_apply_uploads(struct renderer *renderer, const struct vec *uploads)
             render_install_raster(renderer, upload->slot, upload->pixels.data,
                                   upload->pixels.width, upload->pixels.height, upload->format);
             break;
+        case CONTENT_GLYPH:
+            render_atlas_upload(renderer, upload->page, upload->x, upload->y, upload->pixels.width,
+                                upload->pixels.height, upload->pixels.data);
+            break;
         case CONTENT_DROP_RASTER: render_drop_raster(renderer, upload->slot); break;
+        case CONTENT_CLEAR_ATLAS: render_atlas_clear(renderer); break;
         }
     }
 }
@@ -388,6 +618,13 @@ void content_frame_begin(struct server *server, struct vec *uploads) {
     VEC_FOR(&server->pending_uploads, struct content_upload, upload)
         *(struct content_upload *)vec_push(uploads) = *upload;
     vec_clear(&server->pending_uploads);
+    /* Glyphs on the atlas are keyed by font numbers, which may start over. */
+    bool fonts_over = media_glyphs_start_over(server->media);
+    if (server->atlas->full || fonts_over) {
+        reset_atlas(server->atlas);
+        *(struct content_upload *)vec_push(uploads) =
+            (struct content_upload){.kind = CONTENT_CLEAR_ATLAS};
+    }
     server->text_spare = TEXT_SPARE;
 }
 
@@ -547,6 +784,8 @@ void content_init(struct server *server) {
     idmap_init(&server->text_jobs);
     idmap_init(&server->rasters);
     vec_init(&server->pending_uploads, sizeof(struct content_upload));
+    server->atlas = xcalloc(1, sizeof *server->atlas);
+    idmap_init(&server->atlas->glyphs);
     server->media = media_create(image_done, server);
     if (server->media)
         server->media_source = wl_event_loop_add_fd(server->loop, media_get_fd(server->media),
@@ -564,6 +803,12 @@ void content_finish(struct server *server) {
     idmap_finish(&server->rasters);
     content_free_uploads(&server->pending_uploads);
     vec_finish(&server->pending_uploads);
+    if (server->atlas) {
+        reset_atlas(server->atlas);
+        idmap_finish(&server->atlas->glyphs);
+        free(server->atlas);
+        server->atlas = NULL;
+    }
     if (server->media_source) wl_event_source_remove(server->media_source);
     if (server->media) media_destroy(server->media);
     server->media = NULL;

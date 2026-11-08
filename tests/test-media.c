@@ -3,6 +3,7 @@
 #include "util.h"
 
 #include <dirent.h>
+#include <pango/pangocairo.h>
 #include <glob.h>
 #include <math.h>
 #include <poll.h>
@@ -33,6 +34,185 @@ static struct media_text_style style_of(const char *text) {
 
 static bool near(double a, double b, double tolerance) {
     return fabs(a - b) <= tolerance;
+}
+
+/*
+ * Shared layouts. Text laid out once serves every width that breaks its lines alike, and a
+ * line height is measured from the unspaced layout: both must give what laying the text
+ * out afresh gives.
+ */
+
+/* STYLE laid out by Pango with its line height's SPACING set, as media.c lays text out:
+ * the ground truth for its spaced metrics and glyphs. */
+static PangoLayout *pango_spaced_layout(const struct media_text_style *style, double *spacing) {
+    PangoFontMap *font_map = pango_cairo_font_map_new();
+    cairo_font_options_t *options = cairo_font_options_create();
+    cairo_font_options_set_hint_metrics(options, CAIRO_HINT_METRICS_OFF);
+    cairo_font_options_set_hint_style(options, CAIRO_HINT_STYLE_SLIGHT);
+    cairo_font_options_set_antialias(options, CAIRO_ANTIALIAS_GRAY);
+    PangoContext *context = pango_font_map_create_context(font_map);
+    pango_cairo_context_set_font_options(context, options);
+    pango_context_set_round_glyph_positions(context, FALSE);
+    PangoLayout *layout = pango_layout_new(context);
+    pango_layout_set_text(layout, style->text, -1);
+    PangoFontDescription *description = pango_font_description_new();
+    pango_font_description_set_family(description, style->font ? style->font : "sans-serif");
+    pango_font_description_set_absolute_size(description, style->size * PANGO_SCALE);
+    pango_font_description_set_weight(description, (PangoWeight)style->weight);
+    pango_layout_set_font_description(layout, description);
+    pango_layout_set_width(layout, style->width > 0 ? (int)nearbyint(style->width * PANGO_SCALE) : -1);
+    pango_layout_set_wrap(layout, PANGO_WRAP_WORD_CHAR);
+    pango_layout_set_alignment(layout, style->align == MEDIA_ALIGN_CENTER ? PANGO_ALIGN_CENTER
+                                       : style->align == MEDIA_ALIGN_END  ? PANGO_ALIGN_RIGHT
+                                                                          : PANGO_ALIGN_LEFT);
+    PangoRectangle logical;
+    pango_layout_get_extents(layout, NULL, &logical);
+    int lines = MAX(1, pango_layout_get_line_count(layout));
+    *spacing = style->line_height * style->size - logical.height / (double)PANGO_SCALE / lines;
+    pango_layout_set_spacing(layout, (int)nearbyint(*spacing * PANGO_SCALE));
+    pango_font_description_free(description);
+    g_object_unref(context);
+    cairo_font_options_destroy(options);
+    g_object_unref(font_map);
+    return layout;
+}
+
+/* STYLE's metrics as Pango gives them. */
+static struct media_text_metrics pango_metrics(const struct media_text_style *style) {
+    double spacing;
+    PangoLayout *layout = pango_spaced_layout(style, &spacing);
+    PangoRectangle ink, logical;
+    pango_layout_get_extents(layout, &ink, &logical);
+    double unit = PANGO_SCALE;
+    struct media_text_metrics metrics = {
+        .width = logical.width / unit,
+        .height = logical.height / unit,
+        .spacing = spacing,
+        .left = MIN(ink.x, logical.x) / unit,
+        .top = MIN(ink.y, logical.y) / unit,
+        .right = MAX(ink.x + ink.width, logical.x + logical.width) / unit,
+        .bottom = MAX(ink.y + ink.height, logical.y + logical.height) / unit,
+    };
+    g_object_unref(layout);
+    return metrics;
+}
+
+static bool same_metrics(const struct media_text_metrics *a, const struct media_text_metrics *b) {
+    return a->width == b->width && a->height == b->height && a->spacing == b->spacing &&
+           a->left == b->left && a->top == b->top && a->right == b->right &&
+           a->bottom == b->bottom;
+}
+
+/* Whether STYLE at WIDTH comes out alike laid out afresh and after it was laid out at
+ * LAID_WIDTH, a layout it may share. */
+static bool rewraps_alike(struct media_text_style style, double laid_width, double width) {
+    struct media *shared = media_create(NULL, NULL), *fresh = media_create(NULL, NULL);
+    struct media_text_layout first = {0}, second = {0}, alone = {0};
+    style.width = laid_width;
+    media_text_layout_update(shared, &first, &style, 1);
+    style.width = width;
+    media_text_layout_update(shared, &second, &style, 1);
+    media_text_layout_update(fresh, &alone, &style, 1);
+    size_t count_shared, count_fresh;
+    const struct media_glyph *a = media_text_glyphs(shared, &second, &count_shared);
+    const struct media_glyph *b = media_text_glyphs(fresh, &alone, &count_fresh);
+    bool same = same_metrics(&second.metrics, &alone.metrics) && !a == !b &&
+                count_shared == count_fresh;
+    for (size_t g = 0; same && g < count_fresh; g++)
+        same = a[g].glyph == b[g].glyph && a[g].x == b[g].x && a[g].y == b[g].y;
+    media_text_layout_finish(&first);
+    media_text_layout_finish(&second);
+    media_text_layout_finish(&alone);
+    media_destroy(shared);
+    media_destroy(fresh);
+    return same;
+}
+
+static void test_shared_layouts(void) {
+    /* Spaced metrics, as Pango gives them, for texts and alignments that move lines. */
+    struct media *media = media_create(NULL, NULL);
+    /* Lines without ink count too: they have a place, centered or at the end. */
+    const char *texts[] = {paragraph, "one\ntwo\nthree", "Wide W, low g, high h",
+                           "\n\nblank lines\n", " ", "\n"};
+    const enum media_align aligns[] = {MEDIA_ALIGN_START, MEDIA_ALIGN_CENTER, MEDIA_ALIGN_END};
+    for (size_t t = 0; t < ARRAY_LENGTH(texts); t++) {
+        for (size_t a = 0; a < ARRAY_LENGTH(aligns); a++) {
+            struct media_text_style style = style_of(texts[t]);
+            style.width = 150;
+            style.align = aligns[a];
+            style.line_height = 1.6;
+            struct media_text_metrics measured, expected = pango_metrics(&style);
+            media_text_measure(media, &style, &measured);
+            CHECK(same_metrics(&measured, &expected),
+                  "spaced %zu/%zu: box %g,%g to %g,%g, Pango's %g,%g to %g,%g", t, a, measured.left,
+                  measured.top, measured.right, measured.bottom, expected.left, expected.top,
+                  expected.right, expected.bottom);
+        }
+    }
+
+    /* Glyphs lie on Pango's spaced baselines, blank lines counted. */
+    struct media_text_style blank = style_of("a\n\nb");
+    blank.line_height = 2;
+    double spacing;
+    PangoLayout *expected = pango_spaced_layout(&blank, &spacing);
+    PangoLayoutIter *iter = pango_layout_get_iter(expected);
+    while (pango_layout_iter_next_line(iter)) continue;
+    double last_baseline = pango_layout_iter_get_baseline(iter) / (double)PANGO_SCALE;
+    pango_layout_iter_free(iter);
+    g_object_unref(expected);
+    struct media_text_layout laid = {0};
+    media_text_layout_update(media, &laid, &blank, 1);
+    size_t count;
+    const struct media_glyph *glyphs = media_text_glyphs(media, &laid, &count);
+    CHECK(glyphs && count == 2 && near(glyphs[1].y, last_baseline, 1.0 / PANGO_SCALE),
+          "a glyph after a blank line at %g, Pango's baseline %g", glyphs ? glyphs[count - 1].y : 0,
+          last_baseline);
+    media_text_layout_finish(&laid);
+    media_destroy(media);
+
+    /* Widths shrinking reuse layouts; growing, they never can. Both see the same. */
+    struct media *shared = media_create(NULL, NULL), *fresh = media_create(NULL, NULL);
+    enum { WIDTHS = 60 };
+    struct media_text_metrics shrinking[WIDTHS];
+    struct media_text_layout layouts[WIDTHS] = {0};
+    for (int i = 0; i < WIDTHS; i++) {
+        struct media_text_style style = style_of(paragraph);
+        style.width = 420 - 6.13 * i;
+        style.line_height = 1.4;
+        media_text_layout_update(shared, &layouts[i], &style, 1);
+        shrinking[i] = layouts[i].metrics;
+    }
+    for (int i = WIDTHS - 1; i >= 0; i--) {
+        struct media_text_style style = style_of(paragraph);
+        style.width = 420 - 6.13 * i;
+        style.line_height = 1.4;
+        struct media_text_layout layout = {0};
+        media_text_layout_update(fresh, &layout, &style, 1);
+        CHECK(same_metrics(&layout.metrics, &shrinking[i]), "width %g: height %g shared, %g fresh",
+              style.width, shrinking[i].height, layout.metrics.height);
+        size_t count_shared, count_fresh;
+        const struct media_glyph *a = media_text_glyphs(shared, &layouts[i], &count_shared);
+        const struct media_glyph *b = media_text_glyphs(fresh, &layout, &count_fresh);
+        bool same = a && b && count_shared == count_fresh;
+        for (size_t g = 0; same && g < count_fresh; g++)
+            same = a[g].glyph == b[g].glyph && a[g].x == b[g].x && a[g].y == b[g].y;
+        CHECK(same, "width %g: glyphs differ", style.width);
+        media_text_layout_finish(&layout);
+    }
+    for (int i = 0; i < WIDTHS; i++) media_text_layout_finish(&layouts[i]);
+    media_destroy(shared);
+    media_destroy(fresh);
+
+    /* Pango breaks a narrower soft-hyphenated or tabbed text unlike a wider one. */
+    struct media_text_style hyphens = style_of("word1234l iword\u00AD1234\u00ADi wordam mi4");
+    hyphens.size = 24;
+    CHECK(rewraps_alike(hyphens, 166.778, 160.63), "soft hyphens rewrap unlike");
+    struct media_text_style tabs =
+        style_of("\u6F22\u5B57\t\u3000,-WW\u2010iWi  i/supercalifragilistic\n"
+                 "supercalifragilistic\u200B\u200BWim ");
+    tabs.font = "monospace";
+    tabs.size = 31;
+    CHECK(rewraps_alike(tabs, 182.848, 167.9766), "tabs rewrap unlike");
 }
 
 /* Check a raster of STYLE at SCALE against its metrics; return its pixel width. */
@@ -484,6 +664,7 @@ int main(void) {
     struct media *media = media_create(NULL, NULL);
     test_text(media);
     media_destroy(media);
+    test_shared_layouts();
     if (png && svg) {
         test_images(png, svg);
         test_worker(png, svg);

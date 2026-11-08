@@ -2,6 +2,7 @@
 
 #include <EGL/egl.h>
 #include <math.h>
+#include <stdio.h>
 #include <wlr/util/log.h>
 
 #include "shader.h"
@@ -118,12 +119,13 @@ static const char blur_up_fragment[] =
  * What paints and effects see. POSITION, SIZE, RADIUS, PIXEL and POINTER are in
  * the node's local units; colors are premultiplied, as the shader returns them.
  * Pixels read from a target, the effect's content or a backdrop, are found
- * through the rows of the transform to buffer pixels.
+ * through the rows of the transform to buffer pixels. A batched paint (below)
+ * gets its per-draw values as varyings instead of uniforms.
  */
 static const char director_prelude[] = "precision highp float;\n"
                                        "varying vec2 v_local;\n"
-                                       "uniform float u_opacity;\n"
-                                       "uniform float pixel;\n";
+                                       "%s float u_opacity;\n"
+                                       "%s float pixel;\n";
 
 static const char read_prelude[] =
     "uniform vec4 u_row_x;\n"
@@ -157,6 +159,19 @@ static const struct shader passthrough_effect = {
 #define MAX_BLUR_PASSES 5
 /* Vertices of the most triangles one draw takes: a ring's eight. */
 #define MAX_VERTICES 24
+/* Floats a batch of paints holds before it is drawn: 4 MB. */
+#define BATCH_FLOATS (1 << 20)
+/* Buffer pixels a paint covers at most to be batched. Varyings cost the GPU per pixel what
+ * uniforms do not, so a paint much bigger than this costs more batched than drawn alone. */
+#define BATCH_PIXELS (128 * 128)
+/* Floats of a batch above which it is drawn from a buffer rather than client memory: 32 KB. */
+#define BATCH_CLIENT_FLOATS 8192
+/* What a batched paint's vertex holds beyond its values: buffer position and local position. */
+#define BATCH_GEOMETRY 5
+/* Values one draw of a batched paint passes per vertex: what the prelude declares and
+ * every uniform, whole vec4 attributes. */
+#define BATCH_INPUTS_MAX (UNIFORMS_MAX + 6)
+#define BATCH_COMPONENTS_MAX (SHADER_COMPONENTS_MAX + 4 * 6)
 
 enum uniform {
     U_VIEWPORT,
@@ -283,11 +298,31 @@ struct shaded {
     float held[SHADER_COMPONENTS_MAX];
 };
 
+/*
+ * Where a batched paint's per-draw values lie in its vertices: input I, COUNT[I]
+ * components from SOURCE[I] of the values a draw gathers (opacity, pixel, size,
+ * radius, pointer, then the uniforms flattened), at OFFSET[I] of COMPONENTS, whole
+ * vec4s. Wider inputs come first, so none straddles two vec4s.
+ */
+struct batch_layout {
+    int count;
+    char names[BATCH_INPUTS_MAX][33];
+    int counts[BATCH_INPUTS_MAX], sources[BATCH_INPUTS_MAX], offsets[BATCH_INPUTS_MAX];
+    int components;
+};
+
 struct render_shader {
     const struct shader *shader;
     /* A paint's or effect's program; a filter's over ordinary textures, then over
      * external images, made on first use. */
     struct shaded *programs[2];
+    /* A paint reading neither its backdrop, its output nor its clock, whose values fit
+     * the driver's attributes and varyings, also has BATCH_PROGRAM, taking them per
+     * vertex: small draws of it back to back go to the GPU as one. Laid out on its first
+     * draw, where the driver's limits are known. */
+    bool laid_out, batched;
+    struct batch_layout layout;
+    struct shaded *batch_program;
 };
 
 struct renderer {
@@ -297,6 +332,8 @@ struct renderer {
     GLuint current;
     /* The driver builds programs on threads of its own (KHR_parallel_shader_compile). */
     bool parallel_compile;
+    /* The driver's vertex attributes and varying vectors, which batched paints must fit. */
+    GLint max_attributes, max_varyings;
     float vertices[MAX_VERTICES * 7];
     int viewport_width, viewport_height;
     /* Buffer pixel of the bound target's first pixel: nonzero inside an effect's content. */
@@ -311,6 +348,18 @@ struct renderer {
     double spare;
     /* When drawing last handed its commands to the GPU. */
     double submitted_at;
+    /* Paints of one batched program drawn and not yet sent: VERTICES of STRIDE floats in
+     * BATCH, which holds CAPACITY. Anything else that draws or changes GL state sends them
+     * first (flush_batch). */
+    struct shaded *batch_shaded;
+    int batch_vertices, batch_stride;
+    float *batch;
+    size_t batch_capacity;
+    /* The buffer a batch is drawn from: one copy, where client arrays are copied per attribute. */
+    GLuint batch_buffer;
+    /* The glScissor box last set, valid while SCISSOR_SET. */
+    int gl_scissor[4];
+    bool scissor_set;
 };
 
 const double RENDER_FULL_UV[8] = {0, 0, 1, 0, 0, 1, 1, 1};
@@ -344,17 +393,25 @@ static GLuint start_shader(GLenum kind, const char *source) {
     return shader;
 }
 
-/* Start building a program of the shared vertex shader and FRAGMENT. */
-static struct build start_program(const char *fragment) {
-    struct build build = {glCreateProgram(), start_shader(GL_VERTEX_SHADER, vertex_shader),
+/* Start building a program of VERTEX and FRAGMENT whose attributes NAMES, a NULL-ended
+ * list, take locations 0, 1, 2... */
+static struct build start_program(const char *vertex, const char *fragment,
+                                  const char *const *names) {
+    struct build build = {glCreateProgram(), start_shader(GL_VERTEX_SHADER, vertex),
                           start_shader(GL_FRAGMENT_SHADER, fragment)};
     glAttachShader(build.program, build.vertex);
     glAttachShader(build.program, build.fragment);
-    glBindAttribLocation(build.program, 0, "a_position");
-    glBindAttribLocation(build.program, 1, "a_local");
-    glBindAttribLocation(build.program, 2, "a_uv");
+    for (GLuint i = 0; names[i]; i++) glBindAttribLocation(build.program, i, names[i]);
     glLinkProgram(build.program);
     return build;
+}
+
+/* What the shared vertex shader reads. */
+static const char *const shared_attributes[] = {"a_position", "a_local", "a_uv", NULL};
+
+/* Start building a program of the shared vertex shader and FRAGMENT. */
+static struct build start_shared(const char *fragment) {
+    return start_program(vertex_shader, fragment, shared_attributes);
 }
 
 /* Finish BUILD into OUT, waiting for it if need be; false with ERROR filled. */
@@ -504,11 +561,13 @@ static const char *glsl_type(int count) {
     return count == 1 ? "float" : count == 2 ? "vec2" : "vec4";
 }
 
-/* Declare what SHADER reads of its node beyond the prelude, then its own uniforms. */
-static void declare_inputs(struct strbuf *text, const struct shader *shader) {
-    strbuf_puts(text, "uniform vec2 size;\nuniform float radius;\n");
-    if (shader->time) strbuf_puts(text, "uniform float time;\n");
-    if (shader->pointer) strbuf_puts(text, "uniform vec2 pointer;\n");
+/* Declare what SHADER reads of its node beyond the prelude, then its own uniforms, as
+ * QUALIFIER says: uniform, or varying in a batched paint. */
+static void declare_inputs(struct strbuf *text, const struct shader *shader,
+                           const char *qualifier) {
+    strbuf_printf(text, "%s vec2 size;\n%s float radius;\n", qualifier, qualifier);
+    if (shader->time) strbuf_printf(text, "%s float time;\n", qualifier);
+    if (shader->pointer) strbuf_printf(text, "%s vec2 pointer;\n", qualifier);
     /* Where the node lies on its output: projective maps between local units and
      * output-logical pixels, as rows, and the output's size. */
     if (shader->output)
@@ -528,26 +587,29 @@ static void declare_inputs(struct strbuf *text, const struct shader *shader) {
             "         / dot(stage_from_output_w.xyz, h);\n"
             "}\n");
     for (int i = 0; i < shader->uniform_count; i++)
-        strbuf_printf(text, "uniform %s %s;\n", glsl_type(shader->counts[i]), shader->names[i]);
+        strbuf_printf(text, "%s %s %s;\n", qualifier, glsl_type(shader->counts[i]),
+                      shader->names[i]);
     /* The director's lines number from 1 in compile errors. */
     strbuf_printf(text, "#line 1\n%s\n", shader->source);
 }
 
 /* The fragment shader running SHADER: a paint or an effect, or a filter of textures in
- * EXTERNAL images or ordinary ones. */
-static void shader_source(struct strbuf *text, const struct shader *shader, bool external) {
+ * EXTERNAL images or ordinary ones. A BATCHED paint takes its per-draw values as varyings. */
+static void shader_source(struct strbuf *text, const struct shader *shader, bool external,
+                          bool batched) {
     if (shader->stage == STAGE_FILTER) {
         if (external) strbuf_puts(text, "#extension GL_OES_EGL_image_external : require\n");
         strbuf_printf(text, "uniform %s u_texture;\n",
                       external ? "samplerExternalOES" : "sampler2D");
         strbuf_puts(text, texture_prelude);
-        declare_inputs(text, shader);
+        declare_inputs(text, shader, "uniform");
         strbuf_puts(text, "#define STAGE_FILTER color = filter(color, v_local);\n");
         strbuf_puts(text, texture_main);
         return;
     }
     bool effect = shader->stage == STAGE_EFFECT;
-    strbuf_puts(text, director_prelude);
+    const char *qualifier = batched ? "varying" : "uniform";
+    strbuf_printf(text, director_prelude, qualifier, qualifier);
     if (effect || shader->backdrop) strbuf_puts(text, read_prelude);
     if (effect)
         strbuf_puts(text, "uniform sampler2D u_content;\n"
@@ -559,19 +621,108 @@ static void shader_source(struct strbuf *text, const struct shader *shader, bool
                           "vec4 backdrop(vec2 position) {\n"
                           "  return texture2D(u_backdrop, stage_uv(position));\n"
                           "}\n");
-    declare_inputs(text, shader);
+    declare_inputs(text, shader, qualifier);
     strbuf_printf(text, "void main() { gl_FragColor = %s(v_local) * u_opacity; }\n",
                   effect ? "effect" : "paint");
 }
 
-static struct shaded *start_shaded(const struct shader *shader, bool external) {
+/* The vertex shader of a batched paint: the shared one, handing on LAYOUT's inputs. */
+static void batch_vertex_source(struct strbuf *text, const struct batch_layout *layout) {
+    strbuf_puts(text, "attribute vec3 a_position;\n"
+                      "attribute vec2 a_local;\n"
+                      "uniform vec2 u_viewport;\n"
+                      "varying vec2 v_local;\n");
+    for (int k = 0; k < layout->components / 4; k++)
+        strbuf_printf(text, "attribute vec4 a_d%d;\n", k);
+    for (int i = 0; i < layout->count; i++)
+        strbuf_printf(text, "varying %s %s;\n", glsl_type(layout->counts[i]), layout->names[i]);
+    strbuf_puts(text, "void main() {\n"
+                      "  gl_Position = vec4(a_position.xy / u_viewport * 2.0 - a_position.z, 0.0, "
+                      "a_position.z);\n"
+                      "  v_local = a_local;\n");
+    for (int i = 0; i < layout->count; i++) {
+        int offset = layout->offsets[i];
+        strbuf_printf(text, "  %s = a_d%d.%.*s;\n", layout->names[i], offset / 4, layout->counts[i],
+                      "xyzw" + offset % 4);
+    }
+    strbuf_puts(text, "}\n");
+}
+
+/* Start building SHADER's program: a BATCHED paint's, as OWNER lays out its values, or one
+ * taking them as uniforms. */
+static struct shaded *start_shaded(const struct render_shader *owner, const struct shader *shader,
+                                   bool external, bool batched) {
     struct shaded *shaded = xcalloc(1, sizeof *shaded);
     struct strbuf text;
     strbuf_init(&text);
-    shader_source(&text, shader, external);
-    shaded->build = start_program(text.data);
+    shader_source(&text, shader, external, batched);
+    if (batched) {
+        /* Its values come in a_d0, a_d1..., from where others read a_uv. */
+        int data = owner->layout.components / 4;
+        char data_names[BATCH_COMPONENTS_MAX / 4][16];
+        const char *names[2 + BATCH_COMPONENTS_MAX / 4 + 1] = {"a_position", "a_local"};
+        for (int k = 0; k < data; k++) {
+            snprintf(data_names[k], sizeof data_names[k], "a_d%d", k);
+            names[2 + k] = data_names[k];
+        }
+        names[2 + data] = NULL;
+        struct strbuf vertex;
+        strbuf_init(&vertex);
+        batch_vertex_source(&vertex, &owner->layout);
+        shaded->build = start_program(vertex.data, text.data, names);
+        strbuf_finish(&vertex);
+    } else {
+        shaded->build = start_shared(text.data);
+    }
     strbuf_finish(&text);
     return shaded;
+}
+
+/*
+ * Lay out SHADER's per-draw values for batching into LAYOUT; false when it cannot be
+ * batched: not a paint, reading its backdrop or output, reading its clock (interpolating
+ * a varying adds error per pixel, which a clock that keeps growing would show), or
+ * wanting more attributes or varyings than RENDERER's driver has.
+ */
+static bool batch_layout_for(const struct renderer *renderer, const struct shader *shader,
+                             struct batch_layout *layout) {
+    if (shader->stage != STAGE_PAINT || shader->backdrop || shader->output || shader->time)
+        return false;
+    /* What a draw gathers, in this order: see pack_batch_values. */
+    struct batch_input {
+        const char *name;
+        int count, source;
+    } inputs[BATCH_INPUTS_MAX];
+    int count = 0;
+    inputs[count++] = (struct batch_input){"u_opacity", 1, 0};
+    inputs[count++] = (struct batch_input){"pixel", 1, 1};
+    inputs[count++] = (struct batch_input){"size", 2, 2};
+    inputs[count++] = (struct batch_input){"radius", 1, 4};
+    if (shader->pointer) inputs[count++] = (struct batch_input){"pointer", 2, 5};
+    int source = 7;
+    for (int i = 0; i < shader->uniform_count; i++) {
+        inputs[count++] = (struct batch_input){shader->names[i], shader->counts[i], source};
+        source += shader->counts[i];
+    }
+    /* vec4s, then vec2s, then floats: each lies within one vec4 attribute. */
+    *layout = (struct batch_layout){.count = 0};
+    int offset = 0;
+    for (int width = 4; width >= 1; width /= 2) {
+        for (int i = 0; i < count; i++) {
+            if (inputs[i].count != width) continue;
+            int k = layout->count++;
+            snprintf(layout->names[k], sizeof layout->names[k], "%s", inputs[i].name);
+            layout->counts[k] = width;
+            layout->sources[k] = inputs[i].source;
+            layout->offsets[k] = offset;
+            offset += width;
+        }
+    }
+    layout->components = (offset + 3) / 4 * 4;
+    /* Position and local position take two attributes; each input may take a varying of
+     * its own, as v_local does. */
+    return 2 + layout->components / 4 <= renderer->max_attributes &&
+           1 + layout->count <= renderer->max_varyings;
 }
 
 /* Take SHADED's program, waiting for it if need be, or why it failed. */
@@ -626,7 +777,7 @@ static struct shaded *ready(struct renderer *renderer, const struct shader *shad
 struct render_shader *render_shader_create(const struct shader *shader) {
     struct render_shader *out = xcalloc(1, sizeof *out);
     out->shader = shader;
-    out->programs[0] = start_shaded(shader, false);
+    out->programs[0] = start_shaded(out, shader, false, false);
     return out;
 }
 
@@ -635,9 +786,22 @@ bool render_shader_ready(const struct render_shader *shader) {
     return main->program.handle && !main->build.program && !main->error;
 }
 
+/* OWNER's paint or effect program once it can run; NULL while it builds or once it
+ * failed, as REPORT says. */
+static struct shaded *main_program(struct renderer *renderer, struct render_shader *owner,
+                                   struct render_report *report) {
+    if (!owner->laid_out) {
+        owner->laid_out = true;
+        owner->batched = batch_layout_for(renderer, owner->shader, &owner->layout);
+        if (owner->batched) owner->batch_program = start_shaded(owner, owner->shader, false, true);
+    }
+    return ready(renderer, owner->shader, owner->programs[0], report);
+}
+
 void render_shader_destroy(struct render_shader *shader) {
     if (!shader) return;
     for (int i = 0; i < 2; i++) destroy_shaded(shader->programs[i]);
+    destroy_shaded(shader->batch_program);
     free(shader);
 }
 
@@ -699,6 +863,8 @@ struct renderer *render_create(void) {
         compiler_threads(0xffffffff);
         renderer->parallel_compile = true;
     }
+    glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &renderer->max_attributes);
+    glGetIntegerv(GL_MAX_VARYING_VECTORS, &renderer->max_varyings);
 
     struct strbuf texture, external;
     strbuf_init(&texture);
@@ -720,9 +886,9 @@ struct renderer *render_create(void) {
     /* Every program is started before any is waited for, so they build together. */
     struct build builds[ARRAY_LENGTH(programs) + 1];
     for (size_t i = 0; i < ARRAY_LENGTH(programs); i++)
-        builds[i] = start_program(programs[i].fragment);
-    builds[ARRAY_LENGTH(programs)] = start_program(external.data);
-    renderer->passthrough = start_shaded(&passthrough_effect, false);
+        builds[i] = start_shared(programs[i].fragment);
+    builds[ARRAY_LENGTH(programs)] = start_shared(external.data);
+    renderer->passthrough = start_shaded(NULL, &passthrough_effect, false, false);
     struct strbuf error;
     strbuf_init(&error);
     bool ok = true;
@@ -786,12 +952,118 @@ void render_destroy(struct renderer *renderer) {
     vec_finish(&renderer->mipmaps);
     vec_finish(&renderer->blur_chains);
     vec_finish(&renderer->effect_targets);
+    free(renderer->batch);
+    if (renderer->batch_buffer) glDeleteBuffers(1, &renderer->batch_buffer);
     free(renderer);
+}
+
+/* Batches. */
+
+/* Point the vertex attributes at the renderer's vertices, as every unbatched draw reads them. */
+static void point_attributes(struct renderer *renderer) {
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    const GLsizei stride = 7 * sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, renderer->vertices);
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, renderer->vertices + 3);
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, renderer->vertices + 5);
+}
+
+/* Draw what is batched so far, as one draw, and point the attributes back. */
+static void flush_batch(struct renderer *renderer) {
+    if (!renderer->batch_vertices) return;
+    use(renderer, &renderer->batch_shaded->program);
+    int stride = renderer->batch_stride, data = (stride - BATCH_GEOMETRY) / 4;
+    size_t floats = (size_t)renderer->batch_vertices * stride;
+    /* A big batch goes up in one copy, where the driver would copy client arrays attribute
+     * by attribute; a small one is cheaper from client memory than a buffer of its own. */
+    uintptr_t base = 0;
+    if (floats > BATCH_CLIENT_FLOATS) {
+        if (!renderer->batch_buffer) glGenBuffers(1, &renderer->batch_buffer);
+        glBindBuffer(GL_ARRAY_BUFFER, renderer->batch_buffer);
+        glBufferData(GL_ARRAY_BUFFER, (GLsizeiptr)(floats * sizeof(float)), renderer->batch,
+                     GL_STREAM_DRAW);
+    } else {
+        base = (uintptr_t)renderer->batch;
+    }
+    /* Attributes point at offsets into the bound buffer, or into the batch itself. */
+#define AT_FLOAT(n) ((const void *)(base + (size_t)(n) * sizeof(float)))
+    const GLsizei bytes = stride * (GLsizei)sizeof(float);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(0));
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, bytes, AT_FLOAT(3));
+    /* Values from attribute 2 on, which unbatched draws read as texture coordinates. */
+    for (int k = 0; k < data; k++) {
+        if (k) glEnableVertexAttribArray((GLuint)(2 + k));
+        glVertexAttribPointer((GLuint)(2 + k), 4, GL_FLOAT, GL_FALSE, bytes,
+                              AT_FLOAT(BATCH_GEOMETRY + 4 * k));
+    }
+#undef AT_FLOAT
+    glDrawArrays(GL_TRIANGLES, 0, renderer->batch_vertices);
+    for (int k = 1; k < data; k++) glDisableVertexAttribArray((GLuint)(2 + k));
+    point_attributes(renderer);
+    renderer->batch_vertices = 0;
+}
+
+/* What a draw of SHADING passes each vertex, as its batch layout lays it out, into OUT. */
+static void pack_batch_values(const struct render_shading *shading, double opacity, double pixel,
+                              float *out) {
+    const struct render_shader *owner = shading->shader;
+    const struct batch_layout *layout = &owner->layout;
+    float gathered[7 + SHADER_COMPONENTS_MAX] = {
+        (float)opacity,
+        (float)pixel,
+        (float)shading->size[0],
+        (float)shading->size[1],
+        (float)shading->radius,
+        (float)shading->pointer[0],
+        (float)shading->pointer[1],
+    };
+    int components = owner->shader->component_count;
+    if (components) memcpy(gathered + 7, shading->values, components * sizeof(float));
+    memset(out, 0, layout->components * sizeof(float));
+    for (int i = 0; i < layout->count; i++)
+        memcpy(out + layout->offsets[i], gathered + layout->sources[i],
+               layout->counts[i] * sizeof(float));
+}
+
+/* Room for COUNT more vertices of STRIDE floats in the batch of PROGRAM's paints; a batch
+ * of another program is drawn first. */
+static float *batch_reserve(struct renderer *renderer, struct shaded *program, int stride,
+                            int count) {
+    if (renderer->batch_vertices &&
+        (renderer->batch_shaded != program || renderer->batch_stride != stride ||
+         (size_t)(renderer->batch_vertices + count) * stride > BATCH_FLOATS))
+        flush_batch(renderer);
+    size_t need = (size_t)(renderer->batch_vertices + count) * stride;
+    if (need > renderer->batch_capacity) {
+        size_t capacity =
+            MAX(need, MIN((size_t)BATCH_FLOATS, MAX((size_t)4096, 2 * renderer->batch_capacity)));
+        renderer->batch = xrealloc(renderer->batch, capacity * sizeof(float));
+        renderer->batch_capacity = capacity;
+    }
+    renderer->batch_shaded = program;
+    renderer->batch_stride = stride;
+    float *out = renderer->batch + (size_t)renderer->batch_vertices * stride;
+    renderer->batch_vertices += count;
+    return out;
+}
+
+/* Add the COUNT vertices just put in the renderer's vertices to the batch of SHADED's
+ * paints, each followed by COMPONENTS VALUES; a batch of another program is drawn first. */
+static void batch_paint(struct renderer *renderer, struct shaded *shaded, const float *values,
+                        int components, int count) {
+    int stride = BATCH_GEOMETRY + components;
+    float *out = batch_reserve(renderer, shaded, stride, count);
+    const float *in = renderer->vertices;
+    for (int i = 0; i < count; i++, out += stride, in += 7) {
+        memcpy(out, in, BATCH_GEOMETRY * sizeof(float));
+        memcpy(out + BATCH_GEOMETRY, values, components * sizeof(float));
+    }
 }
 
 /* Frames. */
 
 void render_begin_frame(struct renderer *renderer, int width, int height) {
+    flush_batch(renderer);
     double now = now_seconds();
     renderer->spare = SPARE_TIME;
     renderer->submitted_at = now;
@@ -799,8 +1071,9 @@ void render_begin_frame(struct renderer *renderer, int width, int height) {
     renderer->viewport_height = height;
     renderer->origin_x = renderer->origin_y = 0;
     renderer->effect_depth = 0;
-    /* wlroots draws with programs of its own between frames. */
+    /* wlroots draws with programs, and sets scissors, of its own between frames. */
     renderer->current = 0;
+    renderer->scissor_set = false;
     glViewport(0, 0, width, height);
     glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
@@ -810,15 +1083,12 @@ void render_begin_frame(struct renderer *renderer, int width, int height) {
     glEnable(GL_BLEND);
     glBlendEquation(GL_FUNC_ADD);
     glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    /* Vertices come from client memory, as in wlroots' own renderer: every draw from
-     * the same array, so the attributes are set once a frame. Samplers stay at their
-     * linked default, unit 0, which is the active one but while an effect paints. */
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    const GLsizei stride = 7 * sizeof(float);
+    /* Vertices come from client memory, as in wlroots' own renderer: every unbatched draw
+     * from the same array, which the attributes point back at after each batch. Samplers
+     * stay at their linked default, unit 0, which is the active one but while an effect
+     * paints. */
     for (GLuint i = 0; i < 3; i++) glEnableVertexAttribArray(i);
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, renderer->vertices);
-    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, stride, renderer->vertices + 3);
-    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, renderer->vertices + 5);
+    point_attributes(renderer);
     glActiveTexture(GL_TEXTURE0);
     glEnable(GL_SCISSOR_TEST);
     render_set_scissor(renderer, 0, 0, width, height);
@@ -829,10 +1099,17 @@ void render_set_scissor(struct renderer *renderer, int x, int y, int width, int 
     renderer->scissor[1] = y;
     renderer->scissor[2] = width;
     renderer->scissor[3] = height;
-    glScissor(x - renderer->origin_x, y - renderer->origin_y, width, height);
+    /* Setting the box it has keeps the batch going. */
+    int box[4] = {x - renderer->origin_x, y - renderer->origin_y, width, height};
+    if (renderer->scissor_set && !memcmp(box, renderer->gl_scissor, sizeof box)) return;
+    flush_batch(renderer);
+    memcpy(renderer->gl_scissor, box, sizeof box);
+    renderer->scissor_set = true;
+    glScissor(box[0], box[1], box[2], box[3]);
 }
 
 void render_clear(struct renderer *renderer, double red, double green, double blue, double alpha) {
+    flush_batch(renderer);
     glClearColor((float)red, (float)green, (float)blue, (float)alpha);
     glClear(GL_COLOR_BUFFER_BIT);
 }
@@ -844,12 +1121,14 @@ void render_submit(struct renderer *renderer) {
      */
     double now = now_seconds();
     if (now - renderer->submitted_at > SUBMIT_INTERVAL) {
+        flush_batch(renderer);
         glFlush();
         renderer->submitted_at = now;
     }
 }
 
 void render_finish_frame(struct renderer *renderer) {
+    flush_batch(renderer);
     glDisable(GL_SCISSOR_TEST);
     for (GLuint i = 0; i < 3; i++) glDisableVertexAttribArray(i);
     glFlush();
@@ -882,10 +1161,12 @@ static float *put_vertex(float *out, struct mat3 t, double x, double y, double u
 }
 
 /*
- * Draw local rectangle BOX through TRANSFORM. UV holds the texture coordinates
- * of its top-left, top-right, bottom-left and bottom-right corners, or is NULL.
+ * The vertices of local rectangle BOX through TRANSFORM, into the renderer's
+ * vertices; how many. UV holds the texture coordinates of its top-left,
+ * top-right, bottom-left and bottom-right corners, or is NULL.
  */
-static void draw_quad(struct renderer *renderer, struct mat3 t, struct box box, const double *uv) {
+static int quad_vertices(struct renderer *renderer, struct mat3 t, struct box box,
+                         const double *uv) {
     static const int corners[6] = {0, 1, 2, 1, 3, 2};
     float *v = renderer->vertices;
     for (int i = 0; i < 6; i++) {
@@ -894,15 +1175,20 @@ static void draw_quad(struct renderer *renderer, struct mat3 t, struct box box, 
         double y = corner >= 2 ? box.y + box.height : box.y;
         v = put_vertex(v, t, x, y, uv ? uv[2 * corner] : 0, uv ? uv[2 * corner + 1] : 0);
     }
-    glDrawArrays(GL_TRIANGLES, 0, 6);
+    return 6;
+}
+
+static void draw_quad(struct renderer *renderer, struct mat3 t, struct box box, const double *uv) {
+    glDrawArrays(GL_TRIANGLES, 0, quad_vertices(renderer, t, box, uv));
 }
 
 /*
- * Draw OUTER less INNER, which lies inside it, through T: eight triangles
- * joining their corners, every edge shared whole, so no pixel is drawn twice.
+ * The vertices of OUTER less INNER, which lies inside it, through T: eight
+ * triangles joining their corners, every edge shared whole, so no pixel is drawn
+ * twice.
  */
-static void draw_ring(struct renderer *renderer, struct mat3 t, struct box outer,
-                      struct box inner) {
+static int ring_vertices(struct renderer *renderer, struct mat3 t, struct box outer,
+                         struct box inner) {
     double ox[4] = {outer.x, box_right(outer), box_right(outer), outer.x};
     double oy[4] = {outer.y, outer.y, box_bottom(outer), box_bottom(outer)};
     double ix[4] = {inner.x, box_right(inner), box_right(inner), inner.x};
@@ -917,7 +1203,7 @@ static void draw_ring(struct renderer *renderer, struct mat3 t, struct box outer
         v = put_vertex(v, t, ox[n], oy[n], 0, 0);
         v = put_vertex(v, t, ix[n], iy[n], 0, 0);
     }
-    glDrawArrays(GL_TRIANGLES, 0, 24);
+    return 24;
 }
 
 /* A buffer point and where it lies on a plane, homogeneously. */
@@ -927,14 +1213,14 @@ struct plane_point {
 };
 
 /*
- * Cover the whole buffer with the plane T places. In perspective, the buffer
- * may show the plane's horizon: the part beyond it, where the plane is behind
- * the viewer, is cut away, and each corner left is found on the plane, so its
- * local position interpolates correctly.
+ * The vertices covering the whole buffer with the plane T places; how many. In
+ * perspective, the buffer may show the plane's horizon: the part beyond it, where
+ * the plane is behind the viewer, is cut away, and each corner left is found on
+ * the plane, so its local position interpolates correctly.
  */
-static void draw_plane(struct renderer *renderer, struct mat3 t) {
+static int plane_vertices(struct renderer *renderer, struct mat3 t) {
     struct mat3 inverse;
-    if (!mat3_invert(t, &inverse)) return;
+    if (!mat3_invert(t, &inverse)) return 0;
     double width = renderer->viewport_width, height = renderer->viewport_height;
     const double corners[4][2] = {{0, 0}, {width, 0}, {width, height}, {0, height}};
     struct plane_point in[4], out[5];
@@ -963,7 +1249,7 @@ static void draw_plane(struct renderer *renderer, struct mat3 t) {
                 cut->local[k] = p->local[k] + s * (q->local[k] - p->local[k]);
         }
     }
-    if (count < 3) return;
+    if (count < 3) return 0;
     float *v = renderer->vertices;
     for (int i = 1; i + 1 < count; i++) {
         const struct plane_point *fan[3] = {&out[0], &out[i], &out[i + 1]};
@@ -972,7 +1258,7 @@ static void draw_plane(struct renderer *renderer, struct mat3 t) {
             v = put_vertex(v, t, local[0] / local[2], local[1] / local[2], 0, 0);
         }
     }
-    glDrawArrays(GL_TRIANGLES, 0, 3 * (count - 2));
+    return 3 * (count - 2);
 }
 
 /* Textures. */
@@ -999,7 +1285,7 @@ static struct shaded *filter_program(struct renderer *renderer, const struct ren
                                      bool external, struct render_report *report) {
     struct render_shader *shader = filter->shader;
     if (!shader->programs[external])
-        shader->programs[external] = start_shaded(shader->shader, external);
+        shader->programs[external] = start_shaded(shader, shader->shader, external, false);
     return ready(renderer, shader->shader, shader->programs[external], report);
 }
 
@@ -1009,6 +1295,7 @@ static bool draw_texture(struct renderer *renderer, const struct render_texture 
                          const struct render_texture_draw *draw,
                          const struct render_shading *filter, const struct render_surface *surface,
                          uint64_t slot, struct render_report *report) {
+    flush_batch(renderer);
     struct mat3 transform = draw->transform;
     struct box box = draw->box;
     const double *uv = draw->uv;
@@ -1104,6 +1391,7 @@ static void copy_into_mipmap(struct renderer *renderer, const struct render_surf
 
 GLuint render_surface_mipmap(struct renderer *renderer, uint64_t slot,
                              const struct render_surface *surface) {
+    flush_batch(renderer);
     struct mipmap *mipmap = slot_find(&renderer->mipmaps, slot);
     int width = MAX(1, (surface->texture.width + 1) / 2);
     int height = MAX(1, (surface->texture.height + 1) / 2);
@@ -1154,6 +1442,7 @@ struct render_raster *render_slot_raster(struct renderer *renderer, uint64_t slo
 struct render_raster *render_install_raster(struct renderer *renderer, uint64_t slot, uint64_t key,
                                             const void *pixels, int width, int height,
                                             GLenum format) {
+    flush_batch(renderer);
     struct render_raster *raster = render_slot_raster(renderer, slot);
     if (!raster) {
         raster = xcalloc(1, sizeof(*raster));
@@ -1193,6 +1482,7 @@ void render_touch_raster(struct renderer *renderer, uint64_t slot) {
 }
 
 void render_sweep(struct renderer *renderer, double now) {
+    flush_batch(renderer);
     for (size_t i = 0; i < renderer->blur_chains.length;) {
         struct blur_chain *chain = vec_at(&renderer->blur_chains, i);
         if (now - chain->used > 2) {
@@ -1362,19 +1652,37 @@ static GLuint read_backdrop(struct renderer *renderer, struct pixel_box area, do
 bool render_draw_paint(struct renderer *renderer, const struct render_shading *shading,
                        const struct render_paint_draw *draw, struct render_report *report) {
     const struct shader *shader = shading->shader->shader;
-    struct shaded *shaded = ready(renderer, shader, shading->shader->programs[0], report);
+    struct shaded *shaded = main_program(renderer, shading->shader, report);
     if (!shaded) return false;
+    struct mat3 t = draw->transform;
+    double pixel = draw->plane
+                       ? mat3_plane_pixel(t, renderer->viewport_width, renderer->viewport_height)
+                       : mat3_pixel_size(t, shading->size[0] / 2, shading->size[1] / 2);
+    struct render_shader *owner = shading->shader;
+    if (owner->batched && !draw->plane) {
+        struct box bounds = mat3_box_bounds(t, draw->quad, 0);
+        /* Until its batched program builds, or if it failed, the paint draws alone. */
+        struct shaded *batched = bounds.width * bounds.height <= BATCH_PIXELS
+                                     ? ready(renderer, shader, owner->batch_program, NULL)
+                                     : NULL;
+        if (owner->batch_program->error) owner->batched = false;
+        if (batched) {
+            int count = draw->holed ? ring_vertices(renderer, t, draw->quad, draw->hole)
+                                    : quad_vertices(renderer, t, draw->quad, NULL);
+            float values[BATCH_COMPONENTS_MAX];
+            pack_batch_values(shading, draw->opacity, pixel, values);
+            batch_paint(renderer, batched, values, owner->layout.components, count);
+            return true;
+        }
+    }
+    flush_batch(renderer);
     /* What is behind is read, and blurred, before the paint's program is in use. */
     GLuint backdrop = shader->backdrop ? read_backdrop(renderer, draw->area, draw->blur) : 0;
     if (shader->backdrop && !backdrop) return true;
     struct program *p = &shaded->program;
     use(renderer, p);
-    struct mat3 t = draw->transform;
     set_1f(p, U_OPACITY, draw->opacity);
-    set_shading(shaded, shading,
-                draw->plane
-                    ? mat3_plane_pixel(t, renderer->viewport_width, renderer->viewport_height)
-                    : mat3_pixel_size(t, shading->size[0] / 2, shading->size[1] / 2));
+    set_shading(shaded, shading, pixel);
     if (backdrop) {
         int width = renderer->viewport_width, height = renderer->viewport_height;
         set_rows(p, t);
@@ -1383,13 +1691,10 @@ bool render_draw_paint(struct renderer *renderer, const struct render_shading *s
         set_area(p, U_READ_AREA, draw->area, 0, 0, width, height);
         glBindTexture(GL_TEXTURE_2D, backdrop);
     }
-    if (draw->plane) {
-        draw_plane(renderer, t);
-    } else if (draw->holed) {
-        draw_ring(renderer, t, draw->quad, draw->hole);
-    } else {
-        draw_quad(renderer, t, draw->quad, NULL);
-    }
+    int count = draw->plane   ? plane_vertices(renderer, t)
+                : draw->holed ? ring_vertices(renderer, t, draw->quad, draw->hole)
+                              : quad_vertices(renderer, t, draw->quad, NULL);
+    if (count) glDrawArrays(GL_TRIANGLES, 0, count);
     return true;
 }
 
@@ -1397,6 +1702,7 @@ bool render_draw_paint(struct renderer *renderer, const struct render_shading *s
 
 struct render_target *render_effect_target(struct renderer *renderer, int width, int height,
                                            enum render_effect_role role) {
+    flush_batch(renderer);
     int stepped_width =
         EFFECT_TARGET_STEP * MAX(1, (width + EFFECT_TARGET_STEP - 1) / EFFECT_TARGET_STEP);
     int stepped_height =
@@ -1420,6 +1726,7 @@ struct render_target *render_effect_target(struct renderer *renderer, int width,
 void render_begin_effect(struct renderer *renderer, const struct render_target *content,
                          const struct render_target *backdrop, struct pixel_box area, int origin_x,
                          int origin_y, struct render_effect_scope *scope) {
+    flush_batch(renderer);
     /* What is drawn so far, behind the effect, before the content replaces it. */
     if (backdrop) {
         gl_copy_framebuffer(backdrop, area.x - origin_x, area.y - origin_y, area.width, area.height,
@@ -1439,6 +1746,7 @@ void render_begin_effect(struct renderer *renderer, const struct render_target *
 }
 
 void render_end_effect(struct renderer *renderer, const struct render_effect_scope *scope) {
+    flush_batch(renderer);
     gl_restore_binding(&scope->binding);
     renderer->effect_depth = scope->depth;
     renderer->origin_x = scope->origin_x;
@@ -1451,9 +1759,8 @@ void render_draw_effect(struct renderer *renderer, const struct render_shading *
                         const struct render_effect_draw *draw, const struct render_target *content,
                         const struct render_target *backdrop, struct pixel_box area, int origin_x,
                         int origin_y, struct render_report *report) {
-    struct shaded *shaded =
-        shading ? ready(renderer, shading->shader->shader, shading->shader->programs[0], report)
-                : NULL;
+    flush_batch(renderer);
+    struct shaded *shaded = shading ? main_program(renderer, shading->shader, report) : NULL;
     struct program *p = shaded ? &shaded->program : &renderer->passthrough->program;
     use(renderer, p);
     struct box quad = draw->quad;

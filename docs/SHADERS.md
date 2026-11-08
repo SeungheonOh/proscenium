@@ -157,7 +157,7 @@ fill and border, the content, paints over it.
 | [`shader.c`](../src/shader.c) | The registry: decoding definitions, evaluating bounds, regions and gates. |
 | [`scene.c`](../src/scene.c) | `struct shading`: a use's animated uniforms, motions per uniform, clock, area and layer; matching by id, fading in and out, `initial`/`exit`, hand-over, keyframe layers. |
 | [`display.c`](../src/display.c) | Emitting paints (quad, ring or plane; backdrop area; opaque rectangle; ring damage), recording a node's filter on its content items, effects; signatures over the values shown; error reporting; repainting while a program builds. |
-| [`render.c`](../src/render.c) | Programs: the prelude per stage, texture programs with a filter compiled in, the dual Kawase backdrop, ring and plane geometry, and a cache of every program's uniform values. |
+| [`render.c`](../src/render.c) | Programs: the prelude per stage, texture programs with a filter compiled in, the dual Kawase backdrop, ring and plane geometry, batched paints, and a cache of every program's uniform values. |
 
 The display list lost three item kinds (`RECT`, `BLUR` and `BACKGROUND`) and
 the effects' side table. Three kinds draw shaders: a paint, a content item
@@ -196,6 +196,19 @@ backdrop programs and the effect cache keyed by source text.
    director's alike, and is bound only when it changes.
 8. **No per-frame strings.** A use names its shader by id: nothing is hashed or
    compared per frame but the values themselves.
+9. **Batched paints.** A paint reading neither its backdrop, its output nor
+   its clock gets a second program whose vertex shader hands its values
+   (opacity, pixel, size, radius, pointer and its own uniforms) to the paint as
+   varyings from per-vertex attributes, packed into vec4s. Small paints of one
+   shader, up to 128x128 pixels, drawn back to back then go to the GPU as one
+   draw, whatever their uniforms: 8,000 rounded squares in six colours take
+   about ten draws a frame instead of 8,000. Bigger paints keep the uniform
+   program, since interpolating varyings costs the GPU per pixel. The batch
+   goes out before anything else draws, the scissor or target changes, commands
+   are handed to the GPU, or the frame ends, so the order is unchanged. Shaders
+   wanting more attributes or varyings than the driver has keep their uniforms,
+   as do clock readers: interpolation adds error per pixel, which a growing
+   clock would show.
 
 ## Performance
 

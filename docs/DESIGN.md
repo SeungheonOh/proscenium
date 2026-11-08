@@ -40,7 +40,7 @@ renders it with GLES and routes input.
 | `window.c` | Windows: ids, metadata, configure, focus, snapshots. |
 | `xdg.c`, `xwayland.c` | xdg-shell and X11 clients as windows; popups, decorations, override-redirect children. |
 | `display.c` | Per-output display lists, damage, repair passes, occlusion, effects, hits, captures. |
-| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; render targets. |
+| `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints; render targets. |
 | `content.c` | Text and image nodes on top of `media.c`. |
 | `media.c` | Pango text layout and rasters, image decoding, the worker. |
 | `webnode.c`, `web.c` | Web nodes: pages on the CEF helper (`web/`), their frames and input. |

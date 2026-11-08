@@ -231,7 +231,13 @@ struct render_paint_draw {
 
 /*
  * Paint through SHADING's paint shader. False, with REPORT saying why, while
- * its program builds or once it failed.
+ * its program builds or once it failed. A small paint (up to 128x128 buffer
+ * pixels, not a plane) reading neither its backdrop, its output nor its clock,
+ * with values that fit the driver's attributes and varyings, takes them per
+ * vertex instead of as uniforms, so such paints of one shader drawn back to
+ * back go to the GPU as one draw: they are queued until the renderer draws
+ * anything else, changes the scissor or target, hands commands to the GPU
+ * (render_submit) or ends the frame.
  */
 bool render_draw_paint(struct renderer *renderer, const struct render_shading *shading,
                        const struct render_paint_draw *draw, struct render_report *report);

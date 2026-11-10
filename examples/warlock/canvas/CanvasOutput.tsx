@@ -44,7 +44,6 @@ import { useStacks } from "../../canvas/useStacks.js";
 import { directions, neighbour, union } from "../../lib/geometry.js";
 import { defaultFloat, dropZone, minimumSize, pageAt, pageOf } from "../geometry.js";
 import { useTaskbarGroups, type TaskbarGroup } from "../groups.js";
-import { Portal } from "../portal.js";
 import type { View } from "../state.js";
 import { useWarlockTheme, type WarlockTheme, titleBarOf } from "../theme.js";
 import {
@@ -98,16 +97,6 @@ import {
 const dragThreshold = 4;
 const cameraMotion = spring({ duration: 0.45, bounce: 0.08 });
 
-/** One window opening or closing through Warlock's portal. */
-export interface PortalState {
-  key: number;
-  kind: "open" | "close";
-  window: number;
-  /** The window's frame on its output's canvas. */
-  rect: Rectangle;
-  output: string;
-}
-
 /** Where a press landed: on its output, and in the world. */
 type Press = Pick<StagePointerEvent, "screenX" | "screenY" | "worldX" | "worldY">;
 
@@ -155,11 +144,11 @@ export interface CanvasOutputProps {
   output: OutputInfo;
   /** Which of the outputs this is: its canvas lies that far along the world. */
   index: number;
-  /** The portal showing now, on whichever output. */
-  portal: PortalState | null;
+  /** Windows just come into view, on whichever output: they uncloak. */
+  uncloaking: ReadonlySet<number>;
 }
 
-export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
+export function CanvasOutput({ output, index, uncloaking }: CanvasOutputProps) {
   const warlock = useWarlock();
   const {
     placed,
@@ -854,7 +843,6 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
     const live = boxes.get(id);
     if (!entry || !info || !live) continue;
     const pose = poses?.get(id);
-    const opening = portal?.kind === "open" && portal.window === id ? portal : null;
     const passage = passages.current.get(id);
     nodes.push(
       <WindowFrame
@@ -875,15 +863,8 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
         tilt={pose && { angle: pose.angle, scale: pose.scale }}
         veil={pose ? fanVeil(pose.reach.height) : overview ? overviewVeil : undefined}
         arriving={passage?.kind === "arriving" ? passage.flight : undefined}
-      >
-        {opening && (
-          <Portal
-            key={opening.key}
-            kind="open"
-            rect={{ x: 0, y: 0, width: live.width, height: live.height }}
-          />
-        )}
-      </WindowFrame>,
+        uncloaking={uncloaking.has(id)}
+      />,
     );
     hits.push({ id, rect: live });
     if (pose) continue;
@@ -964,7 +945,6 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
     bringIntoView,
   };
 
-  const closing = portal?.kind === "close" && portal.output === output.name ? portal : null;
   // A fanned stack shows no pill.
   const withPills = poses ? stacks.all.filter((ids) => !poses.has(ids[0]!)) : stacks.all;
 
@@ -997,7 +977,6 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
         onCarry={arrange.moveDrag}
         onLetGo={arrange.endDrag}
       />
-      {closing && <Portal key={closing.key} kind="close" rect={toWorld(closing.rect, offset)} />}
       {/* A fan is a passing arrangement: the map keeps to where the windows are. */}
       <Minimap
         output={output}

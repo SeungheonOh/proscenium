@@ -22,9 +22,9 @@ import {
 } from "proscenium";
 import wallpaperDawn from "./assets/wallpaper/wallpaper-dawn.svg";
 import wallpaperNight from "./assets/wallpaper/wallpaper-night.svg";
-import { CanvasOutput, type PortalState } from "./canvas/CanvasOutput.js";
+import { cloakDuration } from "../canvas/camoEffect.js";
+import { CanvasOutput } from "./canvas/CanvasOutput.js";
 import type { Placed } from "./geometry.js";
-import { portalCloseSeconds, portalOpenSeconds } from "./portal.js";
 import { alpha, useWarlockTheme } from "./theme.js";
 import { useWarlock, type CanvasHandle } from "./WarlockProvider.js";
 
@@ -62,67 +62,41 @@ const bindings: readonly {
   { button: "right", modifiers: ["super"], what: "resize" },
 ];
 
-/** The canvas of every output, the wallpaper under them, and the portals windows open and close through. */
+/** The canvas of every output, the wallpaper under them, and windows opening and closing under the camouflage. */
 export function Desktop() {
-  const { outputs, placed, windows, state, rootOf, motion, canvasOn } = useWarlock();
+  const { outputs, placed, canvasOn } = useWarlock();
   const theme = useWarlockTheme();
 
-  // Portals: one window opening or closing at a time, at most one a second.
-  const seen = useRef<Set<number> | null>(null);
-  const before = useRef<ReadonlyMap<number, Placed>>(placed);
+  // Windows uncloak as they come into view, opening or on a workspace shown, and their frames
+  // cloak away as they go. Found while rendering, so a frame starts cloaked in the commit that
+  // first shows it.
+  const before = useRef<ReadonlyMap<number, Placed> | null>(null);
   const checked = useRef<unknown>(null);
-  const lastPortal = useRef(-Infinity);
-  const portal = useRef<PortalState | null>(null);
+  const uncloaking = useRef<ReadonlySet<number>>(new Set());
   const [, redraw] = useState(0);
   if (checked.current !== placed) {
-    // Found while rendering, so a window and the cover it opens under appear in the same frame.
     checked.current = placed;
-    const known = seen.current;
-    const recorded = [...windows.keys()].filter(
-      (id) => state.windows[id] !== undefined && rootOf(id) === id,
-    );
-    if (known) {
-      const opened = [...placed.keys()].filter((id) => !known.has(id));
-      const closed = [...before.current.keys()].filter((id) => !windows.has(id));
-      const now = performance.now();
-      const allowed =
-        theme.effects === "full" &&
-        motion === "full" &&
-        portal.current === null &&
-        now - lastPortal.current >= 1000;
-      if (allowed && opened.length + closed.length === 1) {
-        const window = opened[0] ?? closed[0]!;
-        const entry = opened.length === 1 ? placed.get(window)! : before.current.get(window)!;
-        if (!entry.record.fullscreen) {
-          portal.current = {
-            key: now,
-            kind: opened.length === 1 ? "open" : "close",
-            window,
-            rect: entry.rect,
-            output: entry.output.name,
-          };
-          lastPortal.current = now;
-        }
-      }
+    const shown = before.current;
+    if (shown) {
+      const appeared = [...placed.keys()].filter(
+        (id) => !shown.has(id) && !placed.get(id)!.record.fullscreen,
+      );
+      if (appeared.length > 0) uncloaking.current = new Set([...uncloaking.current, ...appeared]);
     }
-    seen.current = new Set([...(known ?? []), ...recorded].filter((id) => windows.has(id)));
     before.current = placed;
   }
-  const portalKey = portal.current?.key;
+  const appearing = [...uncloaking.current].join();
   useEffect(() => {
-    if (portalKey === undefined) return;
-    const seconds = portal.current?.kind === "open" ? portalOpenSeconds : portalCloseSeconds;
+    if (appearing === "") return;
     const timer = setTimeout(
       () => {
-        portal.current = null;
+        uncloaking.current = new Set();
         redraw((count) => count + 1);
       },
-      seconds * 1000 + 100,
+      cloakDuration * 1000 + 100,
     );
     return () => clearTimeout(timer);
-  }, [portalKey]);
-  // An opening portal goes with its window.
-  if (portal.current?.kind === "open" && !placed.has(portal.current.window)) portal.current = null;
+  }, [appearing]);
 
   // A press with a modifier belongs to the canvas of the output it landed on until it is let go.
   const pressedOn = useRef<string | null>(null);
@@ -147,7 +121,12 @@ export function Desktop() {
         pan
       />
       {outputs.map((output, index) => (
-        <CanvasOutput key={output.name} output={output} index={index} portal={portal.current} />
+        <CanvasOutput
+          key={output.name}
+          output={output}
+          index={index}
+          uncloaking={uncloaking.current}
+        />
       ))}
 
       {bindings.map(({ button, modifiers, what }) => (

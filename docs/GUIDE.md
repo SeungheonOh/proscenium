@@ -136,8 +136,8 @@ apps:
   snap layouts, an Alt-Tab switcher, Task View with workspaces, a launcher,
   notifications served on the session bus, Files, a system menu and Settings
   with Night, Dawn and high-contrast themes, all in native nodes with keyboard
-  focus, and windows that open and close through a portal of embers drawn by
-  two shaders. Its desktop is also a canvas: it pans and zooms over screen-sized
+  focus, and windows that uncloak and cloak away in the canvas world's
+  thermoptic camouflage. Its desktop is also a canvas: it pans and zooms over screen-sized
   pages, flies to the window you switch to, and windows select, stack and fan
   out with the canvas world's hooks. [`warlock/README.md`](../examples/warlock/README.md)
   says what comes from where.

@@ -46,7 +46,8 @@
  * each workspace remembers where its view was. Windows glide to their places, and a selected window
  * dragged takes the selection with it. A map in the corner shows while the view is away from home.
  *
- * Windows open and close through Warlock's portal, a ring of red embers.
+ * Windows uncloak as they open and cloak away as they close, in the canvas world's
+ * thermoptic camouflage; so do the windows of a workspace as it is shown and left.
  * See warlock/README.md for what comes from where.
  */
 

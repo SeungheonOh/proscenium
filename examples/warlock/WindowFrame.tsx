@@ -27,6 +27,7 @@ import {
   type StageRequestEvent,
   type Transition,
 } from "proscenium";
+import { cloak } from "../canvas/camoEffect.js";
 import { alpha, fonts, standardEasing, themed, useWarlockTheme } from "./theme.js";
 import { useWarlock } from "./WarlockProvider.js";
 
@@ -243,9 +244,15 @@ export interface WindowFrameProps {
   away?: Flight | undefined;
   /** Restored just now: it comes from its taskbar button. */
   arriving?: Flight | undefined;
-  /** Drawn over it, in its own space: the portal it opens through. */
+  /** Just shown, by a window opening or a workspace coming into view: it uncloaks. Removed, it cloaks away. */
+  uncloaking?: boolean | undefined;
   children?: ReactNode;
 }
+
+// The canvas world's thermoptic camouflage, with room for the frame's shadow.
+const cloaking = cloak(104);
+const cloakedLook = { shaders: cloaking.cloaked };
+const cloaksUse = [cloaking.use];
 
 const resizeHandles: readonly { edges: Edges; cursor: Cursor }[] = [
   { edges: { ...noEdges, top: true }, cursor: "ns-resize" },
@@ -308,6 +315,7 @@ export const WindowFrame = memo(function WindowFrame({
   veil,
   away,
   arriving,
+  uncloaking = false,
   children,
 }: WindowFrameProps) {
   const theme = useWarlockTheme();
@@ -324,6 +332,9 @@ export const WindowFrame = memo(function WindowFrame({
     popup,
     keepPopup,
   } = useWarlock();
+  // With soft effects and full motion, windows open and close under the camouflage.
+  const { motion: motionSetting } = useWarlock();
+  const cloaks = theme.effects === "full" && motionSetting === "full";
   const lastPress = useRef(0);
   const pressed = useRef<number | null>(null);
   // A window that draws its own title bar (it would not leave it to the shell) gets only the edge.
@@ -382,7 +393,16 @@ export const WindowFrame = memo(function WindowFrame({
             : resting
       }
       opacity={away ? 0 : 1}
-      initial={arriving ? { opacity: 0, transform: flown(arriving) } : undefined}
+      shaders={cloaks ? cloaksUse : undefined}
+      initial={
+        arriving
+          ? { opacity: 0, transform: flown(arriving) }
+          : uncloaking && cloaks
+            ? cloakedLook
+            : undefined
+      }
+      // Always given, so the compositor keeps a closing window's last frame to cloak away.
+      exit={cloaks ? cloakedLook : undefined}
       transition={outer}
     >
       <Rect

@@ -3,15 +3,13 @@
 A desktop shell after [Warlock](https://github.com/CharlesHoskinson/Warlock) by
 Charles Hoskinson: a Windows-style taskbar, window controls, a launcher, an
 Alt-Tab switcher, Task View, snap layouts, notifications, Files, a system menu
-and Settings, in its black-and-red design language, with windows that open and
-close through a portal of red embers.
+and Settings, in its black-and-red design language.
 
 Warlock is a shell for Hyprland: an Elm interface in web views, a host, and a
 plugin inside the compositor that carries out what the interface asks and
 reports back what happened. Here there is no plugin and nothing to wait for.
 The world is the window manager: a click on a taskbar button minimizes the
-window in the same commit, a preview is the live window drawn once more, and
-the portal is two shaders the compositor animates.
+window in the same commit, and a preview is the live window drawn once more.
 
 ```sh
 build/meson/proscenium --script examples/warlock.tsx
@@ -31,7 +29,6 @@ and the simulated desktop of its test drive for how windows are placed.
 | The taskbar: pinned and running applications, their state marks, the utilities, the status chip | [`Taskbar.tsx`](Taskbar.tsx), [`groups.ts`](groups.ts) | `Taskbar.elm`, taskbar skin |
 | Window frames: edge, title bar, − □ ⋮ ×, the active application's line | [`WindowFrame.tsx`](WindowFrame.tsx) | the test drive's stage |
 | Tiled columns, halves and quarters, maximize, drops at the screen's edges | [`geometry.ts`](geometry.ts), [`state.ts`](state.ts) | the test drive's host |
-| The portal: 520 ms opening, 360 ms closing | [`portal.tsx`](portal.tsx) | `effects.css` |
 | The popup, its controls and keyboard focus | [`kit.tsx`](kit.tsx) | `controls.css`, `Surface.elm` |
 | Applications, application actions and recent files, pins | [`panels/Applications.tsx`](panels/Applications.tsx), [`panels/Jump.tsx`](panels/Jump.tsx), [`catalog.ts`](catalog.ts), [`recent.ts`](recent.ts) | `Catalog.elm`, `JumpList.elm`, `Pins.elm` |
 | The window switcher, Task View and moving a window to a workspace | [`panels/Switcher.tsx`](panels/Switcher.tsx), [`panels/TaskView.tsx`](panels/TaskView.tsx) | `Switcher.elm`, `TaskView.elm`, `Transfer.elm` |
@@ -71,6 +68,15 @@ straight to history, there are no toasts, and volume is set in five steps.
 - **Motion.** Windows glide to their places on a spring and fly to and from
   their taskbar button when minimized and restored, as Warlock's earlier
   prototype did; with Reduced motion everything is instant, as in Warlock now.
+- **Thermoptic camouflage.** Windows uncloak out of what is behind them as they
+  open and cloak away as they close, with the canvas world's effect
+  ([`../canvas/camoEffect.ts`](../canvas/camoEffect.ts)) in place of Warlock's
+  own ember portal; the windows of a workspace do the same as it is left and
+  shown.
+- **Paper and placement.** Super+D takes out the canvas world's Excalidraw
+  paper under the windows, drawn in Warlock's colours, and Sunlight's
+  Ctrl+Alt keys place windows in halves, thirds and quarters, lay them out in
+  columns or tidy them onto one grid, with Super+Shift+Z to undo.
 - **Live previews.** The window picker and the switcher's cards show the
   windows themselves.
 

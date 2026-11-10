@@ -40,7 +40,6 @@
  *   Ctrl+Alt+2 / 3 / 4, Ctrl+Alt+A  the windows in view in columns / tidy every window onto one grid
  *   Super+Shift+Z                   put back what the last placement, drop or push moved
  *   Super+D                         take out the paper, an Excalidraw drawing under the windows, or put it away
- *   Super+N / Super+R / Super+X     night light / an old CRT / a magnifying lens under the pointer
  *
  * A new window opens tiled on the page in view, and snapping and maximizing fill the page in view
  * at 100%, else the page the window is on. Activating a window that is not all in view flies to it;
@@ -56,7 +55,6 @@ import { useOutputs } from "proscenium";
 import { PaperProvider } from "./canvas/paper/Paper.js";
 import { PaperToolbar, type ToolbarLook } from "./canvas/paper/Toolbar.js";
 import { MediaKeys } from "./components/MediaKeys.js";
-import { ScreenEffects } from "./components/ScreenEffects.js";
 import { Screenshots } from "./components/Screenshots.js";
 import { ShareChooser } from "./components/ShareChooser.js";
 import { Desktop, FullscreenWindows } from "./warlock/Desktop.js";
@@ -110,20 +108,18 @@ function WarlockPaperToolbar() {
 
 export default function Warlock() {
   return (
-    <ScreenEffects keys={{ lens: "Super+X" }}>
-      <WarlockProvider>
-        <Paper>
-          <Desktop />
-          <Taskbar />
-          <WarlockPaperToolbar />
-          <FullscreenWindows />
-          <PopupLayer />
-          <Keybindings />
-          <ShareChooser />
-          <Screenshots />
-          <MediaKeys indicator={null} />
-        </Paper>
-      </WarlockProvider>
-    </ScreenEffects>
+    <WarlockProvider>
+      <Paper>
+        <Desktop />
+        <Taskbar />
+        <WarlockPaperToolbar />
+        <FullscreenWindows />
+        <PopupLayer />
+        <Keybindings />
+        <ShareChooser />
+        <Screenshots />
+        <MediaKeys indicator={null} />
+      </Paper>
+    </WarlockProvider>
   );
 }

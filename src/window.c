@@ -431,7 +431,16 @@ static void window_describe(struct window *window, struct json_writer *w) {
     json_int(w, window->max_width);
     json_key(w, "max-height");
     json_int(w, window->max_height);
+    json_key(w, "decorations");
+    json_string(w, window_server_decorated(window) ? "server" : "client");
     json_object_end(w);
+}
+
+bool window_server_decorated(struct window *window) {
+    if (window->type == WINDOW_XDG) return window->server_decorated;
+    /* An X11 window that does not hint it draws its own title expects a window manager's. */
+    return window->xsurface &&
+           !(window->xsurface->decorations & WLR_XWAYLAND_SURFACE_DECORATIONS_NO_TITLE);
 }
 
 void windows_describe(struct server *server, struct json_writer *w) {

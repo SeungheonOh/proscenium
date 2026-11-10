@@ -62,6 +62,7 @@ export class Session {
   /** Whoever holds the keyboard, latest last: only the latest hears keys. */
   private readonly grabs: ((event: StageKeyEvent) => void)[] = [];
   private readonly watchers = new Set<(event: StageInputEvent) => void>();
+  private decorators = 0;
 
   constructor(options: SessionOptions) {
     if (current) throw new Error("A Stage session is already running.");
@@ -189,6 +190,28 @@ export class Session {
     };
   }
 
+  /**
+   * Draw windows' frames: until released, windows that can are asked to leave
+   * their title bars and edges to the world. Requests count; the last release
+   * gives decorations back to the clients.
+   */
+  drawDecorations(): () => void {
+    this.decorators++;
+    if (this.decorators === 1) this.sendDecorations();
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.decorators--;
+      if (this.decorators === 0) this.sendDecorations();
+    };
+  }
+
+  private sendDecorations(): void {
+    if (this.connection.connected)
+      this.connection.send({ type: "decorations", mode: this.decorators > 0 ? "server" : "client" });
+  }
+
   private sendGrab(): void {
     if (this.connection.connected) this.connection.send({ type: "grab-keyboard", grab: this.grabs.length > 0 });
   }
@@ -261,6 +284,7 @@ export class Session {
           // A new connection starts with the keyboard free and nothing watched.
           if (this.grabs.length) this.sendGrab();
           if (this.watchers.size) this.sendWatch();
+          if (this.decorators) this.sendDecorations();
           this.container.requestResync();
           // Before React's first commit there is nothing to show yet; replaying
           // an empty tree would briefly hide every window.

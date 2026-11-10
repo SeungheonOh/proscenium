@@ -553,6 +553,14 @@ static bool dispatch(struct director *director, const struct json_value *message
         else server->seat_state.input_watched = value->type == JSON_TRUE;
         return true;
     }
+    if (json_is_string(type, "decorations")) {
+        const struct json_value *mode = json_get(message, "mode");
+        bool server_side = mode && json_is_string(mode, "server");
+        if (!server_side && !(mode && json_is_string(mode, "client")))
+            return protocol_fail(error, "decorations requires mode \"server\" or \"client\".");
+        xdg_set_server_decorations(server, server_side);
+        return true;
+    }
     if (json_is_string(type, "warp-pointer")) {
         const struct json_value *name = json_get(message, "output");
         struct output *output =

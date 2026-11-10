@@ -41,6 +41,10 @@ and the simulated desktop of its test drive for how windows are placed.
 | Files: collections and a folder path | [`panels/Files.tsx`](panels/Files.tsx), [`files.ts`](files.ts) | `Files.elm` |
 | Settings: appearance, motion, shortcut choices, each saved on its own | [`panels/Settings.tsx`](panels/Settings.tsx), [`storage.ts`](storage.ts) | `Settings.elm`, `ShortcutPreferences.elm` |
 
+The shell draws every window's frame, so it asks windows to leave out their
+own title bars (`useServerDecorations`); a window that draws its own anyway, as
+GTK 4 applications do, gets the frame's edge without a second title bar.
+
 Settings, pins and shortcut choices are kept where Warlock keeps them, in
 `$XDG_STATE_HOME/warlock`, in its file formats.
 
@@ -81,9 +85,6 @@ from the compositor's next start.
 
 ## Limits
 
-- Clients are told to draw their own decorations, so an application with a
-  title bar of its own shows it under the shell's. Terminals can usually turn
-  theirs off (foot: `csd.preferred=none`).
 - The taskbar's controls are not reached by the keyboard; its chords and
   `Super+1..9` are.
 - A drag does not carry a window to another output.

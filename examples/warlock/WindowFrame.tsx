@@ -11,7 +11,6 @@ import {
   focus,
   Group,
   instant,
-  Mirror,
   Rect,
   rotate,
   scale,
@@ -19,6 +18,7 @@ import {
   Text,
   translate,
   tween,
+  useWindow,
   Window,
   type Cursor,
   type Motion,
@@ -326,7 +326,9 @@ export const WindowFrame = memo(function WindowFrame({
   } = useWarlock();
   const lastPress = useRef(0);
   const pressed = useRef<number | null>(null);
-  const bar = theme.titleBarHeight;
+  // A window that draws its own title bar (it would not leave it to the shell) gets only the edge.
+  const own = useWindow(id)?.decorations === "client";
+  const bar = own ? 0 : theme.titleBarHeight;
   const color = focused ? theme.palette.text : theme.palette.textSecondary;
   const client = {
     x: 1,
@@ -399,19 +401,19 @@ export const WindowFrame = memo(function WindowFrame({
         transition={inner}
       />
       <Rect {...client} radius={9} fill={theme.palette.surface} transition={inner} />
-      {/* The client's corners are round, but under the title bar they must be square: its own top
-          edge, drawn once more unrounded, shows through where the corners were cut. */}
-      <Group
-        x={client.x}
-        y={client.y}
-        width={client.width}
-        height={10}
-        clip
-        transition={inner}
-        interactive={false}
-      >
-        <Mirror window={id} width={client.width} height={client.height} transition={inner} />
-      </Group>
+      {/* The client's corners are round, but under the title bar they must be square: its top
+          corners show the client's fill, square, rather than the frame through a cut. */}
+      {!own && (
+        <Rect
+          x={client.x}
+          y={client.y}
+          width={client.width}
+          height={10}
+          fill={theme.palette.surface}
+          transition={inner}
+          interactive={false}
+        />
+      )}
       <Window
         window={id}
         {...client}
@@ -439,118 +441,123 @@ export const WindowFrame = memo(function WindowFrame({
         onFullscreenRequest={({ value }) => !dialog && setFullscreen(id, Boolean(value))}
         onActivateRequest={() => activate(id)}
       />
-      <Box
-        x={1}
-        y={1}
-        width={rect.width - 2}
-        height={bar}
-        flexDirection="row"
-        alignItems="stretch"
-        transition={across}
-      >
-        <Box
-          flexGrow={1}
-          flexShrink={1}
-          flexDirection="row"
-          alignItems="center"
-          paddingX={14}
-          transition={across}
-          onPointerDown={(event) => {
-            pressed.current = event.button ?? leftButton;
-            if (pressed.current !== leftButton) return;
-            focus(id);
-            const now = performance.now();
-            if (!dialog && now - lastPress.current < doubleClickMs) {
-              lastPress.current = 0;
-              pressed.current = null;
-              toggleMaximize(id);
-              return;
-            }
-            lastPress.current = now;
-            controller.begin("move", id, event);
-          }}
-          onPointerMove={grabbed ? controller.move : undefined}
-          onPointerUp={(event) => {
-            if (pressed.current === rightButton && !dialog) menuAt(event.screenX, event.screenY);
-            else if (pressed.current === leftButton) controller.end(event);
-            pressed.current = null;
-          }}
-        >
-          {focused && (
-            <Rect
-              position="absolute"
-              x={6}
-              y={bar * 0.275}
-              width={3}
-              height={bar * 0.45}
-              radius={1.5}
-              fill={color}
-            />
-          )}
-          <Text
-            style={focused ? styles.titleFocused : styles.titleUnfocused}
-            flexShrink={1}
-            interactive={false}
+      {!own && (
+        <>
+          <Box
+            x={1}
+            y={1}
+            width={rect.width - 2}
+            height={bar}
+            flexDirection="row"
+            alignItems="stretch"
+            transition={across}
           >
-            {title}
-          </Text>
-        </Box>
-        {!dialog && (
-          <TitleButton
-            glyph={"−"}
-            color={color}
-            transition={inner}
-            onPress={() => {
-              focus(id);
-              minimize(id);
-            }}
+            <Box
+              flexGrow={1}
+              flexShrink={1}
+              flexDirection="row"
+              alignItems="center"
+              paddingX={14}
+              transition={across}
+              onPointerDown={(event) => {
+                pressed.current = event.button ?? leftButton;
+                if (pressed.current !== leftButton) return;
+                focus(id);
+                const now = performance.now();
+                if (!dialog && now - lastPress.current < doubleClickMs) {
+                  lastPress.current = 0;
+                  pressed.current = null;
+                  toggleMaximize(id);
+                  return;
+                }
+                lastPress.current = now;
+                controller.begin("move", id, event);
+              }}
+              onPointerMove={grabbed ? controller.move : undefined}
+              onPointerUp={(event) => {
+                if (pressed.current === rightButton && !dialog)
+                  menuAt(event.screenX, event.screenY);
+                else if (pressed.current === leftButton) controller.end(event);
+                pressed.current = null;
+              }}
+            >
+              {focused && (
+                <Rect
+                  position="absolute"
+                  x={6}
+                  y={bar * 0.275}
+                  width={3}
+                  height={bar * 0.45}
+                  radius={1.5}
+                  fill={color}
+                />
+              )}
+              <Text
+                style={focused ? styles.titleFocused : styles.titleUnfocused}
+                flexShrink={1}
+                interactive={false}
+              >
+                {title}
+              </Text>
+            </Box>
+            {!dialog && (
+              <TitleButton
+                glyph={"−"}
+                color={color}
+                transition={inner}
+                onPress={() => {
+                  focus(id);
+                  minimize(id);
+                }}
+              />
+            )}
+            {!dialog && (
+              <TitleButton
+                glyph={"□"}
+                color={color}
+                transition={inner}
+                onPress={() => toggleMaximize(id)}
+                onEnter={() => {
+                  // Hovering the focused window's maximize button offers the snap layouts.
+                  if (!focused || popup?.mode === "snap") return;
+                  if (canSnap(id)) {
+                    keepPopup();
+                    openPopup({ mode: "snap", window: id });
+                  } else notify("Snap layouts are unavailable for this window.", 4);
+                }}
+              />
+            )}
+            {!dialog && (
+              <TitleButton
+                glyph={"⋮"}
+                color={color}
+                transition={inner}
+                onPress={() => {
+                  // Under the title bar's left end, wherever the frame shows on the screen.
+                  const { x, y } = onScreen(rect.x, rect.y + bar);
+                  menuAt(x, y);
+                }}
+              />
+            )}
+            <TitleButton
+              glyph={"×"}
+              color={color}
+              danger
+              transition={inner}
+              onPress={() => closeWindow(id)}
+            />
+          </Box>
+          <Rect
+            x={1}
+            y={bar + 1 - (active ? 2 : 1)}
+            width={rect.width - 2}
+            height={active ? 2 : 1}
+            fill={active ? theme.palette.brandText : styles.rule}
+            transition={across}
+            interactive={false}
           />
-        )}
-        {!dialog && (
-          <TitleButton
-            glyph={"□"}
-            color={color}
-            transition={inner}
-            onPress={() => toggleMaximize(id)}
-            onEnter={() => {
-              // Hovering the focused window's maximize button offers the snap layouts.
-              if (!focused || popup?.mode === "snap") return;
-              if (canSnap(id)) {
-                keepPopup();
-                openPopup({ mode: "snap", window: id });
-              } else notify("Snap layouts are unavailable for this window.", 4);
-            }}
-          />
-        )}
-        {!dialog && (
-          <TitleButton
-            glyph={"⋮"}
-            color={color}
-            transition={inner}
-            onPress={() => {
-              // Under the title bar's left end, wherever the frame shows on the screen.
-              const { x, y } = onScreen(rect.x, rect.y + bar);
-              menuAt(x, y);
-            }}
-          />
-        )}
-        <TitleButton
-          glyph={"×"}
-          color={color}
-          danger
-          transition={inner}
-          onPress={() => closeWindow(id)}
-        />
-      </Box>
-      <Rect
-        x={1}
-        y={bar + 1 - (active ? 2 : 1)}
-        width={rect.width - 2}
-        height={active ? 2 : 1}
-        fill={active ? theme.palette.brandText : styles.rule}
-        transition={across}
-        interactive={false}
-      />
+        </>
+      )}
       {resizable &&
         resizeHandles.map(({ edges, cursor }, index) => (
           <Rect

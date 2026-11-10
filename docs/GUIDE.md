@@ -375,7 +375,7 @@ Hooks and actions:
 
 | API | Description |
 | --- | --- |
-| `useWindows()` | Mapped windows `{ id, title, appId, mapped, width, height, parent, minWidth, minHeight, maxWidth, maxHeight }`, creation order. `parent` is the window a dialog belongs to; the limits are the sizes the client accepts, 0 for none. |
+| `useWindows()` | Mapped windows `{ id, title, appId, mapped, width, height, parent, minWidth, minHeight, maxWidth, maxHeight, decorations }`, creation order. `parent` is the window a dialog belongs to; the limits are the sizes the client accepts, 0 for none; `decorations` is `"client"` while the window draws its own title bar, `"server"` once it leaves it to the world. |
 | `useWindowIds()` | The ids of `useWindows()`: a new array only when a window maps or unmaps, so memoized children keep still. |
 | `useWindow(id)`, `useFocusedWindow(seat?)`, `useModifiers(seat?)` | Compositor state; components re-render only when it changes. `useModifiers` lists the modifiers held, e.g. to end a switcher when they are let go. |
 | `useOutputs()` | Outputs with their size, scale and `workArea` (what the world's `Reserve`s leave). |
@@ -389,6 +389,7 @@ Hooks and actions:
 | `warpPointer(output, x, y)` | Moves the pointer there, as if it had moved: e.g. to the middle of an output focused by keyboard. |
 | `injectPointer(window, events)` | Pointer events straight to a window, shown or not, the pointer itself untouched: `{ motion: [x, y] }` in the window's logical pixels, `{ button, pressed }` (evdev codes), `{ wheel: notches }`. A press focuses the window; the window keeps drawing a while after, so no events at all wakes it, e.g. after keys. For agents at the computer. |
 | `useKeyboardGrab(handler \| null)` | Holds the keyboard while a handler is given: keys no `Shortcut` takes come to it (`key`, `text`, `code`, `pressed`, `repeat`, `modifiers`) instead of windows and pages, which lose keyboard focus meanwhile. The latest grab holds it until it lets go. For dialogs, overviews and world-drawn text fields. |
+| `useServerDecorations(on?)` | While mounted (and `on`), the world draws window frames: windows that support xdg-decoration (foot, Chromium, Qt and most toolkits but GTK) leave out their own title bars and edges, and a window's `decorations` says whether it did, so a frame can leave its title bar out over those that still draw their own (GTK 4). Released, or with no director connected, windows draw their own. |
 | `useInput(handler \| null)` | Hears every key and button press, wheel turn and gesture start (`kind`, and `key` or `button`) while a handler is given; each still reaches its target. E.g. to close an overlay at any input. |
 | `dwindle`, `masterStack`, `columns`, `grid`, `inset` | Pure tiling layouts from window ids and an area to boxes. |
 

@@ -36,6 +36,8 @@ export interface WireWindow {
   "min-height": number;
   "max-width": number;
   "max-height": number;
+  /** Who draws its title bar and edges: the client itself, or the compositor (the director's frame). */
+  decorations?: "client" | "server";
 }
 
 export interface WireRect {
@@ -163,6 +165,7 @@ export type ClientMessage =
   | { type: "grab-keyboard"; grab: boolean }
   /** While WATCH, every press, scroll and gesture start is also told as an `input` message. */
   | { type: "watch-input"; watch: boolean }
+  | { type: "decorations"; mode: "server" | "client" }
   | { type: "share-accept"; id: number; window?: number; output?: string; region?: WireRect }
   | { type: "share-cancel"; id: number }
   | { type: "capture"; id: number; window?: number; output?: string; region?: WireRect }

@@ -15,6 +15,7 @@ import {
   useCompositorInstance,
   useFocusedWindow,
   useInput,
+  useServerDecorations,
   useOutputs,
   usePersistentReducer,
   useWindows,
@@ -229,6 +230,8 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
   const focused = useFocusedWindow();
   const instance = useCompositorInstance();
   const [state, dispatch] = usePersistentReducer("warlock", warlockReducer, initialWarlockState);
+  // The shell draws every window's frame, so windows that can leave out their own title bars.
+  useServerDecorations();
   const appearance = useStored(appearanceFile);
   const motionOverride = useStored(motionFile);
   const theme = useMemo(() => makeTheme(appearance), [appearance]);

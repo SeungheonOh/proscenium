@@ -44,7 +44,7 @@ import { defaultFloat, dropZone, minimumSize, pageAt, pageOf } from "../geometry
 import { useTaskbarGroups, type TaskbarGroup } from "../groups.js";
 import { Portal } from "../portal.js";
 import type { View } from "../state.js";
-import { useWarlockTheme, type WarlockTheme } from "../theme.js";
+import { useWarlockTheme, type WarlockTheme, titleBarOf } from "../theme.js";
 import {
   useWarlock,
   type CanvasActions,
@@ -399,7 +399,7 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
   /** A dialog's frame: its own size, over the middle of the window it belongs to, wherever it was dragged from there. */
   function dialogRect(id: number, parent: Rectangle, moved: ReadonlyMap<number, Point>): Rectangle {
     const info = windows.get(id);
-    const bar = theme.titleBarHeight;
+    const bar = titleBarOf(theme, info);
     const width = Math.max(minimumSize.width, (info?.width ?? 0) + 2);
     const height = Math.max(minimumSize.height, (info?.height ?? 0) + bar + 2);
     const by = moved.get(id) ?? { x: 0, y: 0 };
@@ -566,7 +566,7 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
             return;
           }
           const info = windows.get(own.window);
-          const bar = theme.titleBarHeight;
+          const bar = titleBarOf(theme, info);
           const least = {
             width: Math.max(minimumSize.width, (info?.minWidth ?? 0) + 2),
             height: Math.max(minimumSize.height, (info?.minHeight ?? 0) + bar + 2),

@@ -589,6 +589,8 @@ void input_release_director(struct server *server) {
     /* What the director held goes back to clients. */
     server->seat_state.input_watched = false;
     input_grab_keyboard(server, false);
+    /* Without a director nothing draws frames: windows draw their own again. */
+    xdg_set_server_decorations(server, false);
 }
 
 /* Bindings. */

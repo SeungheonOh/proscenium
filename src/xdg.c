@@ -108,6 +108,8 @@ static void handle_unmap(struct wl_listener *listener, void *data) {
     window_unmapped(window);
 }
 
+static enum wlr_xdg_toplevel_decoration_v1_mode wanted_mode(struct server *server);
+
 static void handle_toplevel_commit(struct wl_listener *listener, void *data) {
     struct window *window = wl_container_of(listener, window, commit);
     struct wlr_xdg_toplevel *toplevel = window->toplevel;
@@ -116,8 +118,8 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data) {
         window->configured = false;
         window->states_known = false;
         if (window->decoration)
-            wlr_xdg_toplevel_decoration_v1_set_mode(
-                window->decoration, WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+            wlr_xdg_toplevel_decoration_v1_set_mode(window->decoration,
+                                                    wanted_mode(window->server));
         window_configure(window);
         if (!window->configured) wlr_xdg_toplevel_set_size(toplevel, 0, 0);
         return;
@@ -130,6 +132,14 @@ static void handle_toplevel_commit(struct wl_listener *listener, void *data) {
         window->min_height = state->min_height;
         window->max_width = state->max_width;
         window->max_height = state->max_height;
+        window_report(window);
+    }
+    /* The decoration mode, like the size, takes effect with the commit acknowledging it. */
+    bool server_decorated =
+        window->decoration &&
+        window->decoration->current.mode == WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE;
+    if (server_decorated != window->server_decorated) {
+        window->server_decorated = server_decorated;
         window_report(window);
     }
 }
@@ -239,7 +249,8 @@ static void handle_new_toplevel(struct wl_listener *listener, void *data) {
     window_report(window);
 }
 
-/* Decorations: windows draw their own; any frame around them is the director's shaders. */
+/* Decorations: windows draw their own, unless the director says it draws their frames
+ * (`decorations`), when windows that can are asked to leave them out. */
 
 struct decoration {
     struct wlr_xdg_toplevel_decoration_v1 *decoration;
@@ -247,24 +258,35 @@ struct decoration {
     struct wl_listener request_mode, destroy;
 };
 
-/* The mode goes out with a configure, which waits for the toplevel's initial commit. */
-static void set_client_side(struct wlr_xdg_toplevel_decoration_v1 *decoration) {
+static enum wlr_xdg_toplevel_decoration_v1_mode wanted_mode(struct server *server) {
+    return server->seat_state.server_decorations ? WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE
+                                                 : WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE;
+}
+
+/* The mode goes out with a configure, which waits for the toplevel's initial commit. Whatever
+ * a client asks for, it is told the mode the director wants. */
+static void set_mode(struct wlr_xdg_toplevel_decoration_v1 *decoration, struct server *server) {
     if (decoration->toplevel->base->initialized)
-        wlr_xdg_toplevel_decoration_v1_set_mode(decoration,
-                                                WLR_XDG_TOPLEVEL_DECORATION_V1_MODE_CLIENT_SIDE);
+        wlr_xdg_toplevel_decoration_v1_set_mode(decoration, wanted_mode(server));
 }
 
 static void handle_decoration_request_mode(struct wl_listener *listener, void *data) {
     struct decoration *decoration = wl_container_of(listener, decoration, request_mode);
-    set_client_side(decoration->decoration);
+    set_mode(decoration->decoration, decoration->window->server);
 }
 
 static void handle_decoration_destroy(struct wl_listener *listener, void *data) {
     struct decoration *decoration = wl_container_of(listener, decoration, destroy);
     wl_list_remove(&decoration->request_mode.link);
     wl_list_remove(&decoration->destroy.link);
-    if (decoration->window->decoration == decoration->decoration)
+    if (decoration->window->decoration == decoration->decoration) {
         decoration->window->decoration = NULL;
+        /* Without the object a client draws its own again. */
+        if (decoration->window->server_decorated) {
+            decoration->window->server_decorated = false;
+            window_report(decoration->window);
+        }
+    }
     window_unref(decoration->window);
     free(decoration);
 }
@@ -282,7 +304,16 @@ static void handle_new_decoration(struct wl_listener *listener, void *data) {
     wl_signal_add(&wlr_decoration->events.request_mode, &decoration->request_mode);
     decoration->destroy.notify = handle_decoration_destroy;
     wl_signal_add(&wlr_decoration->events.destroy, &decoration->destroy);
-    set_client_side(wlr_decoration);
+    set_mode(wlr_decoration, window->server);
+}
+
+void xdg_set_server_decorations(struct server *server, bool server_side) {
+    if (server->seat_state.server_decorations == server_side) return;
+    server->seat_state.server_decorations = server_side;
+    struct window *window;
+    wl_list_for_each(window, &server->windows, link)
+        if (window->alive && window->type == WINDOW_XDG && window->decoration)
+            set_mode(window->decoration, server);
 }
 
 /* Popups. */

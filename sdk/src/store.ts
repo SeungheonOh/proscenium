@@ -22,6 +22,11 @@ export interface WindowInfo {
   readonly minHeight: number;
   readonly maxWidth: number;
   readonly maxHeight: number;
+  /**
+   * Who draws its title bar and edges: "client" for a window that draws its own,
+   * "server" for one that leaves them to the world (see useServerDecorations).
+   */
+  readonly decorations: "client" | "server";
 }
 
 export interface Rectangle {
@@ -67,7 +72,8 @@ function toWindow(window: WireWindow): WindowInfo {
                          mapped: window.mapped, width: window.width, height: window.height,
                          parent: window.parent ?? null,
                          minWidth: window["min-width"] ?? 0, minHeight: window["min-height"] ?? 0,
-                         maxWidth: window["max-width"] ?? 0, maxHeight: window["max-height"] ?? 0 });
+                         maxWidth: window["max-width"] ?? 0, maxHeight: window["max-height"] ?? 0,
+                         decorations: window.decorations ?? "client" });
 }
 
 function toOutput(output: WireOutput): OutputInfo {

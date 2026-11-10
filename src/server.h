@@ -72,6 +72,8 @@ struct window {
     enum window_type type;
     struct wlr_xdg_toplevel *toplevel;
     struct wlr_xdg_toplevel_decoration_v1 *decoration;
+    /* Its decorations are the compositor's, as it last agreed (an acknowledged configure). */
+    bool server_decorated;
     struct wlr_xwayland_surface *xsurface;
     struct wlr_surface *surface;
     bool mapped, alive;
@@ -194,6 +196,8 @@ struct seat_state {
     bool keyboard_grabbed;
     /* The director hears of every press, scroll and gesture start, which go on as ever. */
     bool input_watched;
+    /* The director draws window frames: xdg toplevels are asked to leave theirs to it. */
+    bool server_decorations;
 };
 
 struct server {
@@ -330,6 +334,11 @@ void keyboard_sync_focus(struct server *server);
 /* xdg.c */
 void xdg_init(struct server *server);
 void xdg_finish(struct server *server);
+/* Ask every xdg toplevel, and every new one, to leave its decorations to the compositor
+ * (SERVER) or to draw its own. */
+void xdg_set_server_decorations(struct server *server, bool server_side);
+/* Whether WINDOW's decorations are the compositor's to draw, as it last agreed or hints. */
+bool window_server_decorated(struct window *window);
 
 /* xwayland.c */
 typedef void (*wlr_surface_iterator_func_t)(struct wlr_surface *surface, int sx, int sy,

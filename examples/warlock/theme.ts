@@ -284,6 +284,14 @@ export function themed<T>(build: (theme: WarlockTheme) => T): () => T {
   };
 }
 
+/** The height of the title bar the shell draws over WINDOW: none over one that draws its own. */
+export function titleBarOf(
+  theme: WarlockTheme,
+  window: { decorations: "client" | "server" } | undefined,
+): number {
+  return window?.decorations === "client" ? 0 : theme.titleBarHeight;
+}
+
 /** Warlock's one easing, and its two timings: a fill changing under the pointer, and under a press. */
 export const standardEasing = [0.2, 0, 0, 1] as const;
 export const stateSeconds = 0.09;

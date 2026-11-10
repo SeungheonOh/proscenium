@@ -113,6 +113,17 @@ function useLatest<T extends (...args: never[]) => void>(handler: T | null | und
 }
 
 /**
+ * Draw windows' frames in the world while ON (the default): windows that can are
+ * asked to leave out their own title bars and edges, and a window's
+ * `decorations` says whether it did ("server") or draws its own anyway
+ * ("client"), so a frame can leave its title bar out for those. Released, and
+ * whenever no director is connected, windows draw their own.
+ */
+export function useServerDecorations(on = true): void {
+  useEffect(() => (on ? currentSession().drawDecorations() : undefined), [on]);
+}
+
+/**
  * Hear every key and button press, wheel turn and gesture start while HANDLER
  * is given; they still reach whatever they go to. E.g. to close an overlay at
  * any input, as niri's hotkey overlay does.

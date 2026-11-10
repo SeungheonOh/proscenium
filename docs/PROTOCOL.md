@@ -164,6 +164,7 @@ and the runtime then shuts down.
 | `inject` | `window`, `events` | Up to 512 pointer events straight to the window, as an agent sends them: `{"motion": [x, y]}` in the window's logical pixels from its top left, `{"button": code, "pressed": bool}`, `{"wheel": notches}`. The seat's pointer enters the window's surface under each point for them, wherever the window shows or not, and goes back to what the pointer is over after; a press focuses the window, and buttons left down are let go. The window then keeps getting frame callbacks for a moment, shown or not; empty `events` just does that. Refused while the pointer holds a button, a grab or a drag. |
 | `grab-keyboard` | `grab`: boolean | While `true`, keys no shortcut takes come to the director as `key` messages instead of reaching windows and pages, which lose keyboard focus meanwhile. A key goes where its press went until it is released. |
 | `watch-input` | `watch`: boolean | While `true`, every key and button press, wheel motion and gesture start is also told to the director as an `input` message; each still reaches its target. |
+| `decorations` | `mode`: `"server"` or `"client"` | Who draws window frames. With `"server"` the director does: every xdg toplevel that supports xdg-decoration is told to leave out its own title bar and edges, now and as it maps; with `"client"` (the default, and again whenever no director is connected) windows draw their own. A window's `decorations` field says which it settled on. |
 | `share-accept` | `id`, then `window`, or `output` (default: the first) with optional `region {x, y, width, height}` in output-logical pixels | Starts a screen share. The client must have asked for that kind of source, and the region must lie within the output and be at least 8×8. |
 | `share-cancel` | `id` | Declines a pending share or stops a running one. |
 | `capture` | `id` (non-negative integer), then a source as in `share-accept` | Takes a screenshot; answered by `captured`. |
@@ -593,7 +594,7 @@ A removed prop is sent as `null`, which restores its default.
 | Message | Fields |
 | --- | --- |
 | `welcome` | `protocol`, `instance` (names this compositor process: window ids start over in the next), `display` (the Wayland socket name), `outputs`, `windows` (by id), `cameras` (one per output), `focus` and `modifiers` (one per seat), `shares` |
-| `window` | `window: {id, title, app, mapped, width, height, parent, "min-width", "min-height", "max-width", "max-height"}`. Sent when anything in it changes. `width`/`height` are the client's own size, rounded. `parent` is the window this one belongs to, as a dialog does (xdg_toplevel `set_parent`, X11 `WM_TRANSIENT_FOR`), or `null`. The limits are the sizes the client accepts; 0 leaves a bound free. |
+| `window` | `window: {id, title, app, mapped, width, height, parent, "min-width", "min-height", "max-width", "max-height", decorations}`. Sent when anything in it changes. `width`/`height` are the client's own size, rounded. `parent` is the window this one belongs to, as a dialog does (xdg_toplevel `set_parent`, X11 `WM_TRANSIENT_FOR`), or `null`. The limits are the sizes the client accepts; 0 leaves a bound free. `decorations` is `"client"` while the window draws its own title bar and edges, `"server"` once it has agreed to leave them out (see the `decorations` request; an X11 window that does not hint it draws its own title is `"server"`). |
 | `window-removed` | `id` |
 | `output` | `output: {name, x, width, height, scale, "work-area": {x, y, width, height}}`. Outputs form one row, and `x` is the offset in it. `work-area` is the output-local area left after reservations such as a bar. |
 | `output-removed` | `name` |
@@ -614,7 +615,7 @@ A removed prop is sent as `null`, which restores its default.
  "outputs":[{"name":"eDP-1","x":0,"width":1280,"height":800,"scale":2.000000,
    "work-area":{"x":0,"y":48,"width":1280,"height":752}}],
  "shares":[],"windows":[{"id":3,"title":"Terminal","app":"foot","mapped":true,"width":800,"height":600,
-   "parent":null,"min-width":0,"min-height":0,"max-width":0,"max-height":0}],
+   "parent":null,"min-width":0,"min-height":0,"max-width":0,"max-height":0,"decorations":"client"}],
  "cameras":[{"output":"eDP-1","x":640.000000,"y":400.000000,"zoom":1.000000,"rotation":0.000000}],
  "focus":[{"seat":"seat0","window":3}],"modifiers":[{"seat":"seat0","modifiers":[]}]}
 ```

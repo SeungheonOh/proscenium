@@ -1,3 +1,4 @@
+import { arrangements, presetKeys } from "../canvas/tiling.js";
 import { useEffect } from "react";
 import { launch, Shortcut, useModifiers } from "proscenium";
 import { terminal } from "../lib/settings.js";
@@ -168,6 +169,23 @@ export function Keybindings() {
       <Shortcut keys="Super+S" onPress={canvas.stackOrSpread} />
       {/* Held, Super+` goes on through the stack; letting go of Super picks. */}
       <Shortcut keys="Super+grave" repeat onPress={() => canvas.fanStack(1)} />
+      {/* Sunlight's placement keys, as the canvas world has them. */}
+      {presetKeys.map(([key, preset]) => (
+        <Shortcut
+          key={`tile-${preset}`}
+          keys={`Ctrl+Alt+${key}`}
+          onPress={() => canvas.tile(preset)}
+        />
+      ))}
+      {arrangements.map((columns) => (
+        <Shortcut
+          key={`arrange-${columns}`}
+          keys={`Ctrl+Alt+${columns}`}
+          onPress={() => canvas.arrangeColumns(columns)}
+        />
+      ))}
+      <Shortcut keys="Ctrl+Alt+A" onPress={() => canvas.tidy()} />
+      <Shortcut keys="Super+Shift+Z" onPress={() => canvas.undo()} />
       <Shortcut keys="Super+G" onPress={canvas.toggleGuides} />
       <Shortcut keys="Super+M" onPress={canvas.toggleMagnet} />
       <Shortcut keys="Super+Shift+M" onPress={canvas.cycleMagnetStrength} />

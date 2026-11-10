@@ -35,6 +35,12 @@
  *   drag onto a stack / Alt-drag    add a window to it / take one out (a plain drag moves the stack)
  *   Super+G                         alignment guides on or off
  *   Super+M / Super+Shift+M         magnet mode on or off / Gentle, Medium, Firm
+ *   Ctrl+Alt+arrows                 the focused window to a half of the screen in view; again, ⅔ and ⅓
+ *   Ctrl+Alt+U I J K / D F G / E T  a quarter / a third / two-thirds; Ctrl+Alt+Return fills, C centres
+ *   Ctrl+Alt+2 / 3 / 4, Ctrl+Alt+A  the windows in view in columns / tidy every window onto one grid
+ *   Super+Shift+Z                   put back what the last placement, drop or push moved
+ *   Super+D                         take out the paper, an Excalidraw drawing under the windows, or put it away
+ *   Super+N / Super+R / Super+X     night light / an old CRT / a magnifying lens under the pointer
  *
  * A new window opens tiled on the page in view, and snapping and maximizing fill the page in view
  * at 100%, else the page the window is on. Activating a window that is not all in view flies to it;
@@ -45,7 +51,12 @@
  * See warlock/README.md for what comes from where.
  */
 
+import { useMemo, type ReactNode } from "react";
+import { useOutputs } from "proscenium";
+import { PaperProvider } from "./canvas/paper/Paper.js";
+import { PaperToolbar, type ToolbarLook } from "./canvas/paper/Toolbar.js";
 import { MediaKeys } from "./components/MediaKeys.js";
+import { ScreenEffects } from "./components/ScreenEffects.js";
 import { Screenshots } from "./components/Screenshots.js";
 import { ShareChooser } from "./components/ShareChooser.js";
 import { Desktop, FullscreenWindows } from "./warlock/Desktop.js";
@@ -53,21 +64,66 @@ import { installFonts } from "./warlock/fonts.js";
 import { Keybindings } from "./warlock/Keybindings.js";
 import { PopupLayer } from "./warlock/Popup.js";
 import { Taskbar } from "./warlock/Taskbar.js";
+import { alpha, useWarlockTheme } from "./warlock/theme.js";
 import { WarlockProvider } from "./warlock/WarlockProvider.js";
 
 installFonts();
 
+/** Warlock's own colours to draw with on its dark canvas: text, its red, green, blue and amber. */
+const paperStrokes = ["#f6efe8", "#fca399", "#6ee0b8", "#8ec8ff", "#f2c172"];
+
+/** The paper lies on the first output's canvas. */
+function Paper({ children }: { children: ReactNode }) {
+  const output = useOutputs()[0];
+  return (
+    <PaperProvider
+      output={output}
+      name="warlock.paper"
+      folder="warlock-paper"
+      initialStroke={{ stroke: paperStrokes[0]!, width: 2 }}
+    >
+      {children}
+    </PaperProvider>
+  );
+}
+
+/** The paper's tools in Warlock's colours: a dark card, its red for what is picked. */
+function WarlockPaperToolbar() {
+  const { palette, skin } = useWarlockTheme();
+  const look = useMemo<ToolbarLook>(
+    () => ({
+      card: alpha(palette.surface, 0.94),
+      edge: skin.hairline,
+      shadow: "#0000009e",
+      ink: palette.text,
+      icons: palette.text,
+      hover: skin.hover,
+      active: skin.selected,
+      activeEdge: alpha(palette.brandText, 0.55),
+      ring: palette.brandText,
+      divider: skin.hairline,
+    }),
+    [palette, skin],
+  );
+  return <PaperToolbar keys="Super+D" strokeColors={paperStrokes} look={look} />;
+}
+
 export default function Warlock() {
   return (
-    <WarlockProvider>
-      <Desktop />
-      <Taskbar />
-      <FullscreenWindows />
-      <PopupLayer />
-      <Keybindings />
-      <ShareChooser />
-      <Screenshots />
-      <MediaKeys indicator={null} />
-    </WarlockProvider>
+    <ScreenEffects keys={{ lens: "Super+X" }}>
+      <WarlockProvider>
+        <Paper>
+          <Desktop />
+          <Taskbar />
+          <WarlockPaperToolbar />
+          <FullscreenWindows />
+          <PopupLayer />
+          <Keybindings />
+          <ShareChooser />
+          <Screenshots />
+          <MediaKeys indicator={null} />
+        </Paper>
+      </WarlockProvider>
+    </ScreenEffects>
   );
 }

@@ -35,7 +35,9 @@ import {
 import { closure, spread, stackOf } from "../../canvas/stacks.js";
 import { useArrange, type ArrangeEvent, type Links } from "../../canvas/useArrange.js";
 import { useFan } from "../../canvas/useFan.js";
+import { titles } from "../../canvas/tiling.js";
 import { useHistory, usePlacement } from "../../canvas/usePlacement.js";
+import { PaperLayer } from "../../canvas/paper/Paper.js";
 import type { PlaceWindows } from "../../canvas/usePlaces.js";
 import { useSelection, type Selection } from "../../canvas/useSelection.js";
 import { useStacks } from "../../canvas/useStacks.js";
@@ -707,6 +709,10 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
       turnPage: (columns, rows) => act().turnPage(columns, rows),
       stackOrSpread: () => act().stackOrSpread(),
       fanStack: (step) => act().fanStack(step),
+      tile: (preset) => act().tile(preset),
+      arrangeColumns: (columns) => act().arrangeColumns(columns),
+      tidy: () => act().tidy(),
+      undo: () => act().undo(),
       press(event, what) {
         const { rootOf, frames, selection, frameAt } = latest.current!;
         const window = event.window ?? frameAt(event.worldX, event.worldY);
@@ -819,6 +825,22 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
       // Left to right from the front window; it starts on the next one.
       const turn = [...ids].reverse();
       fan.open(turn, step === 1 ? 1 : turn.length - 1, "keys");
+    },
+    tile(preset) {
+      const placed = placement.tile(preset);
+      if (placed) notify(titles[placed], 3);
+    },
+    arrangeColumns(columns) {
+      placement.arrange(columns);
+      notify(`Arranged in ${columns} columns.`, 3);
+    },
+    tidy() {
+      setOverview(null);
+      placement.tidy();
+      notify("Tidied: every window on one grid.", 3);
+    },
+    undo() {
+      notify(history.undo() ? "Undone." : "Nothing to undo.", 3);
     },
   };
 
@@ -955,6 +977,8 @@ export function CanvasOutput({ output, index, portal }: CanvasOutputProps) {
         transition={animated ? cameraMotion : instant}
       />
       <CameraWatcher output={output.name} feed={feed} />
+      {/* The paper lies on the first output's canvas, under the windows. */}
+      {index === 0 && <PaperLayer />}
       {nodes}
       <Marks
         feed={feed}

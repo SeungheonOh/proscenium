@@ -49,6 +49,7 @@ import {
   type WindowRecord,
 } from "./state.js";
 import { appearanceFile, motionFile, useStored } from "./storage.js";
+import type { Preset } from "../canvas/tiling.js";
 import { makeTheme, WarlockThemeProvider } from "./theme.js";
 
 /** The one popup Warlock shows at a time, and what it is about. */
@@ -108,6 +109,14 @@ export interface CanvasHandle {
   stackOrSpread: () => void;
   /** Fan the focused window's stack out to pick from, or step the pick. */
   fanStack: (step: 1 | -1) => void;
+  /** The focused window to a slot of the screen in view, as Sunlight's keys put it: again, the next width. */
+  tile: (preset: Preset) => void;
+  /** The windows on the screen in view side by side in COLUMNS. */
+  arrangeColumns: (columns: number) => void;
+  /** Every window on one grid, the view framing them. */
+  tidy: () => void;
+  /** Put back what the last placement, drop or push moved. */
+  undo: () => void;
   /** A press with Alt or Super held: move the window under it or, with `select`, draw a selection box on empty desktop; or resize. */
   press: (event: StagePointerEvent, what: "move" | "select" | "resize") => void;
   drag: (event: StagePointerEvent) => void;
@@ -649,6 +658,10 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
       turnPage: (columns, rows) => here()?.turnPage(columns, rows),
       stackOrSpread: () => here()?.stackOrSpread(),
       fanStack: (step) => here()?.fanStack(step),
+      tile: (preset) => here()?.tile(preset),
+      arrangeColumns: (columns) => here()?.arrangeColumns(columns),
+      tidy: () => here()?.tidy(),
+      undo: () => here()?.undo(),
       toggleGuides: () => {
         const next = {
           ...keyed.current.arrangement,

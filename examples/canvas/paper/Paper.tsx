@@ -99,10 +99,15 @@ interface PaperProviderProps {
   /** What the paper's settings are kept under, and the folder its drawings are kept in. */
   name?: string;
   folder?: string;
+  /** The stroke colour and width the paper starts with, before anyone picks one. */
+  initialStroke?: { stroke: string; width: number };
   children: ReactNode;
 }
 
-export function PaperProvider({ output, name = "canvas.paper", folder = "paper", children }: PaperProviderProps) {
+const excalidrawStroke = { stroke: "#1e1e1e", width: 2 };
+
+export function PaperProvider({ output, name = "canvas.paper", folder = "paper", initialStroke = excalidrawStroke,
+                                children }: PaperProviderProps) {
   const [document] = useState(() => new PaperDocument(folder));
   const [out, setOut] = usePersistentState(`${name}.out`, false);
   const [tool, setTool] = usePersistentState<PaperProps["tool"]>(`${name}.tool`, {
@@ -110,9 +115,9 @@ export function PaperProvider({ output, name = "canvas.paper", folder = "paper",
     serial: 0,
   });
   const [style, setStyle] = usePersistentState<PaperProps["style"]>(`${name}.style`, {
-    stroke: "#1e1e1e",
+    stroke: initialStroke.stroke,
     background: "transparent",
-    width: 2,
+    width: initialStroke.width,
     serial: 0,
   });
   useEffect(() => () => document.close(), [document]);

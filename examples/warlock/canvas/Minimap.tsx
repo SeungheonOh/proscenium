@@ -80,20 +80,35 @@ export function Minimap({ output, index, feed, places, focused, animated }: Mini
         shadow={theme.shadows.raised}
         interactive={false}
       />
-      {[...places].map(([id, box]) => (
-        <Rect
-          key={id}
-          {...toMap(box)}
-          radius={1.5}
-          fill={id === focused ? palette.brandText : alpha(palette.textSecondary, 0.55)}
-          transition={track}
-          interactive={false}
-        />
-      ))}
       <Rect
         {...toMap(view)}
-        radius={2}
-        border={{ width: 1.5, color: palette.text }}
+        radius={3}
+        fill={alpha(palette.text, 0.05)}
+        transition={track}
+        interactive={false}
+      />
+      {[...places].map(([id, box]) => {
+        const mark = toMap(box);
+        const lit = id === focused;
+        return (
+          <Rect
+            key={id}
+            x={mark.x + 1}
+            y={mark.y + 1}
+            width={Math.max(2, mark.width - 2)}
+            height={Math.max(2, mark.height - 2)}
+            radius={2}
+            fill={lit ? alpha(palette.actionFill, 0.75) : alpha(palette.text, 0.14)}
+            border={{ width: 1, color: lit ? palette.brandText : alpha(palette.text, 0.28) }}
+            transition={track}
+            interactive={false}
+          />
+        );
+      })}
+      <Rect
+        {...toMap(view)}
+        radius={3}
+        border={{ width: 1.5, color: alpha(palette.text, 0.9) }}
         transition={track}
         interactive={false}
       />

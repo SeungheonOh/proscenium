@@ -501,17 +501,6 @@ export const WindowFrame = memo(function WindowFrame({
                 pressed.current = null;
               }}
             >
-              {focused && (
-                <Rect
-                  position="absolute"
-                  x={6}
-                  y={bar * 0.275}
-                  width={3}
-                  height={bar * 0.45}
-                  radius={1.5}
-                  fill={color}
-                />
-              )}
               <Text
                 style={focused ? styles.titleFocused : styles.titleUnfocused}
                 flexShrink={1}

@@ -48,6 +48,7 @@ import {
   type WarlockState,
   type WindowRecord,
 } from "./state.js";
+import { describeAction, modelChanges, post } from "./message-log.js";
 import { appearanceFile, motionFile, useStored } from "./storage.js";
 import type { Preset } from "../canvas/tiling.js";
 import { makeTheme, WarlockThemeProvider } from "./theme.js";
@@ -203,9 +204,9 @@ export interface WarlockContextValue {
   /** Choose the switcher's candidate, or the window at INDEX of its list. */
   commitSwitcher: (index?: number) => void;
 
-  /** What the taskbar's status chip says. */
-  status: string;
-  /** Say NOTICE in the status chip, for SECONDS or until the next notice. */
+  /** What the taskbar's status chip says for a moment; null while it shows the time. */
+  status: string | null;
+  /** Say NOTICE in the status chip, for SECONDS (four without), or until the next notice. */
   notify: (notice: string, seconds?: number) => void;
   /** The open popup's status line, which the chip mirrors; null when it has none to show. */
   setPopupStatus: (status: string | null) => void;
@@ -232,13 +233,20 @@ export function regionLabel(region: SnapRegion): string {
   return snapRegions.find((entry) => entry.region === region)?.label ?? region;
 }
 
+/** A window's name in the Messages panel: its title when short, else its application. */
+function shortName(window: WindowInfo): string {
+  const title = window.title.trim();
+  if (title && title.length <= 18) return title;
+  return window.appId || title.slice(0, 17) + "…" || `#${window.id}`;
+}
+
 /** Owns the Warlock world's windows, workspaces and popup, and shares them through `useWarlock`. */
 export function WarlockProvider({ children }: { children: ReactNode }) {
   const mapped = useWindows();
   const outputs = useOutputs();
   const focused = useFocusedWindow();
   const instance = useCompositorInstance();
-  const [state, dispatch] = usePersistentReducer("warlock", warlockReducer, initialWarlockState);
+  const [state, apply] = usePersistentReducer("warlock", warlockReducer, initialWarlockState);
   // The shell draws every window's frame, so windows that can leave out their own title bars.
   useServerDecorations();
   const appearance = useStored(appearanceFile);
@@ -246,6 +254,45 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
   const theme = useMemo(() => makeTheme(appearance), [appearance]);
 
   const windows = useMemo(() => new Map(mapped.map((window) => [window.id, window])), [mapped]);
+
+  // The Messages panel's log: names outlive their windows, so a closed one is still named.
+  const names = useRef(new Map<number, string>());
+  for (const window of mapped) names.current.set(window.id, shortName(window));
+  const nameOf = useCallback((id: number) => names.current.get(id) ?? `#${id}`, []);
+  /** Focus WINDOW, writing the command down. */
+  const focusWindow = useCallback((window: number | null) => {
+    post("cmd", "focus", window === null ? "Nothing" : nameOf(window));
+    focus(window);
+  }, []);
+  /** The model as of the last message, so messages sent before the next render each see their own. */
+  const model = useRef(state);
+  model.current = state;
+  const dispatch = useCallback((action: WarlockAction) => {
+    const before = model.current;
+    const after = warlockReducer(before, action);
+    model.current = after;
+    const quiet =
+      action.type === "sync" ||
+      action.type === "activateOutput" ||
+      action.type === "focused" ||
+      action.type === "show";
+    if (!quiet || before !== after) {
+      const { name, detail } = describeAction(action, nameOf);
+      post("msg", name, detail, modelChanges(before, after, nameOf));
+    }
+    apply(action);
+  }, []);
+  const seen = useRef(new Map<number, WindowInfo>());
+  useEffect(() => {
+    const now = new Map(mapped.map((window) => [window.id, window]));
+    for (const [id, window] of now) {
+      const was = seen.current.get(id);
+      if (!was) post("sub", "WindowOpened", `${nameOf(id)}  ${window.appId}`);
+      else if (was.title !== window.title) post("sub", "TitleChanged", nameOf(id));
+    }
+    for (const id of seen.current.keys()) if (!now.has(id)) post("sub", "WindowClosed", nameOf(id));
+    seen.current = now;
+  }, [mapped]);
   const ids = useMemo(
     () => mapped.map((window) => window.id),
     [mapped.map((window) => window.id).join()],
@@ -311,6 +358,7 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
   const flights = useRef(0);
   /** Ask for WINDOW to be brought into view. */
   const flyTo = useCallback((window: number, immediately = false) => {
+    post("cmd", "moveCamera", nameOf(window));
     setFlyRequest({ window, instant: immediately, serial: ++flights.current });
   }, []);
 
@@ -330,6 +378,9 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (focusedRoot !== null) dispatch({ type: "focused", window: focusedRoot });
   }, [focusedRoot]);
+  useEffect(() => {
+    post("sub", "FocusChanged", focused === null ? "Nothing" : nameOf(focused));
+  }, [focused]);
 
   /** The window to focus once WINDOW leaves the screen: the one most lately used that still shows. */
   const nextAfter = useCallback(
@@ -393,7 +444,7 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
         return entry && entry.workspace === workspace && !entry.minimized;
       });
       const latest = state.history.find((id) => here.includes(id)) ?? here[0];
-      focus(latest ?? null);
+      focusWindow(latest ?? null);
     },
     [focusOutput, outputs, workspaceOf, switchWorkspaces, roots, state.windows, state.history],
   );
@@ -409,7 +460,7 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
         focusOutput !== undefined;
       if (hidden) switchWorkspaces([[focusOutput, entry.workspace]]);
       dispatch({ type: "activate", windows: family(root) });
-      focus(window);
+      focusWindow(window);
       flyTo(root, hidden);
     },
     [rootOf, state, outputs, focusOutput, switchWorkspaces, family, flyTo],
@@ -419,7 +470,7 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
     (window: number) => {
       const root = rootOf(window);
       dispatch({ type: "minimize", windows: family(root) });
-      if (focusedRoot === root) focus(nextAfter(root));
+      if (focusedRoot === root) focusWindow(nextAfter(root));
     },
     [rootOf, family, focusedRoot, nextAfter],
   );
@@ -533,11 +584,14 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
       const root = rootOf(window);
       dispatch({ type: "transfer", windows: family(root), workspace });
       // It leaves the screen unless its new workspace shows; focus falls to what stays.
-      if (focusedRoot === root && !outputShowing(state, outputs, workspace)) focus(nextAfter(root));
+      if (focusedRoot === root && !outputShowing(state, outputs, workspace)) focusWindow(nextAfter(root));
     },
     [rootOf, family, focusedRoot, state, outputs, nextAfter],
   );
-  const closeWindow = useCallback((window: number) => close(window), []);
+  const closeWindow = useCallback((window: number) => {
+    post("cmd", "close", nameOf(window));
+    close(window);
+  }, []);
 
   const [popup, setPopup] = useState<Popup | null>(null);
   const serial = useRef(0);
@@ -545,11 +599,15 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
     (mode: PopupMode, options: PopupOptions = {}) => {
       const output = options.output ?? focusOutput?.name ?? outputs[0]?.name;
       if (output === undefined) return;
+      post("msg", "OpenPopup", mode.mode);
       setPopup({ ...mode, output, anchor: options.anchor ?? null, serial: ++serial.current });
     },
     [focusOutput, outputs],
   );
-  const closePopup = useCallback(() => setPopup(null), []);
+  const closePopup = useCallback(() => {
+    post("msg", "ClosePopup");
+    setPopup(null);
+  }, []);
 
   // A press is heard just before the node it lands on hears it, so wait a moment to learn where it went.
   const insidePress = useRef(0);
@@ -620,19 +678,20 @@ export function WarlockProvider({ children }: { children: ReactNode }) {
   }, [popup, windows]);
 
   const [notice, setNotice] = useState<string | null>(null);
-  const [popupStatus, setPopupStatus] = useState<string | null>(null);
+  const [, setPopupStatus] = useState<string | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const notify = useCallback((text: string, seconds?: number) => {
     clearTimeout(noticeTimer.current);
+    post("msg", "Notice", text);
     setNotice(text);
-    if (seconds !== undefined)
-      noticeTimer.current = setTimeout(() => setNotice(null), seconds * 1000);
+    noticeTimer.current = setTimeout(() => setNotice(null), (seconds ?? 4) * 1000);
   }, []);
   useEffect(() => () => clearTimeout(noticeTimer.current), []);
   useEffect(() => {
     if (!popup) setPopupStatus(null);
   }, [popup]);
-  const status = (popup ? popupStatus : null) ?? notice ?? idleNotice;
+  // The chip says what just happened, briefly; a popup says what it is doing in its own status line.
+  const status = notice === idleNotice ? null : notice;
 
   const motion = motionOverride === "reduced" ? "reduced" : "full";
 

@@ -19,10 +19,17 @@ import {
 } from "proscenium";
 import type { GlyphName } from "./glyphs.js";
 import { groupContext, groupPrimary, useTaskbarGroups, type TaskbarGroup } from "./groups.js";
+import { useTime } from "../lib/system/clock.js";
 import { Glyph } from "./kit.js";
 import { useLiveNotificationCount } from "./notifications.js";
 import { alpha, themed, useWarlockTheme } from "./theme.js";
 import { useWarlock, type PopupMode } from "./WarlockProvider.js";
+
+/** "14:05", and "Tue 10 Nov". */
+const clockTime = (time: Date) =>
+  `${String(time.getHours()).padStart(2, "0")}:${String(time.getMinutes()).padStart(2, "0")}`;
+const clockDate = (time: Date) =>
+  time.toLocaleDateString("en-GB", { weekday: "short", day: "numeric", month: "short" }).replace(",", "");
 
 const leftButton = 272;
 const rightButton = 273;
@@ -56,8 +63,9 @@ const useBarStyles = themed((theme) => {
       size: theme.rem(12),
       lineHeight: 1.35,
       color: palette.textSecondary,
-      maxLines: 2,
+      maxLines: 1,
     } as const,
+    clock: { color: palette.text, weight: 600 } as const,
   };
 });
 
@@ -271,7 +279,7 @@ function OutputBar({ output }: { output: OutputInfo }) {
   const narrow = output.width <= narrowWidth;
   const height = theme.barHeight;
   const chipWidth = Math.min(Math.max(160, output.width * 0.22), 320);
-  const shown = status !== "" && status !== "Ready";
+  const time = useTime();
   // The toolbar's room, what its controls need, and how far it is scrolled when they need more.
   const [view, setView] = useState(0);
   const [content, setContent] = useState(0);
@@ -380,13 +388,18 @@ function OutputBar({ output }: { output: OutputInfo }) {
             />
           </Box>
         </Box>
-        {shown && (
-          <Box style={styles.chip} maxWidth={chipWidth}>
-            <Text style={styles.chipText} flexShrink={1}>
+        <Box style={styles.chip} maxWidth={chipWidth}>
+          {status ? (
+            <Text key="notice" style={styles.chipText} flexShrink={1} initial={{ opacity: 0 }}>
               {status}
             </Text>
-          </Box>
-        )}
+          ) : (
+            <Text key="time" style={styles.chipText} flexShrink={1} initial={{ opacity: 0 }}>
+              <Text style={styles.clock}>{clockTime(time)}</Text>
+              {`  ${clockDate(time)}`}
+            </Text>
+          )}
+        </Box>
       </Box>
       <Rect
         x={0}

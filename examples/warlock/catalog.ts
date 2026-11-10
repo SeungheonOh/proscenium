@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { useSyncExternalStore } from "react";
 import { launch } from "proscenium";
+import { post } from "./message-log.js";
 
 export interface CatalogAction {
   id: string;
@@ -280,6 +281,7 @@ export function launchEntry(
   entry: CatalogEntry,
   options: { action?: CatalogAction; file?: string } = {},
 ): void {
+  post("cmd", "launch", options.action ? `${entry.name} · ${options.action.name}` : entry.name);
   if (options.action) launch(commandLine(options.action.exec, null));
   else if (options.file !== undefined) launch(commandLine(entry.exec, options.file));
   else launch(["gio", "launch", entry.path]);

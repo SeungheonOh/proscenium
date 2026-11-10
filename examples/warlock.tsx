@@ -18,6 +18,7 @@
  *   Super+W / F / P                 close / fullscreen / always on top
  *   Super+Ctrl+Left/Right           the previous / next workspace
  *   Super+Return                    a terminal
+ *   Super+I                         Messages: the update loop live, every message in and what it changed
  *
  * The desktop of every output is an infinite canvas (warlock/canvas): at home it is the desktop
  * above, and from there it pans and zooms, pages lying a screen apart all around.
@@ -61,6 +62,7 @@ import { ShareChooser } from "./components/ShareChooser.js";
 import { Desktop, FullscreenWindows } from "./warlock/Desktop.js";
 import { installFonts } from "./warlock/fonts.js";
 import { Keybindings } from "./warlock/Keybindings.js";
+import { Messages } from "./warlock/Messages.js";
 import { PopupLayer } from "./warlock/Popup.js";
 import { Taskbar } from "./warlock/Taskbar.js";
 import { alpha, useWarlockTheme } from "./warlock/theme.js";
@@ -114,6 +116,7 @@ export default function Warlock() {
         <Desktop />
         <Taskbar />
         <WarlockPaperToolbar />
+        <Messages />
         <FullscreenWindows />
         <PopupLayer />
         <Keybindings />

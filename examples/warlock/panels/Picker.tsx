@@ -100,7 +100,7 @@ export function PickerPanel({ group }: { group: string }) {
   return (
     <PopupFrame
       title="Choose a window"
-      status={status}
+      status={status ?? "Each window, live."}
       initial={members.length > 0 ? `window:${members[0]}` : "close"}
       onEscape={closePopup}
       list={{ gap: 12 }}

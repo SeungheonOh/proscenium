@@ -79,6 +79,15 @@ straight to history, there are no toasts, and volume is set in five steps.
   columns or tidy them onto one grid, with Super+Shift+Z to undo.
 - **Live previews.** The window picker and the switcher's cards show the
   windows themselves.
+- **Messages** (`Super+I`, [`Messages.tsx`](Messages.tsx)). Warlock's interface
+  is an Elm program; this shell runs the same loop in React, with
+  `warlockReducer` as its `update`. The panel shows it running, after Elm's
+  debugger: keys and presses, the compositor's news about windows and
+  notifications, each message `update` takes with what it changed in the
+  model, and the commands that go out (focus, close, launch, camera moves),
+  each travelling a map of the loop as it comes. The model's main fields light
+  up as they change. While it shows, it keeps a strip of the first output and
+  the windows make room. The log is [`message-log.ts`](message-log.ts).
 
 ## Assets
 

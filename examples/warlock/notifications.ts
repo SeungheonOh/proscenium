@@ -9,6 +9,7 @@
  * count and the Notifications panel, nothing else.
  */
 
+import { post } from "./message-log.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { useSyncExternalStore } from "react";
@@ -155,8 +156,15 @@ function hear(line: string): void {
       notice = "Notification target is no longer live. Its action will not be repeated.";
     }
   }
+  for (const entry of message.entries)
+    if (entry.state === "live" && !heard.has(`${entry.id}.${entry.incarnation}`))
+      post("sub", "Notification", `${entry.app} "${entry.summary}"`);
+  heard = new Set(message.entries.map((entry) => `${entry.id}.${entry.incarnation}`));
   show({ entries: message.entries, notice });
 }
+
+/** Notifications already written down in the Messages panel's log. */
+let heard = new Set<string>();
 
 function send(command: Record<string, unknown>): void {
   child?.stdin?.write(`${JSON.stringify(command)}\n`);

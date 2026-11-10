@@ -71,8 +71,7 @@ const scaleChoices: readonly { scale: TextScale; glyph: number }[] = [
 ];
 
 const shortcutNotices = {
-  loaded:
-    "Shortcut choices loaded. Conflicting bindings are preserved; choose a free chord or keep the existing shortcut.",
+  loaded: "",
   unsaved: "Unsaved shortcut choices. Existing bindings remain unchanged until you save.",
   remaining: "Stored choices changed. Confirm each remaining affected shortcut before saving.",
   changed:
@@ -201,13 +200,13 @@ export function SettingsPanel() {
   const [help, setHelp] = useState(false);
 
   const appearance = useDraft(appearanceFile, {
-    loaded: "Settings loaded.",
+    loaded: "",
     unsaved: "Unsaved changes. Save to apply.",
     saved: "Settings saved.",
     refused: "Settings change refused. Refresh, then choose again.",
   });
   const motionChoice = useDraft(motionFile, {
-    loaded: "Motion preference loaded.",
+    loaded: "",
     unsaved: "Unsaved motion preference. Save to apply.",
     saved: "Motion preference saved.",
     refused: "Motion preference refused. Refresh, then choose again.",
@@ -262,7 +261,10 @@ export function SettingsPanel() {
   return (
     <PopupFrame
       title="Settings"
-      status={`${appearance.notice} · ${shortcutNotice}`}
+      status={
+        [appearance.notice, shortcutNotice].filter(Boolean).join(" · ") ||
+        "Appearance, motion and shortcuts. Each saves on its own."
+      }
       initial="close"
       onEscape={closePopup}
       list={{ gap: 0 }}
@@ -362,7 +364,7 @@ export function SettingsPanel() {
         id="motion"
         glyph="motion"
         label={motionState}
-        detail={motionChoice.notice}
+        detail={motionChoice.notice || undefined}
         labelStyle={styles.strong}
         disabled
         marginTop={20}

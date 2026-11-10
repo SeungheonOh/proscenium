@@ -73,7 +73,7 @@ export function SnapPanel({ window }: { window: number }) {
   return (
     <PopupFrame
       title="Snap window"
-      status={status}
+      status={status ?? "Halves and quarters of the page in view."}
       initial="close"
       onEscape={closePopup}
       list={{ gap: 0 }}

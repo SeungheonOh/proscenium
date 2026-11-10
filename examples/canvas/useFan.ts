@@ -43,12 +43,14 @@ export interface Fan {
  * letting go of Alt (or Return, or a click on a window) picks, Escape puts it
  * back as it was. A card dragged along it takes a new place in the stack.
  * ONPICK hears the window picked, and whether the fan never showed; ONREORDER
- * the fan's new order, left to right.
+ * the fan's new order, left to right. A world that opens it with another chord
+ * names the MODIFIER whose release picks.
  */
 export function useFan(
   places: ReadonlyMap<number, Rectangle>,
   onPick: (window: number, quick: boolean) => void,
   onReorder: (order: readonly number[]) => void,
+  modifier: Modifier = "alt",
 ) {
   const [fan, setDrawn] = useState<Fan | null>(null);
   // The fan as it is now: a press, a move and a release can all come before React draws again.
@@ -63,7 +65,7 @@ export function useFan(
 
   // Opened with Alt+Tab, it picks when Alt is let go.
   const onModifiers = useEffectEvent((held: readonly Modifier[]) => {
-    if (fan?.by === "keys" && !held.includes("alt")) pick();
+    if (fan?.by === "keys" && !held.includes(modifier)) pick();
   });
   useEffect(() => onModifiers(modifiers), [modifiers]);
 

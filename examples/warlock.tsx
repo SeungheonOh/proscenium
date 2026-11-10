@@ -1,0 +1,73 @@
+/**
+ * Warlock: a desktop shell after Charles Hoskinson's Warlock
+ * (github.com/CharlesHoskinson/Warlock), which puts a Windows-style taskbar and
+ * window controls on Hyprland. Here nothing is a plugin: the world is the window
+ * manager, so every window action simply happens, and previews are the live windows.
+ *
+ *   the taskbar                     pinned and running applications, Applications, Task View,
+ *                                   Switch windows, Notifications, Files, System, Settings
+ *   a window's title bar            minimize, maximize (hover it for the snap layouts), its menu,
+ *                                   close; drag it to move, to an edge to snap, double-click to maximize
+ *   Alt+Tab, Alt+Shift+Tab          switch windows, most recently used first; let go of Alt to choose
+ *   Super+Tab                       Task View: windows by workspace, and moving them between workspaces
+ *   Super+Left/Right/Up/Down        snap to a half, maximize, restore or minimize
+ *   Super+Z / Alt+Space             the snap chooser / the focused window's menu
+ *   Super+Alt+Space, Super+Escape   Applications / System; Super+Shift+Alt+, opens Notifications
+ *   Super+1..9                      the taskbar's nth application; with Shift a new instance, with Alt its actions
+ *   Alt-drag or Super-drag          move a window (with Alt, on its own and past the guides); with the right button, resize it
+ *   Super+W / F / P                 close / fullscreen / always on top
+ *   Super+Ctrl+Left/Right           the previous / next workspace
+ *   Super+Return                    a terminal
+ *
+ * The desktop of every output is an infinite canvas (warlock/canvas): at home it is the desktop
+ * above, and from there it pans and zooms, pages lying a screen apart all around.
+ *
+ *   drag or scroll empty desktop    pan, with momentum; middle-drag and a three-finger swipe too
+ *   Super+wheel, pinch              zoom around the pointer
+ *   Super+O                         overview: every window of the workspace; click one to dive in, again to go back
+ *   Super+C / Super+Home            centre the focused window at 100% / fly home
+ *   Super+Shift+arrows              focus the nearest window that way and fly to it
+ *   Super+Alt+arrows                move the view by a page
+ *   Super+drag empty desktop        select the windows the box touches; Super+click clears
+ *   Super+S                         stack the selection; on a stacked window, spread its stack out
+ *   Super+`                         fan the focused window's stack out; let go of Super to pick
+ *   click a stack's pill            fan it out; click a window (or Return) to pick it
+ *   drag onto a stack / Alt-drag    add a window to it / take one out (a plain drag moves the stack)
+ *   Super+G                         alignment guides on or off
+ *   Super+M / Super+Shift+M         magnet mode on or off / Gentle, Medium, Firm
+ *
+ * A new window opens tiled on the page in view, and snapping and maximizing fill the page in view
+ * at 100%, else the page the window is on. Activating a window that is not all in view flies to it;
+ * each workspace remembers where its view was. Windows glide to their places, and a selected window
+ * dragged takes the selection with it. A map in the corner shows while the view is away from home.
+ *
+ * Windows open and close through Warlock's portal, a ring of red embers.
+ * See warlock/README.md for what comes from where.
+ */
+
+import { MediaKeys } from "./components/MediaKeys.js";
+import { Screenshots } from "./components/Screenshots.js";
+import { ShareChooser } from "./components/ShareChooser.js";
+import { Desktop, FullscreenWindows } from "./warlock/Desktop.js";
+import { installFonts } from "./warlock/fonts.js";
+import { Keybindings } from "./warlock/Keybindings.js";
+import { PopupLayer } from "./warlock/Popup.js";
+import { Taskbar } from "./warlock/Taskbar.js";
+import { WarlockProvider } from "./warlock/WarlockProvider.js";
+
+installFonts();
+
+export default function Warlock() {
+  return (
+    <WarlockProvider>
+      <Desktop />
+      <Taskbar />
+      <FullscreenWindows />
+      <PopupLayer />
+      <Keybindings />
+      <ShareChooser />
+      <Screenshots />
+      <MediaKeys indicator={null} />
+    </WarlockProvider>
+  );
+}

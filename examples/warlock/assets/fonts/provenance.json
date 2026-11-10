@@ -1,0 +1,46 @@
+{
+  "files": [
+    {
+      "file": "fonts/space-grotesk-bold.woff2",
+      "sourceURL": "https://raw.githubusercontent.com/floriankarsten/space-grotesk/03507d024a01282884232081fc6011c09ff4e849/fonts/woff2/static/SpaceGrotesk-Bold.woff2",
+      "upstreamCommit": "03507d024a01282884232081fc6011c09ff4e849",
+      "sha256": "06d705cebbab916f0c0fe82b6c6f4cae06aa07fd6f5ee078421206040326ef63",
+      "bytes": 41780
+    },
+    {
+      "file": "fonts/space-grotesk-OFL.txt",
+      "sourceURL": "https://raw.githubusercontent.com/floriankarsten/space-grotesk/03507d024a01282884232081fc6011c09ff4e849/OFL.txt",
+      "upstreamCommit": "03507d024a01282884232081fc6011c09ff4e849",
+      "sha256": "564ce565c371c5e5bbf286006565a7c9aa55a9f56e7ca58d56e05d649dd61a72",
+      "bytes": 4495
+    },
+    {
+      "file": "fonts/inter-variable.woff2",
+      "sourceURL": "https://raw.githubusercontent.com/rsms/inter/353b61b9f4430d5f420d56605a6e7993e0941470/docs/font-files/InterVariable.woff2",
+      "upstreamCommit": "353b61b9f4430d5f420d56605a6e7993e0941470",
+      "sha256": "693b77d4f32ee9b8bfc995589b5fad5e99adf2832738661f5402f9978429a8e3",
+      "bytes": 352240
+    },
+    {
+      "file": "fonts/inter-LICENSE.txt",
+      "sourceURL": "https://raw.githubusercontent.com/rsms/inter/353b61b9f4430d5f420d56605a6e7993e0941470/LICENSE.txt",
+      "upstreamCommit": "353b61b9f4430d5f420d56605a6e7993e0941470",
+      "sha256": "262481e844521b326f5ecd053e59b98c8b2da78c8ee1bdbb6e8174305e54935a",
+      "bytes": 4380
+    },
+    {
+      "file": "fonts/jetbrains-mono-regular.woff2",
+      "sourceURL": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/19371302b95d218af43299bce79ddbddd0bc364d/fonts/webfonts/JetBrainsMono-Regular.woff2",
+      "upstreamCommit": "19371302b95d218af43299bce79ddbddd0bc364d",
+      "sha256": "f1a7a03672cdd494ce0d5543fac6e4360fe22403c6de297fdc2e55a815f7baff",
+      "bytes": 92380
+    },
+    {
+      "file": "fonts/jetbrains-mono-OFL.txt",
+      "sourceURL": "https://raw.githubusercontent.com/JetBrains/JetBrainsMono/19371302b95d218af43299bce79ddbddd0bc364d/OFL.txt",
+      "upstreamCommit": "19371302b95d218af43299bce79ddbddd0bc364d",
+      "sha256": "a76abf002c49097d146e86740a3105a5d00450b1592e820a1109a8c5680cd697",
+      "bytes": 4399
+    }
+  ]
+}

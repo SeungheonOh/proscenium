@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <radialGradient id="glow" cx="22%" cy="90%" r="80%">
+      <stop offset="0" stop-color="#f2b7ae" stop-opacity=".9"/>
+      <stop offset=".5" stop-color="#f6ddd5" stop-opacity=".6"/>
+      <stop offset="1" stop-color="#f6f1ea" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="ribbonA" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#c2353a"/>
+      <stop offset=".5" stop-color="#e48b80"/>
+      <stop offset="1" stop-color="#f3e6dc"/>
+    </linearGradient>
+    <linearGradient id="ribbonB" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#efe3d8"/>
+      <stop offset=".55" stop-color="#d9675f"/>
+      <stop offset="1" stop-color="#f1e6dc"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset=".5" stop-color="#ffffff" stop-opacity=".9"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="facetL" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#ebe3d9"/>
+    </linearGradient>
+  </defs>
+  <rect width="1920" height="1080" fill="#f6f1ea"/>
+  <rect width="1920" height="1080" fill="url(#glow)"/>
+  <path d="M1240 120 1520 840 1700 470 1880 840 2160 120 1940 290 1700 0 1460 290Z" fill="url(#facetL)" opacity=".7"/>
+  <path d="m1700 520 30 40-30 40-30-40Z" fill="#a11d22" opacity=".85"/>
+  <path d="M-80 900C260 760 520 820 820 700s520-420 900-420 380 120 380 120v150s-200-80-420-40-500 380-860 470S120 1000-80 1080Z" fill="url(#ribbonA)" opacity=".85"/>
+  <path d="M-80 1000C300 880 600 960 980 820s620-360 1020-300v120c-300-40-560 160-860 300s-640 200-1140 140Z" fill="url(#ribbonB)" opacity=".6"/>
+  <path d="M-60 905C280 770 530 830 830 712s520-420 900-420c180 0 300 50 360 80" fill="none" stroke="url(#sheen)" stroke-width="2.4"/>
+  <g fill="#c2353a" opacity=".55">
+    <path d="m412 640 5 7-5 7-5-7Z"/><path d="m700 610 4 6-4 6-4-6Z"/><path d="m1120 600 5 7-5 7-5-7Z"/><path d="m1380 420 4 6-4 6-4-6Z"/>
+  </g>
+</svg>

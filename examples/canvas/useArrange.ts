@@ -169,6 +169,12 @@ type Pickup = Pick<StagePointerEvent, "screenX" | "screenY" | "worldX" | "worldY
 /** Where the pointer is during a drag, and the keys held. */
 type DragPoint = Pickup & Pick<StagePointerEvent, "modifiers">;
 
+/** What a world may turn off. */
+export interface ArrangeOptions {
+  /** A window held near a screen edge pans the canvas that way; on unless false. */
+  edgePan?: boolean;
+}
+
 /** What the handlers read when they run: the hook's inputs as of the latest render. */
 interface Inputs {
   places: ReadonlyMap<number, Rectangle>;
@@ -179,6 +185,7 @@ interface Inputs {
   stacks: Stacks;
   settings: ArrangeSettings;
   notify: (event: ArrangeEvent) => void;
+  panAtEdges: boolean;
 }
 
 /**
@@ -199,14 +206,16 @@ export function useArrange(
   links: Links,
   stacks: Stacks,
   notify: (event: ArrangeEvent) => void,
+  options: ArrangeOptions = {},
 ) {
   const [settings] = useArrangeSettings();
+  const panAtEdges = options.edgePan !== false;
   const [live, setLive] = useState<Live>(still);
   const drag = useRef<Drag | null>(null);
   const resizing = useRef<Resize | null>(null);
   // Handlers outlive the render that made them while the pointer is captured.
-  const current = useRef<Inputs>({ places, placeWindows, output, history, links, stacks, settings, notify });
-  current.current = { places, placeWindows, output, history, links, stacks, settings, notify };
+  const current = useRef<Inputs>({ places, placeWindows, output, history, links, stacks, settings, notify, panAtEdges });
+  current.current = { places, placeWindows, output, history, links, stacks, settings, notify, panAtEdges };
   const flingTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   const edgePan = useRef<EdgePan | null>(null);
@@ -359,9 +368,9 @@ export function useArrange(
 
   /** Held near an edge, the window in hand starts the canvas panning that way. */
   const startEdgePan = useCallback((d: Drag) => {
-    const { output } = current.current;
+    const { output, panAtEdges } = current.current;
     const camera = getCamera(output?.name);
-    if (edgePan.current || !output || !camera) return;
+    if (!panAtEdges || edgePan.current || !output || !camera) return;
     const speed = edgeVelocity(d.pointer, output);
     if (speed.x === 0 && speed.y === 0) return;
     edgePan.current = { timer: setInterval(stepEdgePan, edgeTick), camera, last: now() };

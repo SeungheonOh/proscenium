@@ -52,7 +52,7 @@ session or on a tty; `--headless --size 1280x720` runs it without a display, and
 user unit logging to `$XDG_STATE_HOME/proscenium/run.log`.
 
 The compositor starts XWayland, then the director on `--script`
-(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Eight examples ship with it, organized as ordinary React
+(`node sdk/bin/proscenium.mjs WORLD.tsx`). Worlds draw their own bar in TSX. Nine examples ship with it, organized as ordinary React
 apps:
 
 - [`canvas.tsx`](../examples/canvas.tsx): an infinite canvas with
@@ -128,6 +128,19 @@ apps:
   title, the back cover and the pages' top edge, with only faces turned toward
   the eye drawn. Hovering a spine pulls the book out; clicking it, or letting go
   of Super after Super+Tab, swings it open round its spine.
+- [`warlock.tsx`](../examples/warlock.tsx): a desktop shell after
+  [Warlock](https://github.com/CharlesHoskinson/Warlock), which puts a
+  Windows-style taskbar and window controls on Hyprland through a plugin. Here
+  the world is the window manager: a taskbar of pinned and running
+  applications, windows in frames with minimize, maximize, a menu and close,
+  snap layouts, an Alt-Tab switcher, Task View with workspaces, a launcher,
+  notifications served on the session bus, Files, a system menu and Settings
+  with Night, Dawn and high-contrast themes, all in native nodes with keyboard
+  focus, and windows that open and close through a portal of embers drawn by
+  two shaders. Its desktop is also a canvas: it pans and zooms over screen-sized
+  pages, flies to the window you switch to, and windows select, stack and fan
+  out with the canvas world's hooks. [`warlock/README.md`](../examples/warlock/README.md)
+  says what comes from where.
 
 They are laid out like a small React app, formatted with Prettier:
 [`components/`](../examples/components) holds what they share (the bar and

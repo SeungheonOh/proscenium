@@ -333,8 +333,9 @@ export function ApplicationsPanel() {
           width={width}
           marginBottom={6}
           onChangeText={type}
+          // The first result, whichever page shows: with a few pins its tile is pages away.
           onSubmit={() => {
-            if (tiles[0]) start(tiles[0]);
+            if (results[0]) start(results[0]);
           }}
           onEscape={closePopup}
         />

@@ -133,6 +133,14 @@ so the card glides from the drop point rather than jumping. A card that moves
 is drawn anew, so the copy's identity takes over cleanly. In the chat, a card
 that moved out leaves a note with "Bring back".
 
+A card pinned to the canvas stays in the world while it moves: dragged by its
+title bar, the card itself follows the pointer under the camera, with no copy
+and no "Pin to canvas". Let go over an edge, a corner or the chat, it goes
+there; anywhere else it stays on the canvas where it was let go. Super+drag
+anywhere on it moves it as Super+drag moves a window, and only on the canvas
+(the world asks `canvasCards` for the card under the pointer before any
+window, since cards are drawn over windows). Neither draws it anew.
+
 ## The frame
 
 Every interface sits in the same frame, so generated content never has to draw

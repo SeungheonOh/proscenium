@@ -13,7 +13,7 @@
 // away and the card fades in.
 
 import { useMemo, useRef, useState, type ReactNode } from "react";
-import { Box, getCamera, instant, Rect, Reserve, Screen, scale, Text } from "proscenium";
+import { Box, getCamera, instant, Rect, Reserve, Screen, scale, Text, type StagePointerEvent } from "proscenium";
 import { makeStyles, StyleSheet, Surface } from "proscenium/ui";
 import { barLayout } from "../components/bar/layout.js";
 import type { HostSurface, UIHost } from "./host.js";
@@ -50,7 +50,24 @@ interface Drag {
   fromY: number;
   /** Moved far enough to be a drag, not a click. */
   moving: boolean;
+  /**
+   * For a card pinned to the canvas: carried in the world rather than lifted onto the screen.
+   * Where it is now, the pointer's offset from it, and whether it stays on the canvas whatever
+   * it is let go over (Super+drag, as windows move) rather than docking on an edge or corner.
+   */
+  world?: { x: number; y: number; dx: number; dy: number; free: boolean };
 }
+
+/** What a world's Super+drag hands a card pinned to the canvas, so it moves as windows do. */
+export interface CanvasCarry {
+  /** Pick up the card under the pointer, if there is one: false leaves the press to the world. */
+  carry(event: StagePointerEvent): boolean;
+  move(event: StagePointerEvent): void;
+  release(event: StagePointerEvent): void;
+}
+
+/** The world's generated interfaces, while they are on: a world reaches its canvas cards through it. */
+export const canvasCards: { current: CanvasCarry | null } = { current: null };
 
 export interface Zone {
   mode: Mode;
@@ -111,8 +128,10 @@ function zoneAt(x: number, y: number, screen: Screenful, chat: Area | null, entr
   if (chat && entry.agent && entry.message && inside(x, y, chat)) {
     return { mode: "inline", place: {}, label: "Back to the chat", area: chat };
   }
-  return { mode: "floating", place: { x: Math.round(x - grab.x), y: Math.round(y - grab.y) }, label: "",
-           area: { x: x - grab.x, y: y - grab.y, width: grab.width, height: 0 } };
+  // Below the bar: a card let go over it drops just under it.
+  const below = Math.max(y - grab.y, top);
+  return { mode: "floating", place: { x: Math.round(x - grab.x), y: Math.round(below) }, label: "",
+           area: { x: x - grab.x, y: below, width: grab.width, height: 0 } };
 }
 
 function canvasTarget(screen: Screenful): Area {
@@ -139,51 +158,101 @@ export function useGrabbing(host: UIHost, screen: Screenful, chat: Area | null, 
   // What the handlers read, current without making them anew, so the cards that hold them need not render.
   const world = useRef({ host, screen, chat, surfaces });
   world.current = { host, screen, chat, surfaces };
+  // How tall each card on the canvas was last laid out, in the world's units: what Super+drag picks among.
+  const heights = useRef(new Map<string, number>());
   const entry = drag ? surfaces.find((surface) => surface.key === drag.key) : undefined;
-  const zone = drag?.moving && entry ? zoneAt(drag.x, drag.y, screen, chat, entry,
-                                              { x: drag.grabX, y: drag.grabY, width: drag.width, height: drag.height },
-                                              clearSpan(surfaces, screen, chat)) : null;
-  const handlers = useMemo<Omit<Grabbing, "dragging">>(() => ({
-    grab(key, event, size) {
-      const scaleBy = size.scale ?? 1;
-      const started: Drag = { key, grabX: Math.min(event.localX * scaleBy, size.width - 20), grabY: event.localY * scaleBy,
-                              width: size.width, height: (size.height ?? 0) * scaleBy, x: event.screenX, y: event.screenY,
-                              fromX: event.screenX, fromY: event.screenY, moving: false };
+  const zone = drag?.moving && entry ? dropZone(drag, screen, chat, entry, surfaces) : null;
+  const handlers = useMemo<Omit<Grabbing, "dragging"> & CanvasCarry>(() => {
+    const begin = (started: Drag) => {
       // Events can come faster than renders: keep what they see current at once.
       latest.current = started;
       setDrag(started);
-    },
-    move(event) {
-      const now = latest.current;
-      if (!now) return;
-      const moving = now.moving || Math.hypot(event.screenX - now.fromX, event.screenY - now.fromY) > 5;
-      latest.current = { ...now, x: event.screenX, y: event.screenY, moving };
-      setDrag(latest.current);
-    },
-    release(event) {
-      const now = latest.current;
-      latest.current = null;
-      setDrag(null);
-      if (!now?.moving) return;
-      const { host, screen, chat, surfaces } = world.current;
-      const dropped = surfaces.find((surface) => surface.key === now.key);
-      if (!dropped) return;
-      const target = zoneAt(event.screenX, event.screenY, screen, chat, dropped,
-                            { x: now.grabX, y: now.grabY, width: now.width }, clearSpan(surfaces, screen, chat));
-      if (target.mode === "canvas") {
+    };
+    const pickUp = (found: HostSurface, event: StagePointerEvent, size: { width: number; height?: number; scale?: number },
+                    free: boolean) => {
+      const scaleBy = size.scale ?? 1;
+      const x = found.place.x ?? 0;
+      const y = found.place.y ?? 0;
+      begin({ key: found.key, grabX: Math.min(event.localX * scaleBy, size.width - 20), grabY: event.localY * scaleBy,
+              width: size.width, height: (size.height ?? 0) * scaleBy, x: event.screenX, y: event.screenY,
+              fromX: event.screenX, fromY: event.screenY, moving: free,
+              world: found.mode === "canvas" ? { x, y, dx: x - event.worldX, dy: y - event.worldY, free } : undefined });
+    };
+    return {
+      grab(key, event, size) {
+        const found = world.current.surfaces.find((surface) => surface.key === key);
+        if (found) pickUp(found, event, size, false);
+      },
+      carry(event) {
+        // The topmost card pinned to the canvas under the pointer: the last drawn, as they are in raised order.
+        const found = world.current.surfaces.filter((surface) => surface.mode === "canvas").reverse().find((surface) => {
+          const x = surface.place.x ?? 0;
+          const y = surface.place.y ?? 0;
+          const height = heights.current.get(surface.key) ?? 0;
+          return event.worldX >= x && event.worldX <= x + surface.width && event.worldY >= y && event.worldY <= y + height;
+        });
+        if (!found) return false;
+        world.current.host.raise(found.key);
+        pickUp(found, event, { width: found.width }, true);
+        return true;
+      },
+      move(event) {
+        const now = latest.current;
+        if (!now) return;
+        const moving = now.moving || Math.hypot(event.screenX - now.fromX, event.screenY - now.fromY) > 5;
+        const carried = now.world && moving
+          ? { ...now.world, x: Math.round(event.worldX + now.world.dx), y: Math.round(event.worldY + now.world.dy) }
+          : now.world;
+        latest.current = { ...now, x: event.screenX, y: event.screenY, moving, world: carried };
+        setDrag(latest.current);
+      },
+      release(event) {
+        const now = latest.current;
+        latest.current = null;
+        const { host, screen, chat, surfaces } = world.current;
+        const dropped = now?.moving ? surfaces.find((surface) => surface.key === now.key) : undefined;
+        if (now?.world && dropped) {
+          // Let go over a dock or a corner it goes there; anywhere else it stays on the canvas, where it was carried.
+          // Placed before the drag ends, so it never glides back to where it was picked up.
+          const target = dropZone({ ...now, x: event.screenX, y: event.screenY }, screen, chat, dropped, surfaces);
+          if (target) host.place(now.key, target.mode, target.place);
+          else host.carry(now.key, Math.round(event.worldX + now.world.dx), Math.round(event.worldY + now.world.dy));
+        }
+        setDrag(null);
+        if (!now?.moving || !dropped || now.world) return;
+        const target = zoneAt(event.screenX, event.screenY, screen, chat, dropped,
+                              { x: now.grabX, y: now.grabY, width: now.width }, clearSpan(surfaces, screen, chat));
+        if (target.mode === "canvas") {
         // Dropped on the pin at the bottom, the card stays in view, as near to it as it fits.
         const left = Math.min(Math.max(event.screenX - now.grabX, margin), screen.width - now.width - margin);
         const top = Math.min(Math.max(event.screenY - now.grabY, screen.top), screen.height * 0.45);
         const at = toWorld(left, top, screen);
         host.place(now.key, "canvas", { x: Math.round(at.x), y: Math.round(at.y) });
-      } else {
-        host.place(now.key, target.mode, target.place);
-      }
-    },
-  }), []);
-  const dragging = drag?.moving ? drag.key : null;
+        } else {
+          host.place(now.key, target.mode, target.place);
+        }
+      },
+    };
+  }, []);
+  // A card carried on the canvas is itself what moves: no copy follows the pointer, so nothing hands over to one.
+  const dragging = drag?.moving && !drag.world ? drag.key : null;
   const grabbing = useMemo<Grabbing>(() => ({ ...handlers, dragging }), [handlers, dragging]);
-  return { grabbing, drag: drag?.moving ? drag : null, zone, entry };
+  const carried = drag?.moving && drag.world ? { key: drag.key, x: drag.world.x, y: drag.world.y } : null;
+  const measure = useMemo(() => (key: string, height: number) => { heights.current.set(key, height); }, []);
+  return { grabbing, carry: handlers as CanvasCarry, drag: drag?.moving ? drag : null, zone, entry, carried, measure };
+}
+
+/**
+ * Where DRAG would drop. A card carried on the canvas only leaves it for a dock, a corner or
+ * the chat, and not at all on Super+drag: anywhere else (null) it stays where it was carried.
+ */
+function dropZone(drag: Drag, screen: Screenful, chat: Area | null, entry: HostSurface,
+                  surfaces: readonly HostSurface[]): Zone | null {
+  if (drag.world?.free) return null;
+  const zone = zoneAt(drag.x, drag.y, screen, chat, entry,
+                      { x: drag.grabX, y: drag.grabY, width: drag.width, height: drag.height }, clearSpan(surfaces, screen, chat));
+  if (!drag.world) return zone;
+  return zone.mode === "dock" || zone.mode === "overlay" || zone.mode === "inline" ? zone : null;
 }
 
 // Cards stacked in a dock, a corner or a dialog are a row's gap apart, as cards are inside an interface.
@@ -242,15 +311,22 @@ function nodeKey(entry: HostSurface): string {
 }
 
 /** Interfaces pinned to the canvas: in the world, under the camera. */
-export function WorldSurfaces({ surfaces, dragging, output }: { surfaces: readonly HostSurface[]; dragging: string | null;
-                                                                output?: string }) {
+export function WorldSurfaces({ surfaces, grab, output }: { surfaces: readonly HostSurface[];
+                                                             grab: ReturnType<typeof useGrabbing>; output?: string }) {
   const styles = useStyles();
   const zoom = getCamera(output)?.zoom ?? 1;
-  return surfaces.filter((entry) => entry.mode === "canvas").map((entry) => (
-    <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" dimmed={dragging === entry.key} scale={zoom}
-                 frame={{ layoutId: identity(entry, dragging), x: entry.place.x ?? 0, y: entry.place.y ?? 0,
-                          initial: arriving, exit: leaving, transition: styles.motion.glide }} />
-  ));
+  const dragging = grab.grabbing.dragging;
+  return surfaces.filter((entry) => entry.mode === "canvas").map((entry) => {
+    // One being carried follows the pointer at once, and glides from wherever it is let go.
+    const carried = grab.carried?.key === entry.key ? grab.carried : null;
+    return (
+      <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" dimmed={dragging === entry.key} scale={zoom}
+                   onLaid={grab.measure}
+                   frame={{ layoutId: identity(entry, dragging), x: carried?.x ?? entry.place.x ?? 0,
+                            y: carried?.y ?? entry.place.y ?? 0, initial: arriving, exit: leaving,
+                            transition: carried ? styles.follow : styles.motion.glide }} />
+    );
+  });
 }
 
 interface ScreenSurfacesProps {
@@ -305,7 +381,8 @@ export function ScreenSurfaces({ surfaces, screen, chat, grab, middle }: ScreenS
         {surfaces.filter((entry) => entry.mode === "floating").map((entry) => (
           <SurfaceCard key={nodeKey(entry)} entry={entry} chrome="full" dimmed={dragging === entry.key}
                        maxHeight={Math.max(240, height - Math.max(top, entry.place.y ?? top) - margin)}
-                       frame={{ layoutId: identity(entry, dragging), x: entry.place.x ?? 0, y: entry.place.y ?? 0,
+                       // Kept below the bar wherever a program asks for it.
+                       frame={{ layoutId: identity(entry, dragging), x: entry.place.x ?? 0, y: Math.max(entry.place.y ?? top, top),
                                 initial: arriving, exit: leaving, transition: glide }} />
         ))}
         {anchors.filter((anchor) => used.current.has(anchor)).map((anchor) => (
@@ -340,6 +417,15 @@ function DropZones({ grab, screen }: { grab: ReturnType<typeof useGrabbing>; scr
   const styles = useStyles();
   const { drag, zone, entry } = grab;
   if (!drag || !entry) return null;
+  // A card carried on the canvas moves itself: only the dock or corner it would go to lights up.
+  if (drag.world) {
+    return zone && (
+      <Box style={styles.zone} x={zone.area.x} y={zone.area.y} width={zone.area.width} height={zone.area.height}
+           initial={{ opacity: 0 }} exit={{ opacity: 0 }} interactive={false}>
+        <Text style={styles.zoneLabel}>{zone.label}</Text>
+      </Box>
+    );
+  }
   const pin = canvasTarget(screen);
   const lit = zone && zone.mode !== "floating" ? zone : null;
   const onCanvas = zone?.mode === "canvas";

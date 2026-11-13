@@ -90,16 +90,19 @@ export interface SurfaceCardProps {
   scale?: number;
   /** The most it may take of the screen's height: a taller interface scrolls inside its frame. */
   maxHeight?: number;
+  /** Told how tall it is laid out, as it changes: where a card on the canvas can be picked up. */
+  onLaid?: (key: string, height: number) => void;
 }
 
 /** A generated interface with its frame; drag the title bar to move it to another mode. */
-export const SurfaceCard = memo(function SurfaceCard({ entry, chrome, width, dimmed = false, scale = 1, frame = {}, maxHeight = 0 }: SurfaceCardProps) {
+export const SurfaceCard = memo(function SurfaceCard({ entry, chrome, width, dimmed = false, scale = 1, frame = {}, maxHeight = 0,
+                                                        onLaid = noLaid }: SurfaceCardProps) {
   const themes = useContext(SurfaceThemes);
   const theme = entry.theme === "dark" ? themes.dark : themes.light;
   return (
     <ThemeProvider theme={theme}>
       <Framed entry={entry} chrome={chrome} width={width ?? entry.width} dimmed={dimmed} scale={scale} frame={frame}
-              maxHeight={maxHeight} />
+              maxHeight={maxHeight} onLaid={onLaid} />
     </ThemeProvider>
   );
 }, (before, after) => {
@@ -109,6 +112,8 @@ export const SurfaceCard = memo(function SurfaceCard({ entry, chrome, width, dim
   return shallowSame(restBefore, restAfter) && shallowSame(a, b);
 });
 
+function noLaid(): void {}
+
 function shallowSame(a: object, b: object): boolean {
   const left = a as Record<string, unknown>;
   const right = b as Record<string, unknown>;
@@ -116,7 +121,7 @@ function shallowSame(a: object, b: object): boolean {
   return keys.length === Object.keys(right).length && keys.every((key) => Object.is(left[key], right[key]));
 }
 
-function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Required<SurfaceCardProps>) {
+function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight, onLaid }: Required<SurfaceCardProps>) {
   const styles = useStyles();
   const colors = useColors();
   const type = useType();
@@ -150,7 +155,7 @@ function Framed({ entry, chrome, width, dimmed, scale, frame, maxHeight }: Requi
     : isMotion(given) ? { ...styles.moves, default: given, x: given, y: given } : { ...styles.moves, ...given };
   return (
     <Surface variant="card" style={styles.card} width={width} {...frame} transition={transition} fill={solid(colors.card)}
-             opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)} onLayout={(layout) => { laid.current = layout.height; }}>
+             opacity={(frame.opacity ?? 1) * (dimmed ? 0.3 : 1)} onLayout={(layout) => { laid.current = layout.height; onLaid(entry.key, layout.height); }}>
       {chrome === "full" && (
         <Box style={styles.bar} cursor="grab" {...grip}>
           {/* Title and owner on one line, so they share a baseline. */}

@@ -160,6 +160,19 @@ export class UIHost {
     this.changed();
   }
 
+  /**
+   * Move a card pinned to the canvas to (X, Y) in the world, telling its program. It stays
+   * the same card, carried there rather than drawn afresh, so it doesn't fade in again.
+   */
+  carry(key: string, x: number, y: number): void {
+    const found = this.surfaces.get(key);
+    if (!found || found.mode !== "canvas") return;
+    found.place = { x: Math.round(x), y: Math.round(y) };
+    found.raised = ++raises;
+    this.send(found.client, { type: "placed", id: found.id, mode: found.mode, place: found.place });
+    this.changed();
+  }
+
   private move(found: HostSurface, mode: Mode, place: Place): void {
     found.mode = mode;
     found.place = this.defaultPlace(mode, place, found.width);

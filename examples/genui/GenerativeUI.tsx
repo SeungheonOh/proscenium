@@ -17,7 +17,7 @@
  */
 
 import { dirname, join } from "node:path";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { Group, Shortcut, useOutputs, usePersistentState } from "proscenium";
 import { motion } from "proscenium/ui";
 import { barLayout } from "../components/bar/layout.js";
@@ -28,13 +28,18 @@ import { ChatPanel } from "./Chat.js";
 import { startAssistant, UIHost } from "./host.js";
 import { socketPath } from "./protocol.js";
 import { GrabContext, HostContext } from "./SurfaceCard.js";
-import { margin, ScreenSurfaces, useGrabbing, WorldSurfaces, type Area, type Screenful } from "./Surfaces.js";
+import { canvasCards, margin, ScreenSurfaces, useGrabbing, WorldSurfaces, type Area, type Screenful } from "./Surfaces.js";
 
 const chatWidth = 420;
 /** Below the bar, as far from it as everything keeps from the screen's edges. */
 const top = barLayout.margin + barLayout.height + margin;
 
-export function GenerativeUI() {
+/**
+ * Generated interfaces and the assistant's chat. BAR, the world's bar, is drawn between the
+ * cards pinned to the canvas and those on the screen: in tree order, so canvas cards pass
+ * under it as the camera moves, and screen cards, dialogs and drags stay over it.
+ */
+export function GenerativeUI({ bar }: { bar?: ReactNode } = {}) {
   const [host] = useState(() => new UIHost());
   const path = socketPath();
   useEffect(() => {
@@ -69,6 +74,11 @@ export function GenerativeUI() {
     width: chatWidth, height: screen.height - screen.top - margin,
   };
   const grab = useGrabbing(host, screen, chatOpen ? chatArea : null, surfaces);
+  // A world's Super+drag reaches the cards pinned to its canvas through this.
+  useEffect(() => {
+    canvasCards.current = grab.carry;
+    return () => { if (canvasCards.current === grab.carry) canvasCards.current = null; };
+  }, [grab.carry]);
 
   const panel = chatOpen && (
     <Group key="chat" initial={{ x: 40, opacity: 0 }} exit={{ x: 40, opacity: 0 }} transition={motion.slide}>
@@ -79,7 +89,8 @@ export function GenerativeUI() {
     <HostContext.Provider value={host}>
       <GrabContext.Provider value={grab.grabbing}>
         <Shortcut keys="Super+A" onPress={() => setChatOpen((open) => !open)} />
-        <WorldSurfaces surfaces={surfaces} dragging={grab.grabbing.dragging} output={screen.output} />
+        <WorldSurfaces surfaces={surfaces} grab={grab} output={screen.output} />
+        {bar}
         <ScreenSurfaces surfaces={surfaces} screen={screen} chat={chatOpen ? chatArea : null} grab={grab} middle={panel} />
       </GrabContext.Provider>
     </HostContext.Provider>

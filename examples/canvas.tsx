@@ -28,6 +28,30 @@
  *   Super+N / Super+R / Super+Z                       night light / retro CRT / magnifying lens
  *   Super+P                                           take out the paper, or put it away
  *
+ * Rooms: select windows with a Super+drag box and a menu over them makes them a
+ * room run by another world, a Hyprland-style tiler or niri's scrolling columns
+ * (canvas/useRooms.ts). A room is the size of the screen; its world lays its
+ * windows out. Drag one of them (Super+drag or its title bar) to another place
+ * in the layout (hypr swaps tiles, niri inserts between columns or tiles, lit
+ * where it would go), into another room, or out onto the canvas to free it.
+ * Drag a room's header to move the room; its buttons enter it, switch its
+ * world, or ungroup it.
+ *   Super+E / Super+Escape                            enter the focused window's room or leave it / leave
+ *   Super+arrows, in a room                           hypr: the neighbouring tile; niri: the next column or window
+ *   Super+Shift+arrows, in a room                     hypr: swap with the neighbour; niri: move the column or window
+ *   Super+T / Super+F, in a room                      hypr: dwindle or master layout / niri: maximize the column
+ *   Pinch out, in a room                              leave it
+ *   Three-finger swipe, in a room                     niri: the columns sideways, the workspaces up and down, under
+ *                                                     the fingers; hypr: the next room that way
+ *   Super+wheel, in a room                            niri: the next workspace (sideways, column); hypr: the next room
+ *   Super+Page_Up/Down, Super+I/U, in a niri room     the workspace above / below; Super+Up/Down go on past a column's end
+ *   Super+Ctrl+Up/Down (or Page_Up/Down), niri        the focused column to the workspace above / below
+ *   Super+Shift+Page_Up/Down, niri                    move the workspace up / down the stack
+ *
+ * A niri room's workspaces stack up and down from it, as in niri: the shown one
+ * in the room, the others above and below, framed more faintly, sliding as one
+ * when the shown one changes. Drag a window onto one to put it there.
+ *
  * The paper is an Excalidraw drawing that lies on the canvas under the windows.
  * While it is out, empty canvas draws, a toolbar along the bottom picks tools
  * and colors, and Excalidraw's keys work; the wheel, pinches and swipes still
@@ -68,6 +92,7 @@
  * window glides to its new place.
  */
 
+import { useRef } from "react";
 import {
   Background,
   Camera,
@@ -78,6 +103,7 @@ import {
   instant,
   launch,
   type ModifierName,
+  type Rectangle,
   PointerBinding,
   Shortcut,
   spring,
@@ -98,6 +124,11 @@ import { Selection } from "./canvas/Selection.js";
 import { closure } from "./canvas/stacks.js";
 import { arrangements, presetKeys, titles, type Preset } from "./canvas/tiling.js";
 import { Toast, useToast, type ToastMessage } from "proscenium/ui";
+import { RoomFrames, RoomHeaders, SelectionMenu } from "./canvas/RoomFrames.js";
+import { NiriRoomKeys } from "./canvas/NiriRoomKeys.js";
+import { RoomGestures } from "./canvas/RoomGestures.js";
+import { RoomStrip } from "./canvas/RoomStrip.js";
+import { boundsOf, kindNames, useRooms } from "./canvas/useRooms.js";
 import { useArrange, useArrangeSettings, type ArrangeEvent, type ArrangeSettings, type Links } from "./canvas/useArrange.js";
 import { useCameraActions } from "./canvas/useCameraActions.js";
 import { useFan } from "./canvas/useFan.js";
@@ -111,14 +142,18 @@ import { useStacks } from "./canvas/useStacks.js";
 import { ZoomLabel } from "./canvas/ZoomLabel.js";
 import { Desktop } from "./components/Desktop.js";
 import { Launcher } from "./components/Launcher.js";
+import { canvasCards } from "./genui/Surfaces.js";
 import { ScreenEffects } from "./components/ScreenEffects.js";
 import { directions, neighbour } from "./lib/geometry.js";
 import { terminal } from "./lib/settings.js";
+import { hyprWorkspace } from "./meta/worlds.js";
 import { colors, motion } from "./lib/theme.js";
 
 const cameraMotion = spring({ duration: 0.45, bounce: 0.08 });
 const arrowKeys = ["Left", "Right", "Up", "Down"] as const;
 const dragModifiers: ModifierName[][] = [["super"], ["super", "alt"]];
+/** What a window in a room does as a resize starts: nothing yet, its world sizes it as it goes. */
+function ignore() {}
 const joinedLabels = { added: "Added to stack", started: "New stack", merged: "Stacks merged" };
 
 export default function Canvas() {
@@ -153,6 +188,10 @@ export default function Canvas() {
   };
   const history = useHistory(places, placeWindows);
   const arrange = useArrange(places, placeWindows, output, history, links, stacks, onArranged);
+  const rooms = useRooms(places, placeWindows, output);
+  // The niri room whose keys are niri's: the one the camera is in, or else the focused window's.
+  const keyRoom = rooms.rooms.find((room) => room.id === rooms.entered) ?? (focused === null ? undefined : rooms.roomOf(focused));
+  const niriRoom = keyRoom?.world.kind === "niri" ? keyRoom : undefined;
   const placement = usePlacement(places, placeWindows, output, focused ?? stacked.at(-1), history, stacks, links);
   // Windows being dragged or pushed show where they are now, on the canvas and the minimap.
   const shown = arrange.shown;
@@ -309,11 +348,106 @@ export default function Canvas() {
     if (focused !== null) flyTo(focused, 1);
   }
 
+  /** The places of the windows in ROOM. */
+  function roomPlaces(members: readonly number[]) {
+    return new Map(members.flatMap((id) => (places.has(id) ? [[id, places.get(id)!] as const] : [])));
+  }
+
   function focusToward(key: (typeof arrowKeys)[number]) {
+    const room = focused === null ? undefined : rooms.roomOf(focused);
+    if (room && focused !== null) {
+      if (room.world.kind === "niri") {
+        const horizontal = key === "Left" || key === "Right";
+        const next = rooms.act(room.id, {
+          kind: "niri",
+          action: horizontal
+            ? { type: "focusColumn", to: key === "Left" ? "left" : "right" }
+            // Past the column's top or bottom, on to the workspace that way, as niri's Super+Up/Down do.
+            : { type: "focusWindow", direction: key === "Up" ? -1 : 1, orWorkspace: true },
+        });
+        if (next !== null) focus(next);
+      } else {
+        const next = neighbour(roomPlaces(room.members), focused, directions[key]!);
+        if (next !== null) focus(next);
+      }
+      return;
+    }
     const next = focused === null ? windows[0] : neighbour(places, focused, directions[key]!);
     if (next == null) return;
     focus(next);
     flyTo(next);
+  }
+
+  /** Super+Shift+arrows in a room: hypr swaps with the neighbouring tile, niri moves the column or the window. */
+  function moveInRoom(key: (typeof arrowKeys)[number]) {
+    const room = focused === null ? undefined : rooms.roomOf(focused);
+    if (!room || focused === null) return;
+    if (room.world.kind === "niri") {
+      const horizontal = key === "Left" || key === "Right";
+      rooms.act(room.id, {
+        kind: "niri",
+        action: horizontal
+          ? { type: "moveColumn", to: key === "Left" ? "left" : "right" }
+          : { type: "moveWindow", direction: key === "Up" ? -1 : 1 },
+      });
+      return;
+    }
+    const other = neighbour(roomPlaces(room.members), focused, directions[key]!);
+    if (other !== null) rooms.act(room.id, { kind: "hypr", action: { type: "swap", first: focused, second: other } });
+  }
+
+  /**
+   * niri's workspace keys, in a niri room: to the workspace above or below, the
+   * focused column along to it, or the workspace itself up or down the stack.
+   */
+  function niriWorkspace(kind: "focus" | "moveColumn" | "move", direction: 1 | -1) {
+    const room = focused === null ? undefined : rooms.roomOf(focused);
+    if (!room || room.world.kind !== "niri") return;
+    const next = rooms.act(room.id, {
+      kind: "niri",
+      action: kind === "focus" ? { type: "focusWorkspaceRelative", direction }
+        : kind === "moveColumn" ? { type: "moveColumnToWorkspace", direction }
+        : { type: "moveWorkspace", direction },
+    });
+    if (next !== null) focus(next);
+  }
+
+  /** Super+T / Super+F in a room: its world's layout key. */
+  function roomKey(key: "T" | "F") {
+    const room = focused === null ? undefined : rooms.roomOf(focused);
+    if (!room) return;
+    if (key === "T" && room.world.kind === "hypr") {
+      rooms.act(room.id, { kind: "hypr", action: { type: "toggleLayout", workspace: hyprWorkspace } });
+      say({ label: "Hyprland layout", detail: "dwindle ⇄ master" });
+    }
+    if (key === "F" && room.world.kind === "niri") rooms.act(room.id, { kind: "niri", action: { type: "maximizeColumn" } });
+  }
+
+  /** Super+E: into the focused window's room, or out of the room the camera is in. */
+  function enterOrLeave() {
+    if (rooms.entered !== null) {
+      rooms.leave();
+      return;
+    }
+    const room = focused === null ? undefined : rooms.roomOf(focused);
+    if (room) enterRoom(room.id);
+    else say({ label: "Not in a room", detail: "Super+drag a box over windows to make one", dot: "off" });
+  }
+
+  function enterRoom(id: number) {
+    const room = rooms.rooms.find((r) => r.id === id);
+    rooms.enter(id);
+    if (room) say({ label: kindNames[room.world.kind as keyof typeof kindNames], detail: "Super+Escape leaves", dot: "on" });
+  }
+
+  /** The selection's menu picked a world: the selected windows become a room of it, and the camera goes in. */
+  function makeRoom(kind: "hypr" | "niri") {
+    const ids = [...selection.ids];
+    const bounds = boundsOf(ids, places);
+    if (!bounds) return;
+    rooms.create(kind, ids, bounds);
+    selection.clear();
+    say({ label: kindNames[kind], detail: `${ids.length} windows · Super+Escape leaves`, dot: "on" });
   }
 
   /** The pill clicked: the stack whose top window is TOP fans out, left to right from the front. */
@@ -323,6 +457,9 @@ export default function Canvas() {
 
   /** How window ID moves to its box. */
   function transitionOf(id: number): Transition {
+    // A room being dragged takes its windows along at once.
+    const inRoom = rooms.motionOf(id);
+    if (inRoom) return inRoom;
     // A card dragged along a fan sticks to the pointer.
     if (fan.dragging === id) return instant;
     if (poses?.has(id)) return motion.glide;
@@ -332,21 +469,78 @@ export default function Canvas() {
 
   /** Window ID is in hand: being dragged, shuffled, or the one a fan would pick. */
   function isLifted(id: number) {
-    return arrange.held === id || swing?.window === id || (poses !== null && id === picked);
+    return rooms.held === id || arrange.held === id || swing?.window === id || (poses !== null && id === picked);
   }
 
+  /** Window ID drawn at BOX: on the canvas, or in its niri room's strip. */
+  function renderWindow(id: number, box: Rectangle) {
+    const fanned = poses?.has(id) ?? false;
+    return (
+      <CanvasWindow
+        key={id}
+        id={id}
+        box={box}
+        tilt={poses?.get(id)}
+        transition={transitionOf(id)}
+        // In a fan the window that would be picked wears the focus ring.
+        focused={poses ? id === picked : id === focused}
+        // Held by the canvas or by its room: either way it hears the pointer until let go.
+        grabbed={arrange.grabbed === id || rooms.held === id}
+        lifted={isLifted(id)}
+        onPress={fanned ? fan.press : undefined}
+        onHover={fanned ? fan.hover : undefined}
+        onRelease={fanned ? fan.release : undefined}
+        opening={opening.has(id)}
+        opacity={rooms.opacityOf(id)}
+        // A window in a room moves within it, to another room, or out; its world sizes it.
+        onPickUp={(window, event) => {
+          if (!rooms.grabWindow(window, event.worldX, event.worldY)) arrange.startDrag(window, event);
+        }}
+        onCarry={(event) => {
+          if (!rooms.carry(event.worldX, event.worldY)) arrange.moveDrag(event);
+        }}
+        onLetGo={(event) => {
+          if (!rooms.letGo(event.worldX, event.worldY)) arrange.endDrag(event);
+        }}
+        // A window in a room is resized by its world: niri's column width and tile height, hypr's splits.
+        onResizeStart={rooms.roomOf(id) ? ignore : arrange.startResize}
+        onResize={(window, event) => {
+          if (!rooms.resize(window, event)) arrange.resize(window, event);
+        }}
+        onResizeEnd={(window, event) => {
+          if (!rooms.resize(window, event)) arrange.endResize(window, event);
+        }}
+      />
+    );
+  }
+
+  const inStrip = new Set(rooms.strips.flatMap((strip) => [...strip.windows.keys()]));
+
   /** Super+drag on a window picks it up; on empty canvas it starts a selection box. */
+  // A generated interface pinned to the canvas is drawn over the windows, so Super+drag picks it up first.
+  const carryingCard = useRef(false);
+
   function pressWithSuper(event: StagePointerEvent) {
+    carryingCard.current = canvasCards.current?.carry(event) ?? false;
+    if (carryingCard.current) return;
+    // A window in a room takes the whole room along.
+    if (event.window != null && rooms.grabWindow(event.window, event.worldX, event.worldY)) return;
     if (event.window != null) arrange.startDrag(event.window, event);
     else selection.begin(event.worldX, event.worldY);
   }
 
   function dragWithSuper(event: StagePointerEvent) {
-    if (!selection.move(event.worldX, event.worldY)) arrange.moveDrag(event);
+    if (carryingCard.current) canvasCards.current?.move(event);
+    else if (rooms.carry(event.worldX, event.worldY)) return;
+    else if (!selection.move(event.worldX, event.worldY)) arrange.moveDrag(event);
   }
 
   function releaseWithSuper(event: StagePointerEvent) {
-    if (!selection.end()) arrange.endDrag(event);
+    if (carryingCard.current) {
+      carryingCard.current = false;
+      canvasCards.current?.release(event);
+    } else if (rooms.letGo(event.worldX, event.worldY)) return;
+    else if (!selection.end()) arrange.endDrag(event);
   }
 
   return (
@@ -357,37 +551,20 @@ export default function Canvas() {
         <Background
           fill={colors.paper}
           grid={{ kind: "dots", color: "#00000033", spacing: 28, size: 1.1 }}
-          pan
-          cursor="grab"
+          // In a room the camera stays put: scrolling the gaps between its windows doesn't drift out of it.
+          pan={rooms.entered === null}
+          cursor={rooms.entered === null ? "grab" : "default"}
         />
         <PaperLayer />
+        <RoomFrames rooms={rooms} />
 
-        {drawn.map((id) => {
-          const fanned = poses?.has(id) ?? false;
-          return (
-            <CanvasWindow
-              key={id}
-              id={id}
-              box={boxes.get(id)!}
-              tilt={poses?.get(id)}
-              transition={transitionOf(id)}
-              // In a fan the window that would be picked wears the focus ring.
-              focused={poses ? id === picked : id === focused}
-              grabbed={arrange.grabbed === id}
-              lifted={isLifted(id)}
-              onPress={fanned ? fan.press : undefined}
-              onHover={fanned ? fan.hover : undefined}
-              onRelease={fanned ? fan.release : undefined}
-              opening={opening.has(id)}
-              onPickUp={arrange.startDrag}
-              onCarry={arrange.moveDrag}
-              onLetGo={arrange.endDrag}
-              onResizeStart={arrange.startResize}
-              onResize={arrange.resize}
-              onResizeEnd={arrange.endResize}
-            />
-          );
-        })}
+        {/* niri rooms' windows, each room's in its strip, scrolling as one (canvas/RoomStrip.tsx). */}
+        {rooms.strips.map((strip) => (
+          <RoomStrip key={`strip-${strip.room.id}`} rooms={rooms} strip={strip}>
+            {drawn.filter((id) => strip.windows.has(id)).map((id) => renderWindow(id, strip.windows.get(id)!))}
+          </RoomStrip>
+        ))}
+        {drawn.filter((id) => !inStrip.has(id)).map((id) => renderWindow(id, boxes.get(id)!))}
         <Selection
           places={shown}
           selected={selection.ids}
@@ -403,9 +580,16 @@ export default function Canvas() {
           onLetGo={arrange.endDrag}
         />
         <Guides guides={arrange.guides} />
+        <RoomHeaders rooms={rooms} />
+        {selection.ids.size > 0 && !selection.box && (() => {
+          const bounds = boundsOf(selection.ids, shown);
+          return bounds && (
+            <SelectionMenu windows={[...selection.ids]} bounds={bounds} onPick={makeRoom} onDismiss={selection.clear} />
+          );
+        })()}
 
-        {output && <Minimap output={output} places={boxes} focused={focused} />}
-        <Desktop barStart={ZoomLabel} />
+        <Desktop barStart={ZoomLabel}
+                 chrome={output && <Minimap output={output} places={boxes} focused={focused} />} />
         <PaperToolbar />
         <Launcher output={output} />
         <Toast message={toast} />
@@ -423,15 +607,26 @@ export default function Canvas() {
         ))}
         <PointerBinding button="right" modifiers="super" action="resize" />
         <PointerBinding button="middle" action="pan" />
-        <WheelBinding modifiers="super" action="zoom" />
-        <GestureBinding gesture="pinch" fingers={2} action="zoom" />
-        <GestureBinding gesture="swipe" fingers={3} action="pan" />
+        {/* In a room the touchpad and Super+wheel are the room's (canvas/RoomGestures.tsx). */}
+        {rooms.entered === null ? (
+          <>
+            <WheelBinding modifiers="super" action="zoom" />
+            <GestureBinding gesture="pinch" fingers={2} action="zoom" />
+            <GestureBinding gesture="swipe" fingers={3} action="pan" />
+          </>
+        ) : (
+          <RoomGestures rooms={rooms} />
+        )}
 
         <Shortcut keys="Super+Return" onPress={() => launch(terminal)} />
         <Shortcut keys="Super+Q" onPress={closeFocused} />
         <Shortcut keys="Super+O" onPress={toggleOverview} />
         <Shortcut keys="Super+C" onPress={centerFocused} />
         <Shortcut keys="Super+G" onPress={toggleGuides} />
+        <Shortcut keys="Super+E" onPress={enterOrLeave} />
+        <Shortcut keys="Super+Escape" onPress={rooms.leave} />
+        <Shortcut keys="Super+T" onPress={() => roomKey("T")} />
+        <Shortcut keys="Super+F" onPress={() => roomKey("F")} />
         <Shortcut keys="Super+S" onPress={stackOrSpread} />
         <Shortcut keys="Alt+Tab" repeat onPress={() => fanStack(1)} />
         {/* Shift turns Tab into ISO_Left_Tab. */}
@@ -449,6 +644,22 @@ export default function Canvas() {
         {arrowKeys.map((key) => (
           <Shortcut key={key} keys={`Super+${key}`} onPress={() => focusToward(key)} />
         ))}
+        {arrowKeys.map((key) => (
+          <Shortcut key={`move-${key}`} keys={`Super+Shift+${key}`} onPress={() => moveInRoom(key)} />
+        ))}
+        {/* niri's workspace keys, in a niri room. */}
+        <Shortcut keys="Super+Page_Up" onPress={() => niriWorkspace("focus", -1)} />
+        <Shortcut keys="Super+Page_Down" onPress={() => niriWorkspace("focus", 1)} />
+        <Shortcut keys="Super+I" onPress={() => niriWorkspace("focus", -1)} />
+        <Shortcut keys="Super+U" onPress={() => niriWorkspace("focus", 1)} />
+        <Shortcut keys="Super+Ctrl+Up" onPress={() => niriWorkspace("moveColumn", -1)} />
+        <Shortcut keys="Super+Ctrl+Down" onPress={() => niriWorkspace("moveColumn", 1)} />
+        <Shortcut keys="Super+Ctrl+Page_Up" onPress={() => niriWorkspace("moveColumn", -1)} />
+        <Shortcut keys="Super+Ctrl+Page_Down" onPress={() => niriWorkspace("moveColumn", 1)} />
+        <Shortcut keys="Super+Shift+Page_Up" onPress={() => niriWorkspace("move", -1)} />
+        <Shortcut keys="Super+Shift+Page_Down" onPress={() => niriWorkspace("move", 1)} />
+        {/* Last, so they win over the canvas's own keys: niri's, in a niri room. */}
+        {niriRoom && <NiriRoomKeys rooms={rooms} room={niriRoom} />}
       </PaperProvider>
     </ScreenEffects>
   );

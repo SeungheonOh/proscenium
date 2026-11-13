@@ -45,6 +45,8 @@ interface CanvasWindowProps {
   onResizeEnd: (window: number, event: StageResizeEvent) => void;
   /** Just opened: it uncloaks into view. A window already there when the world (re)loads just shows. */
   opening: boolean;
+  /** How much of it shows: less for a window its room's layout keeps out of view. */
+  opacity?: number;
 }
 
 /** A move request that says where the pointer is, so it can become a drag. */
@@ -76,6 +78,7 @@ export const CanvasWindow = memo(function CanvasWindow({
   onResize,
   onResizeEnd,
   opening,
+  opacity = 1,
 }: CanvasWindowProps) {
   // Lifted shows in the shadow alone: grown, its edges would miss the guides they line up with.
   const transform = [rotate(tilt?.angle ?? 0), scale(tilt?.scale ?? 1)];
@@ -84,11 +87,14 @@ export const CanvasWindow = memo(function CanvasWindow({
     <>
       <Window
         window={id}
+        // The same window wherever it is drawn: going into a room's strip or out of one, it carries on from where it was.
+        layoutId={`window:${id}`}
         {...box}
         radius={10}
         tiled
         resizable
         transform={transform}
+        opacity={opacity}
         border={{ width: focused ? 2 : 1, color: focused ? colors.accent : "#00000022" }}
         shadow={{
           color: focused ? "#0000004d" : "#00000026",

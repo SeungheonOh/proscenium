@@ -59,7 +59,9 @@ which reloads the world whenever its sources change; a crashing or missing
 director leaves windows in a fallback cascade rather than hiding them. Options:
 `--socket PATH`, `--no-xwayland`, `--no-screen-sharing`, `--run-for SECONDS`,
 `--once` (no hot reload), `--dev` (React's development build and DevTools),
-`--damage-debug`. On a seat it owns, the compositor points the desktop portals at
+`--damage-debug`, `--remote [ADDRESS:]PORT` (stream the session to browsers as
+low-latency H.264, hardware-encoded where the GPU can, with their input driving
+it; see [Remote access](docs/GUIDE.md#remote-access)). On a seat it owns, the compositor points the desktop portals at
 itself (`scripts/setup-desktop-session`), so screen sharing reaches the world's
 share picker.
 

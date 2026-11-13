@@ -21,6 +21,9 @@ void input_finish(struct server *server);
 /* Offer virtual pointers and keyboards, as test drivers use: to every client, or with
  * DRIVE_ONLY to the proscenium-drive beside this binary alone. */
 void input_enable_virtual_devices(struct server *server, bool drive_only);
+/* Attach DEVICE, a keyboard or a pointer, as the backend's own devices are. */
+struct wlr_input_device;
+void input_add_device(struct server *server, struct wlr_input_device *device);
 
 /* The output under the pointer and the pointer's output-logical coordinates. */
 struct output *input_pointer_output(struct server *server, double *x, double *y);

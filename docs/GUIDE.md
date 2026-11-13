@@ -148,8 +148,8 @@ node sdk/bin/proscenium.mjs --socket "$PROSCENIUM_SOCKET" my-world.tsx
 development build for detailed component errors and connects to React DevTools
 (`npx react-devtools`), which shows the world's components, props and hooks
 live; the compositor passes both on to the director it starts. `--socket PATH`,
-`--no-xwayland`, `--no-screen-sharing`, `--run-for SECONDS` and `--damage-debug`
-also apply; `proscenium --help` lists them.
+`--no-xwayland`, `--no-screen-sharing`, `--run-for SECONDS`, `--damage-debug`
+and `--remote [ADDRESS:]PORT` (see [Remote access](#remote-access)) also apply; `proscenium --help` lists them.
 
 ## Architecture
 
@@ -700,6 +700,52 @@ display list as the output presents it. Either way a share captures only while a
 consumer streams it and after the source changed, at most 30 times a second,
 with four frames a second to keep a still stream alive, and never forces an
 output frame. With no share streaming, sharing costs nothing.
+
+## Remote access
+
+`--remote PORT` (or `--remote ADDRESS:PORT`, or `PROSCENIUM_REMOTE` in the
+environment; [`scripts/run-session`](../scripts/run-session) passes it on)
+streams an output to web browsers as H.264 and lets them drive the session with
+their pointer and keyboard. Open `http://localhost:PORT/` on the same machine,
+or `https://HOST:PORT/` from another: browsers decode with WebCodecs only on
+secure pages, so the same port also speaks TLS, with a self-signed certificate
+the compositor makes on first use and keeps in
+`$XDG_STATE_HOME/proscenium/remote.pem` (accept it once per browser). There is
+no password: anyone who reaches the port controls the session, so listen on a
+trusted network, or on `127.0.0.1` behind an SSH tunnel.
+
+Frames come straight from the output: after the render thread draws one (and
+after the fence the output's commit waits on, so the screen never waits for the
+stream), the GPU scales a copy to the stream's size (at most 2560×1600), converts
+it to the encoder's I420 in a shader, and reads it back asynchronously behind a
+fence, which the compositor collects when done. Streaming never stalls the loop,
+draws the scene twice or converts colours on the CPU, and reads back 1.5 bytes a
+pixel. Only changes are sent,
+at most `PROSCENIUM_REMOTE_FPS` (60) a second, and nothing is captured while no
+one watches. A thread of its own encodes with the first hardware encoder
+libavcodec can open, VA-API, then NVENC, then V4L2 (Raspberry Pi and other
+SoCs), and falls back to x264 tuned for zero latency, on half the cores and at a lower
+priority than the compositor so the session itself stays smooth;
+`PROSCENIUM_REMOTE_ENCODER=h264_vaapi` (or another) insists on one and
+`PROSCENIUM_REMOTE_BITRATE` sets kilobits a second (by default about 0.08 bits
+a pixel at full rate). There are no B-frames and no buffering: each frame goes
+out as soon as it is encoded, a viewer that falls behind skips to the next
+keyframe instead of queueing, and the page decodes with latency optimization
+and drops late frames.
+
+Input plays through a pointer and keyboard of the remote's own, so shortcuts,
+bindings and clients treat it as local input. The page draws the pointer itself
+in the shape the compositor shows (the stream carries none), so it moves at
+the browser's own rate. Its fullscreen button locks the keyboard where the
+browser allows, so Super, Escape and Alt+Tab reach the session.
+
+Gestures arrive as a touchpad's, so the world's `GestureBinding`s and clients see
+them. Browsers never see a touchpad's fingers, but they report its pinch (as
+Ctrl+wheel, or Safari's gesture events), which the page plays as a two-finger
+pinch. A touchscreen's fingers are all seen: two pinch and three or more swipe.
+Three-finger swipes on a touchpad stay with the viewer's own system, so the
+page's swipe toggle turns two-finger scrolling into a three-finger swipe.
+`PROSCENIUM_REMOTE_OUTPUT` picks the output; the first one streams otherwise.
 
 ## Computer use
 

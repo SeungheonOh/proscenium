@@ -507,7 +507,10 @@ static void commit_frame(struct output *output, struct output_frame *pending) {
     display_frame_done(frame, committed);
     double build_ms, draw_ms;
     display_frame_times(frame, &build_ms, &draw_ms);
-    if (committed) share_output_presented(server, output, &damage);
+    if (committed) {
+        share_output_presented(server, output, &damage);
+        remote_output_presented(server, output, &damage);
+    }
     pixman_region32_fini(&damage);
     wlr_output_state_finish(&state);
     wlr_buffer_unlock(buffer);
@@ -667,6 +670,7 @@ static void handle_destroy(struct wl_listener *listener, void *data) {
     struct server *server = output->server;
     web_output_removed(server, output);
     share_output_removed(server, output);
+    remote_output_removed(server, output);
     if (server->input) input_forget_output(server, output);
     windows_forget_output(server, output);
     wl_list_remove(&output->link);
@@ -757,6 +761,7 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
     outputs_layout(server);
     output->display = display_create(output);
     camera_center_unplaced(output);
+    remote_output_added(server);
     VEC_FOR(&server->cameras, struct node *, camera) {
         const char *name = node_string(*camera, PROP_OUTPUT);
         if (!name || !strcmp(name, output_name(output)))

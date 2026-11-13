@@ -152,6 +152,9 @@ struct display {
     struct wlr_damage_ring ring;
     pixman_region32_t pending;
     int buffer_width, buffer_height, transform;
+    /* Called with each frame drawn (display_set_tap). */
+    display_tap tap;
+    void *tap_data;
 
     /* The scene's items, and the seat's (drag icons), as last built. */
     struct item_set *scene, *seat;
@@ -224,6 +227,9 @@ struct display_frame {
     GLuint framebuffer;
     /* Milliseconds building it took on the main thread, and drawing it. */
     double build_ms, draw_ms;
+    /* The display's tap when it was built, called once it is drawn. */
+    display_tap tap;
+    void *tap_data;
     void (*done)(struct display_frame *frame, void *data);
     void *data;
 };
@@ -1430,6 +1436,13 @@ void display_add_damage(struct output *output, const pixman_region32_t *damage) 
                               (pixman_region32_t *)damage);
 }
 
+void display_set_tap(struct output *output, display_tap tap, void *data) {
+    struct display *display = output->display;
+    if (!display) return;
+    display->tap = tap;
+    display->tap_data = data;
+}
+
 void display_damage_whole(struct output *output) {
     struct display *display = output->display;
     if (!display) return;
@@ -2347,6 +2360,11 @@ static void draw_frame(void *data) {
         output_draw_end(output);
         if (frame->check) check_frame(frame, framebuffer);
         if (server->render_thread) render_thread_fence_render(server->render_thread);
+        /* After the fence the output's commit waits on, so the tap's copy never holds it up. */
+        if (frame->tap) {
+            glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
+            frame->tap(framebuffer, frame->width, frame->height, frame->tap_data);
+        }
         frame->drawn = true;
     }
     /* Mipmaps of surfaces shown but not drawn stay; the rest go once unused a while. */
@@ -2410,6 +2428,8 @@ struct display_frame *display_build(struct output *output, struct wlr_buffer *bu
     struct display_frame *frame = frame_new(output);
     frame->buffer = buffer;
     frame->check = server->check;
+    frame->tap = display->tap;
+    frame->tap_data = display->tap_data;
     frame_passes(&repair, &display->scene->items, frame->width, frame->height, &frame->passes);
     pixman_region32_fini(&repair);
     VEC_FOR(&frame->passes, struct rect, r)

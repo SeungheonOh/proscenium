@@ -30,6 +30,7 @@ struct display;
 struct camera;
 struct input;
 struct shares;
+struct remote;
 struct clipboard;
 struct json_writer;
 
@@ -257,6 +258,7 @@ struct server {
     struct web *web;
     struct input *input;
     struct shares *share;
+    struct remote *remote;
     struct clipboard *clipboard;
 
     /* Options. */

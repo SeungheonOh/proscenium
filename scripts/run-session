@@ -2,6 +2,8 @@
 # Run proscenium as the desktop on this seat, as a systemd user unit, directing it
 # with WORLD (default examples/deck.tsx). Another compositor owning the seat must
 # stop first. The log goes to $XDG_STATE_HOME/proscenium/run.log.
+# It streams to browsers on port 8080 (docs/GUIDE.md#remote-access); PROSCENIUM_REMOTE=[ADDRESS:]PORT
+# moves it, and PROSCENIUM_REMOTE=off turns it off.
 set -eu
 root=$(cd "$(dirname "$0")/.." && pwd)
 world=$(realpath "${1:-$root/examples/deck.tsx}")
@@ -12,6 +14,6 @@ systemctl --user stop proscenium-compositor.service 2>/dev/null || true
 systemctl --user reset-failed proscenium-compositor.service 2>/dev/null || true
 echo "=== $(date) $world ===" >> "$state/run.log"
 systemd-run --user --unit=proscenium-compositor --working-directory="$root" \
-    -E WLR_BACKENDS=drm,libinput -E PATH="$PATH" \
+    -E WLR_BACKENDS=drm,libinput -E PATH="$PATH" -E PROSCENIUM_REMOTE="${PROSCENIUM_REMOTE:-8080}" \
     -p StandardOutput=append:"$state/run.log" -p StandardError=append:"$state/run.log" \
     /usr/bin/env -u WAYLAND_DISPLAY -u DISPLAY "$root/build/meson/proscenium" --script "$world"

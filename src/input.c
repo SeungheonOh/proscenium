@@ -1176,9 +1176,7 @@ static void update_capabilities(struct server *server) {
     wlr_seat_set_capabilities(server->seat, caps);
 }
 
-static void handle_new_input(struct wl_listener *listener, void *data) {
-    struct server *server = wl_container_of(listener, server, new_input);
-    struct wlr_input_device *device = data;
+void input_add_device(struct server *server, struct wlr_input_device *device) {
     switch (device->type) {
     case WLR_INPUT_DEVICE_KEYBOARD: add_keyboard(server, device); break;
     case WLR_INPUT_DEVICE_POINTER:
@@ -1188,6 +1186,11 @@ static void handle_new_input(struct wl_listener *listener, void *data) {
     default: break;
     }
     update_capabilities(server);
+}
+
+static void handle_new_input(struct wl_listener *listener, void *data) {
+    struct server *server = wl_container_of(listener, server, new_input);
+    input_add_device(server, data);
 }
 
 /* Virtual devices, for test drivers on headless sessions, and on a real seat for
@@ -1815,6 +1818,7 @@ static int edge_cursor(uint32_t edges) {
 
 static void show_shape(struct server *server, int shape) {
     struct input *in = input_of(server);
+    remote_cursor(server, shape == CURSOR_NONE ? "none" : shape_names(shape)[0]);
     if (shape == CURSOR_NONE) {
         if (!in->shown_hidden) wlr_cursor_unset_image(server->cursor);
         in->shown_hidden = true;
@@ -1853,6 +1857,10 @@ static void input_update_cursor(struct server *server) {
         show_shape(server, node_cursor(in->capture));
     } else if (client && client->window && in->client_cursor_set) {
         /* Over a client the pointer shows the cursor that client set. */
+        /* Remote viewers draw named shapes themselves; a client's own image shows as the default. */
+        remote_cursor(server, in->client_cursor_shape ? in->client_cursor_shape
+                              : in->client_cursor  ? "default"
+                                                   : "none");
         if (in->client_cursor_shape) {
             if (in->shown_name != in->client_cursor_shape || in->shown_surface || in->shown_hidden)
                 wlr_cursor_set_xcursor(server->cursor, server->xcursor_manager,

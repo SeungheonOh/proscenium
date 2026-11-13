@@ -91,6 +91,17 @@ void share_output_removed(struct server *server, struct output *output);
 void share_window_changed(struct server *server, struct window *window);
 void share_window_gone(struct server *server, struct window *window);
 
+/* remote.c */
+/* Stream the first output (or PROSCENIUM_REMOTE_OUTPUT) to viewers at LISTEN: PORT or ADDRESS:PORT. */
+void remote_init(struct server *server, const char *listen);
+void remote_finish(struct server *server);
+void remote_output_presented(struct server *server, struct output *output,
+                             const pixman_region32_t *damage);
+void remote_output_added(struct server *server);
+void remote_output_removed(struct server *server, struct output *output);
+/* The pointer shows the CSS cursor NAME, or "none". */
+void remote_cursor(struct server *server, const char *name);
+
 /* capture.c */
 void capture_for_director(struct server *server, int64_t id, const struct capture_source *source);
 /* WIDTH x HEIGHT scaled down, keeping its aspect, to fit LIMIT_WIDTH x LIMIT_HEIGHT. */

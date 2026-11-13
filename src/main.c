@@ -69,6 +69,8 @@ struct options {
     int outputs;
     bool damage_debug;
     bool once, dev;
+    /* --remote: PORT or ADDRESS:PORT to stream to browsers on, or NULL. */
+    const char *remote;
 };
 
 static pid_t director_pid, setup_pid;
@@ -77,7 +79,7 @@ static void usage(void) {
     printf("Usage: proscenium [--script WORLD.tsx] [--socket PATH]\n"
            "                  [--headless [--size WxH] [--outputs N]] [--no-xwayland]\n"
            "                  [--screen-sharing | --no-screen-sharing] [--damage-debug]\n"
-           "                  [--run-for SECONDS] [--once] [--dev]\n");
+           "                  [--run-for SECONDS] [--once] [--dev] [--remote [ADDRESS:]PORT]\n");
 }
 
 static bool parse_options(int argc, char **argv, struct options *options) {
@@ -95,6 +97,7 @@ static bool parse_options(int argc, char **argv, struct options *options) {
         {"no-xwayland", no_argument, NULL, 'X'},    {"no-screen-sharing", no_argument, NULL, 'P'},
         {"screen-sharing", no_argument, NULL, 'p'}, {"damage-debug", no_argument, NULL, 'd'},
         {"once", no_argument, NULL, 'o'},           {"dev", no_argument, NULL, 'D'},
+        {"remote", required_argument, NULL, 'R'},
         {"help", no_argument, NULL, 'h'},           {0},
     };
     int option;
@@ -114,10 +117,15 @@ static bool parse_options(int argc, char **argv, struct options *options) {
         case 'd': options->damage_debug = true; break;
         case 'o': options->once = true; break;
         case 'D': options->dev = true; break;
+        case 'R': options->remote = optarg; break;
         default: return false;
         }
     }
     if (options->screen_sharing < 0) options->screen_sharing = !options->headless;
+    /* Taken, not inherited: a compositor nested in this one does not try the same port. */
+    const char *remote = getenv("PROSCENIUM_REMOTE");
+    if (!options->remote && remote && *remote && strcmp(remote, "off")) options->remote = strdup(remote);
+    unsetenv("PROSCENIUM_REMOTE");
     /* Refuse a world that cannot load before taking the seat, not after. */
     struct stat st;
     if (options->script && (stat(options->script, &st) < 0 || !S_ISREG(st.st_mode))) {
@@ -423,10 +431,12 @@ static bool server_start(struct server *server, const struct options *options) {
     for (int i = 0; options->headless && i < options->outputs; i++)
         wlr_headless_add_output(server->backend, options->width, options->height);
     if (server->screen_sharing) share_init(server);
+    if (options->remote) remote_init(server, options->remote);
     return true;
 }
 
 static void server_finish(struct server *server) {
+    remote_finish(server);
     share_finish(server);
     if (server->link) link_destroy(server->link);
     server->link = NULL;

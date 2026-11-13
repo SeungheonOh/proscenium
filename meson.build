@@ -70,10 +70,24 @@ if not pipewire.found()
   )
 endif
 
+# Remote access encodes with libavcodec (VA-API, NVENC, V4L2 or x264) and serves HTTPS with OpenSSL.
+remote_deps = [
+  dependency('libavcodec'), dependency('libavutil'), dependency('libswscale'), dependency('openssl'),
+]
+
 compositor_deps = [
   wlroots, wayland_server, xkbcommon, libinput, pixman, egl, glesv2, xcb, xcb_icccm,
   glib, gio, gio_unix, pipewire, threads, math,
-] + media_deps
+] + media_deps + remote_deps
+
+# The remote viewer's page, built into the binary.
+python = find_program('python3')
+remote_page = custom_target(
+  'remote-page.h',
+  input: 'data/remote.html',
+  output: 'remote-page.h',
+  command: [python, files('scripts/embed-file'), 'remote_page', '@INPUT@', '@OUTPUT@'],
+)
 
 sources = files(
   'src/camera.c',
@@ -92,6 +106,7 @@ sources = files(
   'src/motion.c',
   'src/output.c',
   'src/props.c',
+  'src/remote.c',
   'src/render.c',
   'src/renderthread.c',
   'src/scene.c',
@@ -99,6 +114,7 @@ sources = files(
   'src/screencast.c',
   'src/share.c',
   'src/stage.c',
+  'src/stream.c',
   'src/util.c',
   'src/web.c',
   'src/webnode.c',
@@ -109,7 +125,7 @@ sources = files(
 
 executable(
   'proscenium',
-  sources,
+  sources, remote_page,
   include_directories: include_directories('web'),
   dependencies: compositor_deps,
   install: true,

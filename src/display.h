@@ -51,6 +51,14 @@ void display_frame_done(struct display_frame *frame, bool committed);
 void display_frame_free(struct display_frame *frame);
 
 void display_add_damage(struct output *output, const pixman_region32_t *damage);
+/*
+ * Have TAP(FRAMEBUFFER, WIDTH, HEIGHT, DATA) called after each frame of OUTPUT is
+ * drawn: on the thread that drew it, its context current and FRAMEBUFFER (the
+ * output buffer, WIDTH x HEIGHT pixels) bound, before software cursors go over
+ * it. NULL stops it; frames already built may still call the old one.
+ */
+typedef void (*display_tap)(unsigned int framebuffer, int width, int height, void *data);
+void display_set_tap(struct output *output, display_tap tap, void *data);
 void display_damage_whole(struct output *output);
 void display_invalidate(struct output *output);
 

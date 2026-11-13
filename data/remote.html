@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Proscenium Remote</title>
+<style>
+  :root {
+    --bg: #0b0c0f;
+    --panel: rgba(22, 24, 30, 0.82);
+    --line: rgba(255, 255, 255, 0.09);
+    --text: #e8eaf0;
+    --faint: #9298a8;
+    --accent: #7aa2ff;
+    --good: #5fd39a;
+    --bad: #ff7a7a;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+               font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+               overflow: hidden; }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; }
+  canvas { display: block; outline: none; touch-action: none; background: #000;
+           image-rendering: auto; }
+  #bar { position: fixed; top: 10px; right: 10px; display: flex; align-items: center; gap: 6px;
+         padding: 5px 6px 5px 12px; border-radius: 999px; background: var(--panel);
+         border: 1px solid var(--line); backdrop-filter: blur(14px);
+         transition: opacity 0.25s ease, transform 0.25s ease; z-index: 2; }
+  #bar.hidden { opacity: 0; transform: translateY(-8px); pointer-events: none; }
+  #dot { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
+  #dot.live { background: var(--good); box-shadow: 0 0 8px var(--good); }
+  #dot.down { background: var(--bad); }
+  #status { color: var(--faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  button { appearance: none; border: 0; margin: 0; width: 28px; height: 28px; border-radius: 50%;
+           display: grid; place-items: center; background: transparent; color: var(--text);
+           cursor: pointer; }
+  button:hover { background: rgba(255, 255, 255, 0.08); }
+  button[aria-pressed="true"] { background: var(--accent); color: #0b0c0f; }
+  button svg { width: 15px; height: 15px; }
+  #notice { position: fixed; inset: 0; display: none; place-items: center; z-index: 3;
+            background: var(--bg); padding: 16px; }
+  #notice.shown { display: grid; }
+  #notice div { max-width: 460px; text-align: center; color: var(--faint); }
+  #notice h1 { font-size: 17px; color: var(--text); font-weight: 600; margin: 0 0 8px; }
+  #notice a { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="stage"><canvas id="screen" tabindex="0"></canvas></div>
+<div id="bar">
+  <span id="dot"></span>
+  <span id="status">Connecting…</span>
+  <button id="swipe" aria-pressed="false"
+          title="Two-finger scrolling swipes with three fingers, as on a touchpad (browsers never see three-finger swipes)">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 3v6M8 2v7M12 3v6M2 12h12M11 10l3 2-3 2"/></svg>
+  </button>
+  <button id="full" title="Fullscreen, with every key going to the remote">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/></svg>
+  </button>
+</div>
+<div id="notice"><div id="notice-body"></div></div>
+<script>
+"use strict";
+
+// evdev key codes by KeyboardEvent.code.
+const keys = {
+  Escape: 1, Digit1: 2, Digit2: 3, Digit3: 4, Digit4: 5, Digit5: 6, Digit6: 7, Digit7: 8, Digit8: 9,
+  Digit9: 10, Digit0: 11, Minus: 12, Equal: 13, Backspace: 14, Tab: 15, KeyQ: 16, KeyW: 17,
+  KeyE: 18, KeyR: 19, KeyT: 20, KeyY: 21, KeyU: 22, KeyI: 23, KeyO: 24, KeyP: 25, BracketLeft: 26,
+  BracketRight: 27, Enter: 28, ControlLeft: 29, KeyA: 30, KeyS: 31, KeyD: 32, KeyF: 33, KeyG: 34,
+  KeyH: 35, KeyJ: 36, KeyK: 37, KeyL: 38, Semicolon: 39, Quote: 40, Backquote: 41, ShiftLeft: 42,
+  Backslash: 43, KeyZ: 44, KeyX: 45, KeyC: 46, KeyV: 47, KeyB: 48, KeyN: 49, KeyM: 50, Comma: 51,
+  Period: 52, Slash: 53, ShiftRight: 54, NumpadMultiply: 55, AltLeft: 56, Space: 57, CapsLock: 58,
+  F1: 59, F2: 60, F3: 61, F4: 62, F5: 63, F6: 64, F7: 65, F8: 66, F9: 67, F10: 68, NumLock: 69,
+  ScrollLock: 70, Numpad7: 71, Numpad8: 72, Numpad9: 73, NumpadSubtract: 74, Numpad4: 75,
+  Numpad5: 76, Numpad6: 77, NumpadAdd: 78, Numpad1: 79, Numpad2: 80, Numpad3: 81, Numpad0: 82,
+  NumpadDecimal: 83, IntlBackslash: 86, F11: 87, F12: 88, IntlRo: 89, NumpadEnter: 96,
+  ControlRight: 97, NumpadDivide: 98, PrintScreen: 99, AltRight: 100, Home: 102, ArrowUp: 103,
+  PageUp: 104, ArrowLeft: 105, ArrowRight: 106, End: 107, ArrowDown: 108, PageDown: 109,
+  Insert: 110, Delete: 111, NumpadEqual: 117, Pause: 119, NumpadComma: 121, IntlYen: 124,
+  MetaLeft: 125, MetaRight: 126, ContextMenu: 127,
+  F13: 183, F14: 184, F15: 185, F16: 186, F17: 187, F18: 188, F19: 189, F20: 190, F21: 191,
+  F22: 192, F23: 193, F24: 194,
+};
+// BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE, BTN_EXTRA by MouseEvent.button.
+const buttons = [0x110, 0x112, 0x111, 0x113, 0x114];
+const MOTION = 1, BUTTON = 2, SCROLL = 3, KEY = 4, RELEASE = 5, KEYFRAME = 6, SWIPE = 7, PINCH = 8;
+const BEGIN = 0, UPDATE = 1, END = 2, CANCEL = 3;
+
+const canvas = document.getElementById("screen");
+const context = canvas.getContext("2d", { alpha: false, desynchronized: true });
+const bar = document.getElementById("bar");
+const dot = document.getElementById("dot");
+const statusText = document.getElementById("status");
+
+let socket = null;
+let decoder = null;
+let config = null;
+let waitingForKey = true;
+let size = { width: 0, height: 0 };
+const held = new Set();
+const stats = { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, since: performance.now() };
+const sentAt = new Map();
+
+function notice(html) {
+  document.getElementById("notice-body").innerHTML = html;
+  document.getElementById("notice").classList.add("shown");
+}
+
+if (!("VideoDecoder" in window)) {
+  const secure = `https://${location.hostname}:${location.port || 443}/`;
+  notice(window.isSecureContext
+    ? "<h1>This browser cannot decode the stream</h1>It needs WebCodecs: a recent Chrome, Edge, Safari or Firefox."
+    : `<h1>Open the secure address</h1>Browsers decode video only on secure pages.
+       Open <a href="${secure}">${secure}</a> and accept its self-signed certificate.`);
+  throw new Error("no WebCodecs");
+}
+
+// Input.
+
+function send(type, flag, a, b, aIsInt) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const message = new DataView(new ArrayBuffer(12));
+  message.setUint8(0, type);
+  message.setUint8(1, flag ? 1 : 0);
+  if (aIsInt) message.setUint32(4, a >>> 0, true);
+  else message.setFloat32(4, a || 0, true);
+  message.setFloat32(8, b || 0, true);
+  socket.send(message.buffer);
+}
+
+// A swipe or a pinch: [type][phase][fingers][0] and float fields, padded to what the server reads.
+function sendGesture(type, phase, fingers, values) {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  const fields = type === PINCH ? 4 : 2;
+  const message = new DataView(new ArrayBuffer(4 + 4 * fields));
+  message.setUint8(0, type);
+  message.setUint8(1, phase);
+  message.setUint8(2, fingers);
+  for (let i = 0; i < fields; i++) message.setFloat32(4 + 4 * i, values[i] ?? (type === PINCH && i === 0 ? 1 : 0), true);
+  socket.send(message.buffer);
+}
+
+// CSS pixels to the stream's, which gestures move in.
+function toStream(dx, dy) {
+  const rect = canvas.getBoundingClientRect();
+  return [dx * canvas.width / (rect.width || 1), dy * canvas.height / (rect.height || 1)];
+}
+
+function point(event) {
+  const rect = canvas.getBoundingClientRect();
+  const x = (event.clientX - rect.left) / rect.width;
+  const y = (event.clientY - rect.top) / rect.height;
+  return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
+}
+
+// Fingers on a touchscreen: one points and presses as a mouse does; two pinch; three or more swipe.
+const touches = new Map();
+let touchGesture = null;
+let touchPressed = false;
+
+function touchShape() {
+  const points = [...touches.values()];
+  const x = points.reduce((sum, p) => sum + p.x, 0) / points.length;
+  const y = points.reduce((sum, p) => sum + p.y, 0) / points.length;
+  const [a, b] = points;
+  const distance = b ? Math.hypot(b.x - a.x, b.y - a.y) : 0;
+  const angle = b ? Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI : 0;
+  return { x, y, distance, angle, fingers: points.length };
+}
+
+function endTouchGesture(cancelled) {
+  if (!touchGesture) return;
+  sendGesture(touchGesture.type, cancelled ? CANCEL : END, touchGesture.fingers, []);
+  touchGesture = null;
+}
+
+function startTouchGesture() {
+  endTouchGesture(true);
+  if (touchPressed) {
+    send(BUTTON, false, buttons[0], 0, true);
+    touchPressed = false;
+  }
+  const shape = touchShape();
+  const type = shape.fingers === 2 ? PINCH : SWIPE;
+  touchGesture = { type, fingers: Math.min(shape.fingers, 5), start: shape, last: shape };
+  sendGesture(type, BEGIN, touchGesture.fingers, []);
+}
+
+function moveTouchGesture() {
+  const shape = touchShape();
+  const g = touchGesture;
+  const [dx, dy] = toStream(shape.x - g.last.x, shape.y - g.last.y);
+  if (g.type === PINCH) {
+    let turn = shape.angle - g.last.angle;
+    if (turn > 180) turn -= 360;
+    if (turn < -180) turn += 360;
+    sendGesture(PINCH, UPDATE, g.fingers, [shape.distance / (g.start.distance || 1), turn, dx, dy]);
+  } else {
+    sendGesture(SWIPE, UPDATE, g.fingers, [dx, dy]);
+  }
+  g.last = shape;
+}
+
+canvas.addEventListener("pointermove", (event) => {
+  if (event.pointerType === "touch" && touches.has(event.pointerId)) {
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (touchGesture) {
+      moveTouchGesture();
+      return;
+    }
+  }
+  const [x, y] = point(event);
+  send(MOTION, 0, x, y);
+});
+canvas.addEventListener("pointerdown", (event) => {
+  canvas.focus();
+  canvas.setPointerCapture(event.pointerId);
+  event.preventDefault();
+  if (event.pointerType === "touch") {
+    touches.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    if (touches.size >= 2) {
+      startTouchGesture();
+      return;
+    }
+    touchPressed = true;
+  }
+  const [x, y] = point(event);
+  send(MOTION, 0, x, y);
+  const code = buttons[event.button];
+  if (code) send(BUTTON, true, code, 0, true);
+});
+function pointerGone(event) {
+  if (event.pointerType === "touch") {
+    touches.delete(event.pointerId);
+    if (touchGesture) {
+      // Fewer fingers end it; a pinch that gains a finger becomes a swipe.
+      if (touches.size < 2) endTouchGesture(event.type === "pointercancel");
+      else startTouchGesture();
+      return;
+    }
+    if (!touchPressed) return;
+    touchPressed = false;
+  }
+  const code = buttons[event.button];
+  if (code) send(BUTTON, false, code, 0, true);
+  event.preventDefault();
+}
+canvas.addEventListener("pointerup", pointerGone);
+canvas.addEventListener("pointercancel", pointerGone);
+canvas.addEventListener("contextmenu", (event) => event.preventDefault());
+canvas.addEventListener("auxclick", (event) => event.preventDefault());
+
+// Gestures made of wheel events (a touchpad's pinch; scrolling in swipe mode) end once they pause.
+let wheelGesture = null;
+function endWheelGesture() {
+  if (!wheelGesture) return;
+  clearTimeout(wheelGesture.timer);
+  sendGesture(wheelGesture.type, END, wheelGesture.fingers, []);
+  wheelGesture = null;
+}
+function wheelGestureStep(type, fingers, update) {
+  if (wheelGesture && wheelGesture.type !== type) endWheelGesture();
+  if (!wheelGesture) {
+    wheelGesture = { type, fingers, scale: 1, timer: 0 };
+    sendGesture(type, BEGIN, fingers, []);
+  }
+  update(wheelGesture);
+  clearTimeout(wheelGesture.timer);
+  wheelGesture.timer = setTimeout(endWheelGesture, 150);
+}
+
+let swipeMode = false;
+try { swipeMode = localStorage.getItem("proscenium-remote-swipe") === "1"; } catch {}
+const swipeButton = document.getElementById("swipe");
+function showSwipeMode() { swipeButton.setAttribute("aria-pressed", String(swipeMode)); }
+swipeButton.addEventListener("click", () => {
+  swipeMode = !swipeMode;
+  try { localStorage.setItem("proscenium-remote-swipe", swipeMode ? "1" : "0"); } catch {}
+  showSwipeMode();
+  canvas.focus();
+});
+showSwipeMode();
+
+canvas.addEventListener("wheel", (event) => {
+  event.preventDefault();
+  // A touchpad's pinch arrives as a wheel with a Ctrl that is not held: a two-finger pinch.
+  if (event.ctrlKey && !held.has(keys.ControlLeft) && !held.has(keys.ControlRight)) {
+    wheelGestureStep(PINCH, 2, (g) => {
+      g.scale *= Math.exp(-event.deltaY / 100);
+      sendGesture(PINCH, UPDATE, 2, [g.scale, 0, 0, 0]);
+    });
+    return;
+  }
+  // Wheel notches as notches; a touchpad's travel as pixels.
+  const wheelY = event.wheelDeltaY, wheelX = event.wheelDeltaX;
+  const notched = event.deltaMode !== 0 ||
+    ((wheelY && wheelY % 120 === 0 || wheelX && wheelX % 120 === 0) &&
+     Math.max(Math.abs(event.deltaX), Math.abs(event.deltaY)) >= 40);
+  if (swipeMode && !notched) {
+    // The fingers move against the content they scroll (natural scrolling).
+    wheelGestureStep(SWIPE, 3, () => sendGesture(SWIPE, UPDATE, 3, [-event.deltaX, -event.deltaY]));
+    return;
+  }
+  if (notched) {
+    const perNotch = event.deltaMode === 1 ? 3 : event.deltaMode === 2 ? 1 : null;
+    const dx = perNotch ? event.deltaX / perNotch : -(wheelX || 0) / 120;
+    const dy = perNotch ? event.deltaY / perNotch : -(wheelY || 0) / 120;
+    send(SCROLL, true, dx, dy);
+  } else {
+    send(SCROLL, false, event.deltaX, event.deltaY);
+  }
+}, { passive: false });
+
+// Safari reports a touchpad's pinch as gesture events, with rotation.
+let safariAngle = 0;
+document.addEventListener("gesturestart", (event) => {
+  event.preventDefault();
+  safariAngle = 0;
+  sendGesture(PINCH, BEGIN, 2, []);
+});
+document.addEventListener("gesturechange", (event) => {
+  event.preventDefault();
+  sendGesture(PINCH, UPDATE, 2, [event.scale, event.rotation - safariAngle, 0, 0]);
+  safariAngle = event.rotation;
+});
+document.addEventListener("gestureend", (event) => {
+  event.preventDefault();
+  sendGesture(PINCH, END, 2, []);
+});
+
+function keyEvent(event, down) {
+  const code = keys[event.code];
+  if (!code) return;
+  event.preventDefault();
+  if (down && event.repeat) return;
+  if (down) held.add(code); else held.delete(code);
+  send(KEY, down, code, 0, true);
+}
+window.addEventListener("keydown", (event) => keyEvent(event, true));
+window.addEventListener("keyup", (event) => keyEvent(event, false));
+
+function releaseAll() {
+  held.clear();
+  touches.clear();
+  touchGesture = null;
+  touchPressed = false;
+  if (wheelGesture) clearTimeout(wheelGesture.timer);
+  wheelGesture = null;
+  send(RELEASE, 0, 0, 0);
+}
+window.addEventListener("blur", releaseAll);
+document.addEventListener("visibilitychange", () => { if (document.hidden) releaseAll(); });
+
+document.getElementById("full").addEventListener("click", async () => {
+  if (document.fullscreenElement) {
+    await document.exitFullscreen();
+    return;
+  }
+  await document.documentElement.requestFullscreen();
+  // In fullscreen, Super, Escape, Alt+Tab and the rest go to the remote, where browsers allow it.
+  try { await navigator.keyboard?.lock(); } catch {}
+  canvas.focus();
+});
+
+// Layout: the stream as large as the window allows, at its own aspect.
+
+function layout() {
+  if (!size.width) return;
+  const scale = Math.min(innerWidth / size.width, innerHeight / size.height);
+  canvas.style.width = `${Math.floor(size.width * scale)}px`;
+  canvas.style.height = `${Math.floor(size.height * scale)}px`;
+}
+window.addEventListener("resize", layout);
+
+// The bar hides while the pointer is away from it.
+let hideTimer = 0;
+function showBar() {
+  bar.classList.remove("hidden");
+  clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => { if (dot.classList.contains("live")) bar.classList.add("hidden"); }, 2500);
+}
+window.addEventListener("pointermove", (event) => { if (event.clientY < 60) showBar(); });
+
+// Video.
+
+function onFrame(frame) {
+  const started = sentAt.get(frame.timestamp);
+  if (started !== undefined) {
+    stats.decodeMs += performance.now() - started;
+    stats.decoded++;
+    sentAt.delete(frame.timestamp);
+  }
+  context.drawImage(frame, 0, 0);
+  frame.close();
+  stats.frames++;
+}
+
+function needKey() {
+  waitingForKey = true;
+  send(KEYFRAME, 0, 0, 0);
+}
+
+function configure(next) {
+  config = next;
+  if (decoder && decoder.state !== "closed") decoder.close();
+  decoder = new VideoDecoder({
+    output: onFrame,
+    error: (error) => {
+      console.warn("decoder:", error);
+      configure(config);
+      needKey();
+    },
+  });
+  decoder.configure({ codec: next.codec, optimizeForLatency: true });
+  if (size.width !== next.width || size.height !== next.height) {
+    size = { width: next.width, height: next.height };
+    canvas.width = next.width;
+    canvas.height = next.height;
+    layout();
+  }
+  waitingForKey = true;
+}
+
+function onVideo(data) {
+  const bytes = new Uint8Array(data);
+  const key = bytes[1] === 1;
+  stats.bytes += bytes.length;
+  if (!decoder || decoder.state !== "configured") return;
+  if (waitingForKey && !key) return;
+  // Decoding fell behind: drop to the next keyframe rather than show the past.
+  if (!key && decoder.decodeQueueSize > 2) {
+    needKey();
+    return;
+  }
+  waitingForKey = false;
+  const timestamp = Math.round(new DataView(data).getFloat64(4, true) * 1000);
+  sentAt.set(timestamp, performance.now());
+  if (sentAt.size > 120) sentAt.delete(sentAt.keys().next().value);
+  decoder.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp, data: bytes.subarray(12) }));
+}
+
+function onText(text) {
+  const message = JSON.parse(text);
+  if (message.type === "config") configure(message);
+  else if (message.type === "cursor") canvas.style.cursor = message.name;
+}
+
+function setStatus(state, text) {
+  dot.className = state;
+  statusText.textContent = text;
+  if (state !== "live") showBar();
+}
+
+setInterval(() => {
+  if (!socket || socket.readyState !== WebSocket.OPEN || !config) return;
+  const seconds = (performance.now() - stats.since) / 1000;
+  const fps = Math.round(stats.frames / seconds);
+  const mbps = (stats.bytes * 8 / seconds / 1e6).toFixed(1);
+  const decode = stats.decoded ? (stats.decodeMs / stats.decoded).toFixed(1) : "–";
+  setStatus("live", `${config.width}×${config.height} · ${config.encoder} · ${fps} fps · ${mbps} Mb/s · decode ${decode} ms`);
+  Object.assign(stats, { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, since: performance.now() });
+}, 1000);
+
+function connect() {
+  setStatus("", "Connecting…");
+  socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  socket.binaryType = "arraybuffer";
+  socket.onopen = () => {
+    setStatus("live", "Waiting for the first frame…");
+    canvas.focus();
+  };
+  socket.onmessage = (event) => {
+    if (typeof event.data === "string") onText(event.data);
+    else onVideo(event.data);
+  };
+  socket.onclose = () => {
+    setStatus("down", "Disconnected; retrying…");
+    held.clear();
+    config = null;
+    if (decoder && decoder.state !== "closed") decoder.close();
+    decoder = null;
+    setTimeout(connect, 1000);
+  };
+}
+
+showBar();
+connect();
+</script>
+</body>
+</html>

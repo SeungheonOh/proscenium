@@ -37,36 +37,21 @@
   button:hover { background: rgba(255, 255, 255, 0.08); }
   button[aria-pressed="true"] { background: var(--accent); color: #0b0c0f; }
   button svg { width: 15px; height: 15px; }
-  /* Stream details, opened from the bar. */
-  #stats { position: fixed; top: 56px; right: 10px; width: 292px; padding: 14px 14px 12px;
-           border-radius: 18px; background: var(--panel); border: 1px solid var(--line);
-           backdrop-filter: blur(14px); z-index: 2; font-variant-numeric: tabular-nums;
-           transition: opacity 0.2s ease, transform 0.2s ease; }
-  #stats.closed { opacity: 0; transform: translateY(-6px) scale(0.98); pointer-events: none; }
-  #stats .head { display: flex; align-items: baseline; justify-content: space-between; }
-  #stats .title { font-weight: 600; letter-spacing: 0.01em; }
-  #stats .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px;
-                 background: rgba(255, 255, 255, 0.07); color: var(--faint); }
-  #stats .chip.live { background: rgba(95, 211, 154, 0.15); color: var(--good); }
-  #stats .chip.down { background: rgba(255, 122, 122, 0.15); color: var(--bad); }
-  #stats .latency { display: flex; align-items: baseline; gap: 6px; margin: 12px 0 2px; }
-  #stats .latency b { font-size: 30px; font-weight: 650; line-height: 1; }
-  #stats .faint { color: var(--faint); font-size: 12px; }
-  #stats .split { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin: 8px 0 6px;
-                  background: rgba(255, 255, 255, 0.06); }
-  #stats .split span { transition: flex-grow 0.4s ease; min-width: 2px; }
-  #stats .legend { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
-  #stats .legend > span { white-space: nowrap; }
-  #stats .legend i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
-  #stats .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
-  #stats .tile { padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); min-width: 0; }
-  #stats .tile .label { font-size: 11px; color: var(--faint); }
-  #stats .tile .value { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden;
-                        text-overflow: ellipsis; }
-  #stats .graph { margin-top: 10px; }
-  #stats .graph .label { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
-  #stats svg.spark { display: block; width: 100%; height: 34px; margin-top: 3px; overflow: visible; }
-  :root { --server: #7aa2ff; --network: #c99bff; --decode: #5fd39a; }
+  /* Stats for nerds: a translucent box over the stream's top left, monospace rows. */
+  #stats { position: fixed; top: 10px; left: 10px; z-index: 2; padding: 8px 30px 8px 10px;
+           max-width: calc(100vw - 20px); background: rgba(16, 16, 16, 0.78); color: #f1f1f1;
+           font: 11px/1.55 ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+           border-radius: 4px; font-variant-numeric: tabular-nums; pointer-events: auto; }
+  #stats.closed { display: none; }
+  #stats .row { display: grid; grid-template-columns: 156px auto; column-gap: 10px; white-space: nowrap; }
+  #stats .row > b { font-weight: 700; text-align: right; color: #fff; }
+  #stats .row > span { display: flex; align-items: center; gap: 8px; overflow: hidden; text-overflow: ellipsis; }
+  #stats .dim { color: #aaa; }
+  #stats .graph { width: 120px; height: 13px; flex: none; }
+  #stats .value { min-width: 9ch; }
+  #stats .close { position: absolute; top: 4px; right: 4px; width: 20px; height: 20px; border-radius: 3px;
+                  color: #ddd; font: inherit; font-size: 12px; }
+  #stats .close:hover { background: rgba(255, 255, 255, 0.12); }
   #notice { position: fixed; inset: 0; display: none; place-items: center; z-index: 3;
             background: var(--bg); padding: 16px; }
   #notice.shown { display: grid; }
@@ -84,7 +69,7 @@
           title="Two-finger scrolling swipes with three fingers, as on a touchpad (browsers never see three-finger swipes)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 3v6M8 2v7M12 3v6M2 12h12M11 10l3 2-3 2"/></svg>
   </button>
-  <button id="stats-toggle" aria-pressed="false" title="Stream details">
+  <button id="stats-toggle" aria-pressed="false" title="Stats for nerds (Ctrl+Shift+Alt+S)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 14h12M4 11V7M8 11V3M12 11V8"/></svg>
   </button>
   <button id="full" title="Fullscreen, with every key going to the remote">
@@ -92,35 +77,22 @@
   </button>
 </div>
 <div id="stats" class="closed" aria-live="off">
-  <div class="head"><span class="title">Stream</span><span class="chip" id="s-state">Connecting</span></div>
-  <div class="latency"><b id="s-latency">–</b><span class="faint">ms latency</span></div>
-  <div class="faint">Estimated, screen to screen</div>
-  <div class="split">
-    <span id="s-split-server" style="background: var(--server); flex-grow: 1"></span>
-    <span id="s-split-network" style="background: var(--network); flex-grow: 1"></span>
-    <span id="s-split-decode" style="background: var(--decode); flex-grow: 1"></span>
-  </div>
-  <div class="legend">
-    <span><i style="background: var(--server)"></i>Encode <span id="s-server">–</span></span>
-    <span><i style="background: var(--network)"></i>Network <span id="s-network">–</span></span>
-    <span><i style="background: var(--decode)"></i>Decode <span id="s-decode">–</span></span>
-  </div>
-  <div class="grid">
-    <div class="tile"><div class="label">Frame rate</div><div class="value" id="s-fps">–</div></div>
-    <div class="tile"><div class="label">Bit rate</div><div class="value" id="s-rate">–</div></div>
-    <div class="tile"><div class="label">Resolution</div><div class="value" id="s-size">–</div></div>
-    <div class="tile"><div class="label">Round trip</div><div class="value" id="s-rtt">–</div></div>
-    <div class="tile"><div class="label">Encoder</div><div class="value" id="s-encoder">–</div></div>
-    <div class="tile"><div class="label">Dropped / keys</div><div class="value" id="s-drops">–</div></div>
-  </div>
-  <div class="graph">
-    <div class="label"><span>Latency, last minute</span><span id="s-latency-peak"></span></div>
-    <svg class="spark" id="s-latency-graph" viewBox="0 0 264 34" preserveAspectRatio="none"></svg>
-  </div>
-  <div class="graph">
-    <div class="label"><span>Frame rate, last minute</span><span id="s-fps-peak"></span></div>
-    <svg class="spark" id="s-fps-graph" viewBox="0 0 264 34" preserveAspectRatio="none"></svg>
-  </div>
+  <button class="close" id="s-close" title="Close (Ctrl+Shift+Alt+S)">✕</button>
+  <div class="row"><b>Session</b><span id="s-session">–</span></div>
+  <div class="row"><b>Encoder</b><span id="s-encoder">–</span></div>
+  <div class="row"><b>Codec</b><span id="s-codec">–</span></div>
+  <div class="row"><b>Stream / Shown</b><span id="s-size">–</span></div>
+  <div class="row"><b>Frames</b><span id="s-frames">–</span></div>
+  <div class="row"><b>Frame rate</b><span><span class="value" id="s-fps">–</span><svg class="graph" id="s-fps-graph" viewBox="0 0 120 13" preserveAspectRatio="none"></svg></span></div>
+  <div class="row"><b>Frame interval</b><span id="s-interval">–</span></div>
+  <div class="row"><b>Bit rate</b><span><span class="value" id="s-rate">–</span><svg class="graph" id="s-rate-graph" viewBox="0 0 120 13" preserveAspectRatio="none"></svg></span></div>
+  <div class="row"><b>Received</b><span id="s-received">–</span></div>
+  <div class="row"><b>Latency</b><span><span class="value" id="s-latency">–</span><svg class="graph" id="s-latency-graph" viewBox="0 0 120 13" preserveAspectRatio="none"></svg></span></div>
+  <div class="row"><b>Encode / Net / Decode</b><span id="s-split">–</span></div>
+  <div class="row"><b>Round trip</b><span id="s-rtt">–</span></div>
+  <div class="row"><b>Decode queue</b><span id="s-queue">–</span></div>
+  <div class="row"><b>Color</b><span>BT.709 limited range, 4:2:0</span></div>
+  <div class="row"><b>Pointer</b><span id="s-cursor">–</span></div>
 </div>
 <div id="notice"><div id="notice-body"></div></div>
 <script>
@@ -166,9 +138,11 @@ const held = new Set();
 const stats = { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, serverMs: 0, served: 0,
                 since: performance.now() };
 // Totals since connecting, the round trip, and a minute of history for the graphs.
-const totals = { dropped: 0, keys: 0 };
+const totals = { dropped: 0, keys: 0, frames: 0, bytes: 0, connectedAt: 0 };
+// The longest gap between frames shown this second, and their sum, for the frame interval.
+const gaps = { last: 0, max: 0, sum: 0, count: 0 };
 let roundTrip = null;
-const history = { latency: [], fps: [] };
+const history = { latency: [], fps: [], rate: [] };
 const sentAt = new Map();
 
 function notice(html) {
@@ -448,7 +422,7 @@ function showBar() {
   bar.classList.remove("hidden");
   clearTimeout(hideTimer);
   hideTimer = setTimeout(() => {
-    if (dot.classList.contains("live") && !statsOpen) bar.classList.add("hidden");
+    if (dot.classList.contains("live")) bar.classList.add("hidden");
   }, 2500);
 }
 window.addEventListener("pointermove", (event) => { if (event.clientY < 60) showBar(); });
@@ -461,70 +435,89 @@ try { statsOpen = localStorage.getItem("proscenium-remote-stats") === "1"; } cat
 function showStatsPanel() {
   panel.classList.toggle("closed", !statsOpen);
   statsButton.setAttribute("aria-pressed", String(statsOpen));
-  // The bar stays while the panel is open.
-  if (statsOpen) {
-    clearTimeout(hideTimer);
-    bar.classList.remove("hidden");
-  } else {
-    showBar();
-  }
 }
-statsButton.addEventListener("click", () => {
+function toggleStats() {
   statsOpen = !statsOpen;
   try { localStorage.setItem("proscenium-remote-stats", statsOpen ? "1" : "0"); } catch {}
   showStatsPanel();
   canvas.focus();
-});
+}
+statsButton.addEventListener("click", toggleStats);
+document.getElementById("s-close").addEventListener("click", toggleStats);
+// Ctrl+Shift+Alt+S stays here: it toggles the stats and never reaches the session.
+window.addEventListener("keydown", (event) => {
+  if (event.code === "KeyS" && event.ctrlKey && event.shiftKey && event.altKey) {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    toggleStats();
+  }
+}, { capture: true });
 const $ = (id) => document.getElementById(id);
 
-function spark(svg, values, color, floor) {
+// A minute of samples as thin bars, newest at the right, as YouTube draws them.
+function bars(svg, values, color, floor) {
   const max = Math.max(floor, ...values);
-  const step = 264 / 59;
-  const points = values.map((v, i) => `${(264 - (values.length - 1 - i) * step).toFixed(1)},${(33 - v / max * 31).toFixed(1)}`);
-  if (points.length < 2) {
-    svg.innerHTML = "";
-    return;
-  }
-  const first = points[0].split(",")[0];
-  svg.innerHTML =
-    `<polygon points="${first},34 ${points.join(" ")} 264,34" fill="${color}" fill-opacity="0.12"/>` +
-    `<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" ` +
-    `stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+  const width = 120 / 60;
+  svg.innerHTML = values.map((v, i) => {
+    const h = Math.max(0.5, v / max * 13);
+    const x = 120 - (values.length - i) * width;
+    return `<rect x="${x.toFixed(1)}" y="${(13 - h).toFixed(1)}" width="${(width - 0.4).toFixed(1)}" height="${h.toFixed(1)}" fill="${color}"/>`;
+  }).join("");
+}
+
+const PROFILES = { 0x42: "Baseline", 0x4d: "Main", 0x58: "Extended", 0x64: "High" };
+function describeCodec(codec) {
+  const m = /^avc1\.([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(codec || "");
+  if (!m) return codec || "–";
+  const profile = parseInt(m[1], 16), flags = parseInt(m[2], 16), level = parseInt(m[3], 16);
+  let name = PROFILES[profile] || `profile ${profile}`;
+  if (profile === 0x42 && flags & 0x40) name = "Constrained Baseline";
+  return `${codec} <span class="dim">(H.264 ${name}, level ${(level / 10).toFixed(1)})</span>`;
+}
+
+function duration(seconds) {
+  const s = Math.floor(seconds % 60), m = Math.floor(seconds / 60) % 60, h = Math.floor(seconds / 3600);
+  return h ? `${h}h${String(m).padStart(2, "0")}m` : m ? `${m}m${String(s).padStart(2, "0")}s` : `${s}s`;
+}
+
+function bytes(n) {
+  return n > 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n > 1e6 ? `${(n / 1e6).toFixed(1)} MB` : `${Math.round(n / 1e3)} KB`;
 }
 
 function renderStats(state, sample) {
-  const chip = $("s-state");
-  chip.className = `chip ${state}`;
-  chip.textContent = state === "live" ? "Live" : state === "down" ? "Disconnected" : "Connecting";
+  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  const up = totals.connectedAt ? ` <span class="dim">· up ${duration((performance.now() - totals.connectedAt) / 1000)}</span>` : "";
+  $("s-session").innerHTML = `${url} <span class="dim">·</span> ${state === "live" ? "live" : state === "down" ? "disconnected" : "connecting"}${state === "live" ? up : ""}`;
   if (!sample) return;
   const network = roundTrip === null ? null : roundTrip / 2;
-  const parts = [sample.server, network, sample.decode];
-  const known = parts.filter((v) => v !== null);
+  const known = [sample.server, network, sample.decode].filter((v) => v !== null);
   const latency = known.length ? known.reduce((a, b) => a + b, 0) : null;
   const ms = (v) => v === null ? "–" : `${v < 10 ? v.toFixed(1) : Math.round(v)} ms`;
-  $("s-latency").textContent = latency === null ? "–" : Math.round(latency);
-  // The legend's numbers go without units: the headline says milliseconds.
-  const bare = (v) => v === null ? "–" : v < 10 ? v.toFixed(1) : `${Math.round(v)}`;
-  $("s-server").textContent = bare(sample.server);
-  $("s-network").textContent = bare(network);
-  $("s-decode").textContent = bare(sample.decode);
-  $("s-split-server").style.flexGrow = sample.server ?? 0;
-  $("s-split-network").style.flexGrow = network ?? 0;
-  $("s-split-decode").style.flexGrow = sample.decode ?? 0;
+  if (config) {
+    const hardware = /vaapi|nvenc|v4l2m2m|qsv|vulkan|videotoolbox/.test(config.encoder);
+    $("s-encoder").innerHTML = `${config.encoder} <span class="dim">(${hardware ? "hardware" : "software"})</span>`;
+    $("s-codec").innerHTML = describeCodec(config.codec);
+    const rect = canvas.getBoundingClientRect();
+    const dpr = devicePixelRatio || 1;
+    $("s-size").textContent = `${config.width}x${config.height} / ${Math.round(rect.width * dpr)}x${Math.round(rect.height * dpr)}@${dpr}x`;
+  }
+  $("s-frames").textContent = `${totals.frames} shown / ${totals.dropped} dropped / ${totals.keys} keyframes`;
   $("s-fps").textContent = `${sample.fps} fps`;
-  $("s-rate").textContent = `${sample.mbps.toFixed(1)} Mb/s`;
-  $("s-size").textContent = config ? `${config.width} × ${config.height}` : "–";
+  $("s-interval").textContent = sample.gapAvg === null ? "– (still)" : `avg ${sample.gapAvg.toFixed(1)} ms · max ${Math.round(sample.gapMax)} ms`;
+  $("s-rate").textContent = `${sample.mbps >= 10 ? sample.mbps.toFixed(0) : sample.mbps.toFixed(2)} Mb/s`;
+  $("s-received").textContent = bytes(totals.bytes);
+  $("s-latency").textContent = latency === null ? "–" : `${Math.round(latency)} ms`;
+  $("s-split").textContent = `${ms(sample.server)} / ${ms(network)} / ${ms(sample.decode)}`;
   $("s-rtt").textContent = ms(roundTrip);
-  $("s-encoder").textContent = config ? config.encoder.replace(/^h264_/, "").replace(/^lib/, "") : "–";
-  $("s-encoder").title = config ? `${config.encoder} · ${config.codec}` : "";
-  $("s-drops").textContent = `${totals.dropped} · ${totals.keys}`;
+  $("s-queue").textContent = decoder && decoder.state === "configured" ? `${decoder.decodeQueueSize} chunks` : "–";
+  $("s-cursor").textContent = canvas.style.cursor || "default";
   if (latency !== null) history.latency.push(latency);
   history.fps.push(sample.fps);
+  history.rate.push(sample.mbps);
   for (const list of Object.values(history)) while (list.length > 60) list.shift();
-  spark($("s-latency-graph"), history.latency, "var(--accent)", 50);
-  spark($("s-fps-graph"), history.fps, "var(--good)", 30);
-  $("s-latency-peak").textContent = history.latency.length ? `peak ${Math.round(Math.max(...history.latency))} ms` : "";
-  $("s-fps-peak").textContent = history.fps.length ? `peak ${Math.max(...history.fps)} fps` : "";
+  bars($("s-fps-graph"), history.fps, "#3ea6ff", 30);
+  bars($("s-rate-graph"), history.rate, "#ff4e45", 1);
+  bars($("s-latency-graph"), history.latency, "#ffd23f", 30);
 }
 
 // Video.
@@ -539,6 +532,18 @@ function onFrame(frame) {
   context.drawImage(frame, 0, 0);
   frame.close();
   stats.frames++;
+  totals.frames++;
+  const now = performance.now();
+  if (gaps.last) {
+    const gap = now - gaps.last;
+    // A pause of a second or more is a still screen, not a slow frame.
+    if (gap < 1000) {
+      gaps.max = Math.max(gaps.max, gap);
+      gaps.sum += gap;
+      gaps.count++;
+    }
+  }
+  gaps.last = now;
 }
 
 function needKey() {
@@ -571,6 +576,7 @@ function onVideo(data) {
   const bytes = new Uint8Array(data);
   const key = bytes[1] === 1;
   stats.bytes += bytes.length;
+  totals.bytes += bytes.length;
   // How long the frame spent in the compositor: queued, converted and encoded.
   const server = (bytes[2] | bytes[3] << 8) / 10;
   if (server > 0) {
@@ -635,7 +641,9 @@ setInterval(() => {
   const mbps = stats.bytes * 8 / seconds / 1e6;
   if (stats.served) lastServer = stats.serverMs / stats.served;
   if (stats.decoded) lastDecode = stats.decodeMs / stats.decoded;
-  const sample = { fps, mbps, server: lastServer, decode: lastDecode };
+  const sample = { fps, mbps, server: lastServer, decode: lastDecode,
+                   gapAvg: gaps.count ? gaps.sum / gaps.count : null, gapMax: gaps.max };
+  Object.assign(gaps, { max: 0, sum: 0, count: 0 });
   const total = [lastServer, roundTrip === null ? null : roundTrip / 2, lastDecode]
     .filter((v) => v !== null).reduce((a, b) => a + b, 0);
   setStatus("live", `${config.width}×${config.height} · ${fps} fps · ~${Math.round(total)} ms`);
@@ -649,6 +657,7 @@ function connect() {
   socket = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
   socket.binaryType = "arraybuffer";
   socket.onopen = () => {
+    Object.assign(totals, { dropped: 0, keys: 0, frames: 0, bytes: 0, connectedAt: performance.now() });
     setStatus("live", "Waiting for the first frame…");
     canvas.focus();
   };

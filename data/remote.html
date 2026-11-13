@@ -37,6 +37,36 @@
   button:hover { background: rgba(255, 255, 255, 0.08); }
   button[aria-pressed="true"] { background: var(--accent); color: #0b0c0f; }
   button svg { width: 15px; height: 15px; }
+  /* Stream details, opened from the bar. */
+  #stats { position: fixed; top: 56px; right: 10px; width: 292px; padding: 14px 14px 12px;
+           border-radius: 18px; background: var(--panel); border: 1px solid var(--line);
+           backdrop-filter: blur(14px); z-index: 2; font-variant-numeric: tabular-nums;
+           transition: opacity 0.2s ease, transform 0.2s ease; }
+  #stats.closed { opacity: 0; transform: translateY(-6px) scale(0.98); pointer-events: none; }
+  #stats .head { display: flex; align-items: baseline; justify-content: space-between; }
+  #stats .title { font-weight: 600; letter-spacing: 0.01em; }
+  #stats .chip { font-size: 11px; padding: 2px 8px; border-radius: 999px;
+                 background: rgba(255, 255, 255, 0.07); color: var(--faint); }
+  #stats .chip.live { background: rgba(95, 211, 154, 0.15); color: var(--good); }
+  #stats .chip.down { background: rgba(255, 122, 122, 0.15); color: var(--bad); }
+  #stats .latency { display: flex; align-items: baseline; gap: 6px; margin: 12px 0 2px; }
+  #stats .latency b { font-size: 30px; font-weight: 650; line-height: 1; }
+  #stats .faint { color: var(--faint); font-size: 12px; }
+  #stats .split { display: flex; height: 6px; border-radius: 3px; overflow: hidden; margin: 8px 0 6px;
+                  background: rgba(255, 255, 255, 0.06); }
+  #stats .split span { transition: flex-grow 0.4s ease; min-width: 2px; }
+  #stats .legend { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
+  #stats .legend > span { white-space: nowrap; }
+  #stats .legend i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
+  #stats .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  #stats .tile { padding: 8px 10px; border-radius: 10px; background: rgba(255, 255, 255, 0.04); min-width: 0; }
+  #stats .tile .label { font-size: 11px; color: var(--faint); }
+  #stats .tile .value { font-size: 15px; font-weight: 600; white-space: nowrap; overflow: hidden;
+                        text-overflow: ellipsis; }
+  #stats .graph { margin-top: 10px; }
+  #stats .graph .label { display: flex; justify-content: space-between; font-size: 11px; color: var(--faint); }
+  #stats svg.spark { display: block; width: 100%; height: 34px; margin-top: 3px; overflow: visible; }
+  :root { --server: #7aa2ff; --network: #c99bff; --decode: #5fd39a; }
   #notice { position: fixed; inset: 0; display: none; place-items: center; z-index: 3;
             background: var(--bg); padding: 16px; }
   #notice.shown { display: grid; }
@@ -54,9 +84,43 @@
           title="Two-finger scrolling swipes with three fingers, as on a touchpad (browsers never see three-finger swipes)">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 3v6M8 2v7M12 3v6M2 12h12M11 10l3 2-3 2"/></svg>
   </button>
+  <button id="stats-toggle" aria-pressed="false" title="Stream details">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 14h12M4 11V7M8 11V3M12 11V8"/></svg>
+  </button>
   <button id="full" title="Fullscreen, with every key going to the remote">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M2 6V2h4M14 6V2h-4M2 10v4h4M14 10v4h-4"/></svg>
   </button>
+</div>
+<div id="stats" class="closed" aria-live="off">
+  <div class="head"><span class="title">Stream</span><span class="chip" id="s-state">Connecting</span></div>
+  <div class="latency"><b id="s-latency">–</b><span class="faint">ms latency</span></div>
+  <div class="faint">Estimated, screen to screen</div>
+  <div class="split">
+    <span id="s-split-server" style="background: var(--server); flex-grow: 1"></span>
+    <span id="s-split-network" style="background: var(--network); flex-grow: 1"></span>
+    <span id="s-split-decode" style="background: var(--decode); flex-grow: 1"></span>
+  </div>
+  <div class="legend">
+    <span><i style="background: var(--server)"></i>Encode <span id="s-server">–</span></span>
+    <span><i style="background: var(--network)"></i>Network <span id="s-network">–</span></span>
+    <span><i style="background: var(--decode)"></i>Decode <span id="s-decode">–</span></span>
+  </div>
+  <div class="grid">
+    <div class="tile"><div class="label">Frame rate</div><div class="value" id="s-fps">–</div></div>
+    <div class="tile"><div class="label">Bit rate</div><div class="value" id="s-rate">–</div></div>
+    <div class="tile"><div class="label">Resolution</div><div class="value" id="s-size">–</div></div>
+    <div class="tile"><div class="label">Round trip</div><div class="value" id="s-rtt">–</div></div>
+    <div class="tile"><div class="label">Encoder</div><div class="value" id="s-encoder">–</div></div>
+    <div class="tile"><div class="label">Dropped / keys</div><div class="value" id="s-drops">–</div></div>
+  </div>
+  <div class="graph">
+    <div class="label"><span>Latency, last minute</span><span id="s-latency-peak"></span></div>
+    <svg class="spark" id="s-latency-graph" viewBox="0 0 264 34" preserveAspectRatio="none"></svg>
+  </div>
+  <div class="graph">
+    <div class="label"><span>Frame rate, last minute</span><span id="s-fps-peak"></span></div>
+    <svg class="spark" id="s-fps-graph" viewBox="0 0 264 34" preserveAspectRatio="none"></svg>
+  </div>
 </div>
 <div id="notice"><div id="notice-body"></div></div>
 <script>
@@ -84,7 +148,7 @@ const keys = {
 };
 // BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, BTN_SIDE, BTN_EXTRA by MouseEvent.button.
 const buttons = [0x110, 0x112, 0x111, 0x113, 0x114];
-const MOTION = 1, BUTTON = 2, SCROLL = 3, KEY = 4, RELEASE = 5, KEYFRAME = 6, SWIPE = 7, PINCH = 8;
+const MOTION = 1, BUTTON = 2, SCROLL = 3, KEY = 4, RELEASE = 5, KEYFRAME = 6, SWIPE = 7, PINCH = 8, PING = 9;
 const BEGIN = 0, UPDATE = 1, END = 2, CANCEL = 3;
 
 const canvas = document.getElementById("screen");
@@ -99,7 +163,12 @@ let config = null;
 let waitingForKey = true;
 let size = { width: 0, height: 0 };
 const held = new Set();
-const stats = { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, since: performance.now() };
+const stats = { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, serverMs: 0, served: 0,
+                since: performance.now() };
+// Totals since connecting, the round trip, and a minute of history for the graphs.
+const totals = { dropped: 0, keys: 0 };
+let roundTrip = null;
+const history = { latency: [], fps: [] };
 const sentAt = new Map();
 
 function notice(html) {
@@ -378,9 +447,85 @@ let hideTimer = 0;
 function showBar() {
   bar.classList.remove("hidden");
   clearTimeout(hideTimer);
-  hideTimer = setTimeout(() => { if (dot.classList.contains("live")) bar.classList.add("hidden"); }, 2500);
+  hideTimer = setTimeout(() => {
+    if (dot.classList.contains("live") && !statsOpen) bar.classList.add("hidden");
+  }, 2500);
 }
 window.addEventListener("pointermove", (event) => { if (event.clientY < 60) showBar(); });
+
+// The stream details panel, toggled from the bar and remembered.
+const panel = document.getElementById("stats");
+const statsButton = document.getElementById("stats-toggle");
+let statsOpen = false;
+try { statsOpen = localStorage.getItem("proscenium-remote-stats") === "1"; } catch {}
+function showStatsPanel() {
+  panel.classList.toggle("closed", !statsOpen);
+  statsButton.setAttribute("aria-pressed", String(statsOpen));
+  // The bar stays while the panel is open.
+  if (statsOpen) {
+    clearTimeout(hideTimer);
+    bar.classList.remove("hidden");
+  } else {
+    showBar();
+  }
+}
+statsButton.addEventListener("click", () => {
+  statsOpen = !statsOpen;
+  try { localStorage.setItem("proscenium-remote-stats", statsOpen ? "1" : "0"); } catch {}
+  showStatsPanel();
+  canvas.focus();
+});
+const $ = (id) => document.getElementById(id);
+
+function spark(svg, values, color, floor) {
+  const max = Math.max(floor, ...values);
+  const step = 264 / 59;
+  const points = values.map((v, i) => `${(264 - (values.length - 1 - i) * step).toFixed(1)},${(33 - v / max * 31).toFixed(1)}`);
+  if (points.length < 2) {
+    svg.innerHTML = "";
+    return;
+  }
+  const first = points[0].split(",")[0];
+  svg.innerHTML =
+    `<polygon points="${first},34 ${points.join(" ")} 264,34" fill="${color}" fill-opacity="0.12"/>` +
+    `<polyline points="${points.join(" ")}" fill="none" stroke="${color}" stroke-width="1.5" ` +
+    `stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>`;
+}
+
+function renderStats(state, sample) {
+  const chip = $("s-state");
+  chip.className = `chip ${state}`;
+  chip.textContent = state === "live" ? "Live" : state === "down" ? "Disconnected" : "Connecting";
+  if (!sample) return;
+  const network = roundTrip === null ? null : roundTrip / 2;
+  const parts = [sample.server, network, sample.decode];
+  const known = parts.filter((v) => v !== null);
+  const latency = known.length ? known.reduce((a, b) => a + b, 0) : null;
+  const ms = (v) => v === null ? "–" : `${v < 10 ? v.toFixed(1) : Math.round(v)} ms`;
+  $("s-latency").textContent = latency === null ? "–" : Math.round(latency);
+  // The legend's numbers go without units: the headline says milliseconds.
+  const bare = (v) => v === null ? "–" : v < 10 ? v.toFixed(1) : `${Math.round(v)}`;
+  $("s-server").textContent = bare(sample.server);
+  $("s-network").textContent = bare(network);
+  $("s-decode").textContent = bare(sample.decode);
+  $("s-split-server").style.flexGrow = sample.server ?? 0;
+  $("s-split-network").style.flexGrow = network ?? 0;
+  $("s-split-decode").style.flexGrow = sample.decode ?? 0;
+  $("s-fps").textContent = `${sample.fps} fps`;
+  $("s-rate").textContent = `${sample.mbps.toFixed(1)} Mb/s`;
+  $("s-size").textContent = config ? `${config.width} × ${config.height}` : "–";
+  $("s-rtt").textContent = ms(roundTrip);
+  $("s-encoder").textContent = config ? config.encoder.replace(/^h264_/, "").replace(/^lib/, "") : "–";
+  $("s-encoder").title = config ? `${config.encoder} · ${config.codec}` : "";
+  $("s-drops").textContent = `${totals.dropped} · ${totals.keys}`;
+  if (latency !== null) history.latency.push(latency);
+  history.fps.push(sample.fps);
+  for (const list of Object.values(history)) while (list.length > 60) list.shift();
+  spark($("s-latency-graph"), history.latency, "var(--accent)", 50);
+  spark($("s-fps-graph"), history.fps, "var(--good)", 30);
+  $("s-latency-peak").textContent = history.latency.length ? `peak ${Math.round(Math.max(...history.latency))} ms` : "";
+  $("s-fps-peak").textContent = history.fps.length ? `peak ${Math.max(...history.fps)} fps` : "";
+}
 
 // Video.
 
@@ -426,10 +571,21 @@ function onVideo(data) {
   const bytes = new Uint8Array(data);
   const key = bytes[1] === 1;
   stats.bytes += bytes.length;
+  // How long the frame spent in the compositor: queued, converted and encoded.
+  const server = (bytes[2] | bytes[3] << 8) / 10;
+  if (server > 0) {
+    stats.serverMs += server;
+    stats.served++;
+  }
+  if (key) totals.keys++;
   if (!decoder || decoder.state !== "configured") return;
-  if (waitingForKey && !key) return;
+  if (waitingForKey && !key) {
+    totals.dropped++;
+    return;
+  }
   // Decoding fell behind: drop to the next keyframe rather than show the past.
   if (!key && decoder.decodeQueueSize > 2) {
+    totals.dropped++;
     needKey();
     return;
   }
@@ -444,22 +600,48 @@ function onText(text) {
   const message = JSON.parse(text);
   if (message.type === "config") configure(message);
   else if (message.type === "cursor") canvas.style.cursor = message.name;
+  else if (message.type === "pong" && pings.has(message.id)) {
+    const rtt = performance.now() - pings.get(message.id);
+    pings.delete(message.id);
+    roundTrip = roundTrip === null ? rtt : roundTrip * 0.7 + rtt * 0.3;
+  }
 }
+
+// A ping a second measures the round trip.
+const pings = new Map();
+let pingId = 0;
+setInterval(() => {
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  pingId = (pingId + 1) >>> 0;
+  pings.set(pingId, performance.now());
+  if (pings.size > 10) pings.delete(pings.keys().next().value);
+  send(PING, 0, pingId, 0, true);
+}, 1000);
 
 function setStatus(state, text) {
   dot.className = state;
   statusText.textContent = text;
   if (state !== "live") showBar();
+  if (state !== "live") renderStats(state, null);
 }
 
+// Each second: a short line in the bar, and the panel's numbers. A still screen sends no frames,
+// so the last measured encode and decode times stay until frames come again.
+let lastServer = null, lastDecode = null;
 setInterval(() => {
   if (!socket || socket.readyState !== WebSocket.OPEN || !config) return;
   const seconds = (performance.now() - stats.since) / 1000;
   const fps = Math.round(stats.frames / seconds);
-  const mbps = (stats.bytes * 8 / seconds / 1e6).toFixed(1);
-  const decode = stats.decoded ? (stats.decodeMs / stats.decoded).toFixed(1) : "–";
-  setStatus("live", `${config.width}×${config.height} · ${config.encoder} · ${fps} fps · ${mbps} Mb/s · decode ${decode} ms`);
-  Object.assign(stats, { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, since: performance.now() });
+  const mbps = stats.bytes * 8 / seconds / 1e6;
+  if (stats.served) lastServer = stats.serverMs / stats.served;
+  if (stats.decoded) lastDecode = stats.decodeMs / stats.decoded;
+  const sample = { fps, mbps, server: lastServer, decode: lastDecode };
+  const total = [lastServer, roundTrip === null ? null : roundTrip / 2, lastDecode]
+    .filter((v) => v !== null).reduce((a, b) => a + b, 0);
+  setStatus("live", `${config.width}×${config.height} · ${fps} fps · ~${Math.round(total)} ms`);
+  renderStats("live", sample);
+  Object.assign(stats, { frames: 0, bytes: 0, decodeMs: 0, decoded: 0, serverMs: 0, served: 0,
+                         since: performance.now() });
 }, 1000);
 
 function connect() {
@@ -476,6 +658,8 @@ function connect() {
   };
   socket.onclose = () => {
     setStatus("down", "Disconnected; retrying…");
+    roundTrip = null;
+    pings.clear();
     held.clear();
     config = null;
     if (decoder && decoder.state !== "closed") decoder.close();
@@ -485,6 +669,7 @@ function connect() {
 }
 
 showBar();
+showStatsPanel();
 connect();
 </script>
 </body>

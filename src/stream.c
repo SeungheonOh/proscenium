@@ -8,13 +8,17 @@
  *   server -> viewer, text:   {"type":"config","codec":"avc1.PPCCLL","width":W,"height":H,"encoder":NAME}
  *                             before the first keyframe of each configuration;
  *                             {"type":"cursor","name":CSS} as the pointer's shape changes
- *   server -> viewer, binary: [1][key][0][0][float64 ms] then one access unit in Annex B
+ *   server -> viewer, binary: [1][key][server][float64 ms] then one access unit in Annex B,
+ *                             where server (16 bits, tenths of a millisecond) is how long the
+ *                             frame took here from capture to sending: queueing, conversion
+ *                             and encoding;
+ *                             text {"type":"pong","id":N} answering a ping
  *   viewer -> server, binary: [type][flag][fingers][0] then 32-bit little-endian fields:
  *                             1 motion (x, y floats 0..1), 2 button (flag down, evdev code),
  *                             3 scroll (flag notches, dx, dy floats), 4 key (flag down,
  *                             evdev code), 5 release all, 6 keyframe wanted,
  *                             7 swipe (flag phase, dx, dy), 8 pinch (flag phase, scale,
- *                             rotation, dx, dy)
+ *                             rotation, dx, dy), 9 ping (id, an unsigned 32 bits)
  */
 #define _GNU_SOURCE
 #include "stream.h"
@@ -69,7 +73,7 @@
 
 enum message_type {
     INPUT_MOTION = 1, INPUT_BUTTON, INPUT_SCROLL, INPUT_KEY, INPUT_RELEASE, INPUT_KEYFRAME,
-    INPUT_SWIPE, INPUT_PINCH,
+    INPUT_SWIPE, INPUT_PINCH, INPUT_PING,
 };
 
 struct bytes {
@@ -149,6 +153,8 @@ struct stream {
     int pending_width, pending_height;
     enum stream_format pending_format;
     size_t pending_size;
+    /* When the pending frame was pushed, and the work frame (now_seconds). */
+    double pending_at;
     size_t spare_size;
     struct stream_event *events;
     size_t event_count, event_capacity;
@@ -161,6 +167,7 @@ struct stream {
     uint8_t *work;
     int work_width, work_height;
     enum stream_format work_format;
+    double work_at;
     size_t work_size;
     bool have_frame;
     struct encoder *encoder;
@@ -551,7 +558,15 @@ static void read_messages(struct stream *stream, struct client *c) {
         for (size_t i = 0; i < length; i++) message[i] = p[head + 4 + i] ^ mask[i & 3];
         bytes_consume(&c->in, head + 4 + (size_t)length);
         switch (opcode) {
-        case 0x2: handle_input(stream, message, (size_t)length); break;
+        case 0x2:
+            if (length >= 8 && message[0] == INPUT_PING) {
+                char pong[64];
+                snprintf(pong, sizeof pong, "{\"type\":\"pong\",\"id\":%u}", read_u32(message + 4));
+                send_text(c, pong);
+            } else {
+                handle_input(stream, message, (size_t)length);
+            }
+            break;
         case 0x8:
             send_frame(c, 0x8, message, MIN((size_t)length, 2));
             c->close_after_flush = true;
@@ -854,7 +869,11 @@ static void deliver(struct stream *stream, struct encoder *e, const AVPacket *pa
     uint8_t *message = xmalloc(length);
     message[0] = 1;
     message[1] = key;
-    message[2] = message[3] = 0;
+    /* A keyframe the viewer waited for on a still screen repeats an old frame: no server time. */
+    double held = stream->work_at > 0 ? 1e4 * (now_seconds() - stream->work_at) : 0;
+    uint16_t server = (uint16_t)CLAMP(held, 0, 65535);
+    message[2] = (uint8_t)server;
+    message[3] = (uint8_t)(server >> 8);
     double ms = 1000 * (now_seconds() - stream->started_at);
     memcpy(message + 4, &ms, sizeof ms);
     size_t at = 12;
@@ -1023,6 +1042,7 @@ static bool take_frame(struct stream *stream) {
         stream->work_width = stream->pending_width;
         stream->work_height = stream->pending_height;
         stream->work_format = stream->pending_format;
+        stream->work_at = stream->pending_at;
         stream->pending = NULL;
         stream->have_frame = true;
     }
@@ -1089,7 +1109,12 @@ static void *run(void *data) {
         }
         update_cursor(stream);
         /* A new frame, or the last again as the keyframe a viewer waits for on a still screen. */
-        if (take_frame(stream) || (key_due(stream) && stream->have_frame)) encode_current(stream);
+        if (take_frame(stream)) {
+            encode_current(stream);
+        } else if (key_due(stream) && stream->have_frame) {
+            stream->work_at = 0;
+            encode_current(stream);
+        }
         for (int i = 0; i < stream->client_count; i++) flush(&stream->clients[i]);
         for (int i = stream->client_count - 1; i >= 0; i--) {
             if (stream->clients[i].dead) drop(stream, &stream->clients[i]);
@@ -1244,6 +1269,7 @@ void stream_push_frame(struct stream *stream, uint8_t **pixels, enum stream_form
     stream->pending_height = height;
     stream->pending_format = format;
     stream->pending_size = size;
+    stream->pending_at = now_seconds();
     /* Back goes a buffer of the same size: the frame it replaced, or the spare. */
     uint8_t *back = NULL;
     if (previous && previous_size == size) back = previous;

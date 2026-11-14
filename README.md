@@ -70,7 +70,16 @@ Examples: `hypr` (tiling workspaces), `niri` (niri's scrollable tiling),
 (workspaces on a turning cube), `meta` (rooms on an infinite canvas, each
 tiling as hypr, niri or the deck does), `canvas` (a zoomable canvas with a
 minimap, and paper to draw on with
-[Excalidraw](https://github.com/excalidraw/excalidraw), MIT), `persona` (a
+[Excalidraw](https://github.com/excalidraw/excalidraw), MIT), `herdr` ([herdr](https://herdr.dev)'s
+sessions, workspaces, tabs and agent panes as tree tabs; each pane shows its
+live terminal beside its project in
+[CodeMirror](https://codemirror.net) (MIT) in
+[Modus Operandi](https://protesilaos.com/emacs/modus-themes)'s colours, with diffs against HEAD, markdown
+rendered with [Mermaid](https://mermaid.js.org) (MIT),
+[Graphviz](https://github.com/mdaines/viz-js) (MIT) and
+[KaTeX](https://katex.org) (MIT) diagrams and math, a Projectile-style finder
+over files and ripgrep, windows such as a browser attached to a pane, and a
+notification center for agents that need you or finish), `persona` (a
 Persona 3 Reload shell after Persona-Quickshell; `scripts/fetch-persona`
 fetches its art first).
 

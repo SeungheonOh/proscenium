@@ -1,0 +1,409 @@
+/* A light editor, in the herdr world's palette; CodeMirror themes the code itself (Editor.tsx). */
+
+:root {
+  --bg: #ffffff;
+  --panel: #f6f8fa;
+  --line: #d0d7de;
+  --ink: #1f2328;
+  --muted: #656d76;
+  --accent: #0969da;
+  --mono: "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", monospace;
+}
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 12px "Noto Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* The page template makes html and body transparent; the root paints instead. */
+.viewer {
+  display: flex;
+  height: 100vh;
+  background: var(--bg);
+}
+
+/* The file tree. */
+.tree {
+  width: 200px;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  user-select: none;
+  overflow: hidden;
+  transition: width 0.18s ease, border-color 0.18s ease;
+}
+.tree.folded {
+  width: 0;
+  border-color: transparent;
+}
+.tree > * {
+  min-width: 200px;
+}
+.title-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.title-row .project {
+  flex: 1;
+}
+.icon {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  color: var(--muted);
+  line-height: 1;
+}
+.icon:hover {
+  background: #0000000f;
+  border-color: var(--line);
+  color: var(--ink);
+}
+.tree header {
+  padding: 4px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  border-bottom: 1px solid var(--line);
+}
+.project {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.filter {
+  background: #ffffff;
+  border: 1px solid var(--line);
+  padding: 2px 6px;
+  color: var(--ink);
+  font: inherit;
+  outline: none;
+}
+.filter:focus {
+  border-color: var(--accent);
+}
+.toggles {
+  display: flex;
+  gap: 1px;
+}
+.toggles button {
+  flex: 1;
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 1px 0;
+  color: var(--muted);
+}
+.toggles button.on {
+  background: #0969da14;
+  border-color: #0969da55;
+  color: var(--ink);
+}
+.toggles span {
+  opacity: 0.6;
+  margin-left: 4px;
+}
+.rows {
+  flex: 1;
+  overflow: auto;
+  padding: 2px 0 8px;
+}
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 19px;
+  padding-right: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.row:hover {
+  background: #0000000a;
+}
+.row .name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.row.dir .name {
+  color: #1f2328;
+}
+/* The triangle's ink overhangs its advance; centred in a box wider than the glyph, it
+   stays inside the area Chromium repaints, so removed rows leave no sliver behind. */
+.twisty {
+  flex: none;
+  width: 14px;
+  text-align: center;
+  color: var(--muted);
+}
+.dot {
+  width: 6px;
+  height: 6px;
+  background: #9a6700;
+}
+/* Selected: the accent tint and an accent bar on the left, as everywhere in the world. */
+.row.chosen {
+  background: #0969da1a;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+/* The ⋯ every row shows on hover: its menu, as right-clicking it opens. */
+.row .more {
+  display: none;
+  flex: none;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: none;
+  background: #0000000f;
+  font-weight: 700;
+  line-height: 16px;
+  color: var(--ink);
+}
+.row:hover .more { display: block; }
+.row:hover .badge { display: none; }
+.row .more:hover { background: #0000001f; }
+.badge {
+  font: 600 10px var(--mono);
+  opacity: 0.9;
+}
+.change-M {
+  color: #9a6700;
+}
+.change-A,
+.change-U {
+  color: #1a7f37;
+}
+.change-D {
+  color: #cf222e;
+  text-decoration: line-through;
+}
+.change-R {
+  color: #8250df;
+}
+
+/* The file. */
+.code {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.code header {
+  height: 24px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 6px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.path {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note {
+  color: var(--muted);
+}
+.diff-toggle {
+  background: transparent;
+  border: 1px solid var(--line);
+  padding: 0 8px;
+}
+.diff-toggle.on {
+  background: #fff8c5;
+  border-color: #d4a72c;
+}
+.scroll {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+.editor {
+  position: absolute;
+  inset: 0;
+}
+.empty {
+  display: grid;
+  place-items: center;
+  height: 100%;
+  color: var(--muted);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #0000001f;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background-color: #8c959f;
+}
+
+/* Rendered markdown, GitHub-like. */
+.markdown {
+  position: absolute;
+  inset: 0;
+  overflow: auto;
+  padding: 12px 18px 32px;
+  font: 13.5px/1.6 "Noto Sans", system-ui, sans-serif;
+  color: var(--ink);
+  user-select: text;
+}
+.markdown > * {
+  max-width: 920px;
+  margin-left: auto;
+  margin-right: auto;
+}
+.markdown h1,
+.markdown h2 {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 0.3em;
+}
+.markdown h1 { font-size: 1.9em; margin: 0.4em auto 0.6em; }
+.markdown h2 { font-size: 1.45em; margin: 1.4em auto 0.6em; }
+.markdown h3 { font-size: 1.2em; margin: 1.3em auto 0.5em; }
+.markdown h4, .markdown h5, .markdown h6 { margin: 1.2em auto 0.4em; }
+.markdown a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.markdown a:hover { text-decoration: underline; }
+.markdown code {
+  font: 0.88em var(--mono);
+  background: #d0d7de;
+  padding: 0.15em 0.4em;
+}
+.markdown pre {
+  background: var(--panel);
+  padding: 8px 10px;
+  overflow: auto;
+}
+.markdown pre code {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+.markdown blockquote {
+  border-left: 3px solid #d0d7de;
+  color: #59636e;
+  padding: 0 1em;
+  margin-left: auto;
+}
+.markdown table { border-collapse: collapse; display: block; overflow: auto; }
+.markdown th, .markdown td { border: 1px solid #d0d7de; padding: 6px 12px; }
+.markdown tr:nth-child(2n) { background: #f6f8fa; }
+.markdown img { max-width: 100%; }
+.markdown img.missing { outline: 1px dashed #cf222e; min-width: 40px; min-height: 20px; }
+.markdown hr { border: none; border-top: 1px solid var(--line); margin: 1.6em auto; }
+.markdown li + li { margin-top: 0.2em; }
+.markdown input[type="checkbox"] { margin: 0 0.4em 0 0; vertical-align: middle; }
+.markdown .md-diagram {
+  display: flex;
+  justify-content: center;
+  padding: 8px;
+  margin-top: 1em;
+  margin-bottom: 1em;
+  background: var(--panel);
+  overflow: auto;
+  white-space: pre;
+  font: 12px var(--mono);
+  color: var(--muted);
+}
+.markdown .md-diagram.drawn { white-space: normal; color: inherit; }
+.markdown .md-diagram svg { max-width: 100%; height: auto; }
+.markdown .md-math { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+.markdown .md-error { color: #cf222e; white-space: pre-wrap; font: 12px var(--mono); }
+
+/* Lezer's class highlighter, in Modus Operandi's syntax colours (see modus.ts). */
+.tok-keyword, .tok-operatorKeyword, .tok-modifier { color: #531ab6; }
+.tok-string, .tok-string2 { color: #3548cf; }
+.tok-number, .tok-bool, .tok-atom { color: #0000b0; }
+.tok-comment { color: #595959; font-style: italic; }
+.tok-meta { color: #a0132f; }
+.tok-variableName.tok-definition, .tok-propertyName.tok-definition { color: #005e8b; }
+.tok-function { color: #721045; }
+.tok-typeName, .tok-className, .tok-namespace { color: #005f5f; }
+.tok-propertyName, .tok-attributeName { color: #005e8b; }
+.tok-tagName { color: #531ab6; }
+.tok-heading { color: #000000; font-weight: 700; }
+.tok-link, .tok-url { color: #3548cf; text-decoration: underline; }
+.tok-inserted { color: #005000; }
+.tok-deleted, .tok-invalid { color: #8f1313; }
+.tok-punctuation, .tok-operator { color: #000000; }
+.markdown pre.md-code { background: #f2f2f2; color: #000000; }
+.crash { position: absolute; inset: 0; margin: 0; padding: 16px; overflow: auto; color: #cf222e; font: 12px/1.5 var(--mono); white-space: pre-wrap; }
+.viewer { position: relative; }
+.tree.drawer {
+  position: absolute;
+  z-index: 5;
+  top: 0;
+  bottom: 0;
+  left: 0;
+}
+
+
+/* The tree's right-click menu. */
+.menu {
+  position: fixed;
+  z-index: 20;
+  width: 230px;
+  display: flex;
+  flex-direction: column;
+  padding: 1px;
+  background: var(--bg);
+  border: 1px solid #8c959f;
+}
+/* The same menu as the world's: a title, then 24px items. */
+.menu-title {
+  height: 22px;
+  line-height: 22px;
+  padding: 0 8px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.menu button {
+  height: 24px;
+  text-align: left;
+  background: transparent;
+  border: none;
+  padding: 0 8px;
+  color: var(--ink);
+  font-size: 12px;
+}
+.menu button:hover { background: #0969da1a; }
+.binary { display: flex; flex-direction: column; align-items: center; gap: 10px; }
+.binary .diff-toggle { padding: 3px 12px; }

@@ -1,0 +1,120 @@
+/* The finder, in the herdr world's light palette. */
+:root {
+  --bg: #ffffff;
+  --panel: #f6f8fa;
+  --line: #d0d7de;
+  --ink: #000000;
+  --muted: #24292f;
+  --accent: #0550ae;
+  --mono: "JetBrains Mono", "Fira Code", "DejaVu Sans Mono", monospace;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--ink);
+  font: 500 13.5px "Noto Sans", system-ui, sans-serif;
+  overflow: hidden;
+}
+button { font: inherit; color: inherit; cursor: pointer; }
+
+/* The page template makes html and body transparent; the root paints instead. */
+.finder { display: flex; flex-direction: column; height: 100vh; background: var(--bg); color: var(--ink); }
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 0 0 0;
+  border-bottom: 1px solid var(--line);
+}
+.modes { display: flex; gap: 0; }
+.modes button {
+  background: transparent;
+  border: none;
+  padding: 3px 10px;
+  color: var(--muted);
+}
+.modes button.on { background: #0969da24; color: var(--ink); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
+.bar .project { margin-left: auto; padding-right: 8px; color: var(--muted); font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.query {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0 8px;
+  height: 30px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--line);
+}
+.prompt { font: 700 13px var(--mono); color: var(--accent); }
+.query input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font: 600 15px var(--mono);
+}
+.query input::placeholder { color: #3d444d; font-family: "Noto Sans", system-ui, sans-serif; font-size: 13px; }
+.spinner {
+  width: 14px; height: 14px;
+  border: 2px solid #d0d7de; border-top-color: var(--accent);
+  animation: spin 0.7s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.results { flex: 1; overflow: auto; padding: 0; }
+.row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+}
+.row.chosen { background: #ddf4ff; box-shadow: inset 2px 0 0 var(--accent); }
+.row .name { font-family: var(--mono); font-size: 13.5px; font-weight: 600; flex: none; color: var(--ink); }
+.row .dir { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
+.row mark, .snippet mark { background: none; color: #0550ae; font-weight: 700; text-decoration: underline; text-underline-offset: 2px; }
+.snippet mark { background: #fff8c5; color: #1f2328; outline: 1px solid #d4a72c; text-decoration: none; }
+.tags { display: flex; gap: 4px; flex: none; }
+.tag { font: 700 11.5px var(--mono); color: var(--muted); }
+.change-M { color: #7d4e00; }
+.change-A, .change-U { color: #116329; }
+.change-D { color: #a40e26; }
+.change-R { color: #6639ba; }
+
+.file-head {
+  font: 700 13px var(--mono);
+  color: #0550ae;
+  padding: 4px 8px 1px;
+  position: sticky;
+  top: 0;
+  background: #ffffff;
+}
+.row.hit { padding-left: 10px; }
+.line-no { font: 600 12.5px var(--mono); color: var(--muted); min-width: 36px; text-align: right; flex: none; }
+.snippet { font: 500 13.5px var(--mono); color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+
+.status { width: 8px; height: 8px; background: #656d76; flex: none; align-self: center; }
+.status-working { background: #0969da; }
+.status-blocked { background: #bf8700; }
+.status-done { background: #1a7f37; }
+
+.empty { color: var(--muted); padding: 24px; text-align: center; }
+.foot {
+  display: flex;
+  justify-content: space-between;
+  padding: 2px 8px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+::-webkit-scrollbar { width: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #0000001f; border: 2px solid transparent; background-clip: padding-box; }

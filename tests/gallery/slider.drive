@@ -1,0 +1,10 @@
+# shot-at: 3200
+# The slider's thumb dragged to the right and held: the lifted thumb.
+extent 1280 800
+move 300 300
+glide $SLIDER_X $SLIDER_Y 300
+sleep 200
+down left
+glide $SLIDER_TO_X $SLIDER_Y 300
+sleep 800
+up left

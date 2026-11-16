@@ -1,0 +1,10 @@
+# shot-at: 3400
+# page: 3
+# A right click near the bottom right corner: the menu flips and shifts to stay on the output.
+extent 1280 800
+move 300 300
+glide $K_CORNER_X $K_CORNER_Y 200
+sleep 100
+click right
+sleep 500
+sleep 3000

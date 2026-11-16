@@ -121,3 +121,21 @@ void clipboard_set_text(struct server *server, const char *text, size_t length);
  * MIME; the compositor reads and deletes it. */
 bool clipboard_set_file(struct server *server, const char *mime, const char *path,
                         struct protocol_error *error);
+/* Text copied in the compositor (an editable node): the clipboard's, and the director hears
+ * of it as of a client's copy. */
+void clipboard_copy_text(struct server *server, const char *text, size_t length);
+/* Own the primary selection (what a middle click pastes) with LENGTH bytes of TEXT. */
+void clipboard_set_primary_text(struct server *server, const char *text, size_t length);
+struct clipboard_request;
+/*
+ * Read the seat's selection, or with PRIMARY its primary selection, as text: DONE runs
+ * once, with NULL when there is no text, from the event loop as the owner writes it, or
+ * at once when the compositor owns it. Return the request, to cancel, or NULL when DONE
+ * already ran.
+ */
+struct clipboard_request *clipboard_read_text(struct server *server, bool primary,
+                                              void (*done)(void *data, const char *text,
+                                                           size_t length),
+                                              void *data);
+/* Drop REQUEST without calling its DONE. */
+void clipboard_cancel(struct clipboard_request *request);

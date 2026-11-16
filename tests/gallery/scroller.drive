@@ -1,0 +1,9 @@
+# shot-at: 2600
+# page: 2
+# The wheel over the vertical scroller, two notches: rounded clipping of scrolled rows, the thumb showing.
+extent 1280 800
+move 300 300
+glide $NEST_Y_X $NEST_Y_Y 300
+sleep 200
+wheel 2
+sleep 700

@@ -19,7 +19,7 @@ import { createContext, version } from "react";
 import type { Node as YogaNode } from "yoga-layout";
 import { toStageEvent, type StageElement } from "./events.js";
 import {
-  applyLayoutStyle, calculateLayout, createLayoutNode, textKeys, textMeasure, TextMetrics,
+  applyLayoutStyle, calculateLayout, contentExtent, createLayoutNode, textKeys, textMeasure, TextMetrics,
   type LayoutBox, type MeasureRequest,
 } from "./layout.js";
 import {
@@ -50,6 +50,8 @@ export interface Instance extends StageElement {
   /** Yoga node of an attached <Box>, and of each node a Box lays out. */
   yoga: YogaNode | null;
   layout: LayoutBox | null;
+  /** How far a scrolling Box's laid-out content reaches, sent as its content size. */
+  extent: { width: number; height: number } | null;
   /** Hidden by Suspense: shown as invisible without forgetting its props. */
   hidden: boolean;
   attached: boolean;
@@ -58,15 +60,18 @@ export interface Instance extends StageElement {
    * become part of the outer Text's content instead of nodes of their own.
    */
   inline: { text: string | null; props: Record<string, unknown> } | null;
+  /** A text Yoga measures, settled as its layout node is first made: not an editable one. */
+  measured?: boolean;
 }
 
 type Parent = Instance | Container;
 
 /** Nodes a <Box> can lay out; the rest (bindings, cameras, ...) have no box. */
 const flexItems = new Set<HostType>(["group", "rect", "box", "text", "image", "web", "window", "mirror"]);
-const bubblingEvents = new Set(["pointerdown", "pointermove", "pointerup", "wheel"]);
+const bubblingEvents = new Set(["pointerdown", "pointermove", "pointerup", "wheel", "click", "dblclick",
+                                "auxclick", "contextmenu", "keydown", "keyup"]);
 /** Events that come in streams: as in the DOM, their updates batch instead of rendering at once. */
-const continuousEvents = new Set(["pointermove", "wheel", "drag", "resize", "move", "update"]);
+const continuousEvents = new Set(["pointermove", "wheel", "drag", "resize", "move", "update", "scroll"]);
 /** How long a commit waits for text measurements before using estimates. */
 const measureTimeoutMs = 200;
 const maxMeasureRounds = 3;
@@ -116,6 +121,10 @@ export class Container {
   private waiting = false;
   /** Shaders the compositor was sent since the last resync. */
   private readonly sentShaders = new Set<string>();
+  /** Listeners of nodes' new boxes besides their own onLayout; see watchLayout. */
+  private readonly layoutWatchers = new Map<Instance, Set<(box: LayoutBox) => void>>();
+  /** Waiting for what is committed to be sent; see afterCommitted. */
+  private committedCallbacks: (() => void)[] = [];
 
   private readonly send: (ops: Op[]) => boolean | void;
   private readonly measure?: (requests: MeasureRequest[]) => void;
@@ -137,8 +146,8 @@ export class Container {
     const { wire, handlers, style, onLayout } = normalizeProps(type, props);
     return {
       id: this.nextId++, type, container: this, props, declared: wire, holdsNaN: undefined, wire, handlers,
-      style, onLayout, parent: null, children: [], yoga: null, layout: null, hidden: false, attached: false,
-      inline: null,
+      style, onLayout, parent: null, children: [], yoga: null, layout: null, extent: null, hidden: false,
+      attached: false, inline: null,
     };
   }
 
@@ -150,7 +159,7 @@ export class Container {
     return {
       id: this.nextId++, type: "text", container: this, props, declared: {}, holdsNaN: false, wire: {},
       handlers: new Map(),
-      style: {}, onLayout: null, parent: null, children: [], yoga: null, layout: null,
+      style: {}, onLayout: null, parent: null, children: [], yoga: null, layout: null, extent: null,
       hidden: false, attached: false, inline: { text, props },
     };
   }
@@ -199,6 +208,44 @@ export class Container {
     });
   }
 
+  /**
+   * Run CALLBACK once everything committed so far has been sent, so that a message
+   * naming a node (focusing it, scrolling it) never reaches the compositor before the
+   * node does, even while a commit waits for text to be measured.
+   */
+  afterCommitted(callback: () => void): void {
+    if (!this.flushQueued && !this.measureTimer && !this.waiting && !this.resync && this.ops.length === 0) callback();
+    else this.committedCallbacks.push(callback);
+  }
+
+  private runCommittedCallbacks(): void {
+    if (this.committedCallbacks.length === 0) return;
+    const callbacks = this.committedCallbacks;
+    this.committedCallbacks = [];
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch (error) {
+        this.onError(error);
+      }
+    }
+  }
+
+  /**
+   * Hear NODE's new boxes as its onLayout would, without being its owner: e.g. a popover
+   * following the control it hangs from. Returns a function that stops.
+   */
+  watchLayout(node: StageElement, listener: (box: LayoutBox) => void): () => void {
+    const instance = node as Instance;
+    let set = this.layoutWatchers.get(instance);
+    if (!set) this.layoutWatchers.set(instance, (set = new Set()));
+    set.add(listener);
+    return () => {
+      set!.delete(listener);
+      if (set!.size === 0) this.layoutWatchers.delete(instance);
+    };
+  }
+
   /** Send what is committed, unless it waits for text to be measured or for the receiver. */
   flush(): void {
     if (this.measureTimer) return;
@@ -225,6 +272,7 @@ export class Container {
       // node changed in several sends one set, with its latest values.
       if (this.send(defines.length > 0 ? [...defines, ...ops] : ops) === false) this.waiting = true;
     }
+    this.runCommittedCallbacks();
   }
 
   /** Call onLayout handlers; what they render joins this frame. */
@@ -237,6 +285,7 @@ export class Container {
           if (!instance.attached || !instance.layout) continue;
           try {
             instance.onLayout?.(instance.layout);
+            for (const watcher of this.layoutWatchers.get(instance) ?? []) watcher(instance.layout);
           } catch (error) {
             this.onError(error);
           }
@@ -385,7 +434,7 @@ export class Container {
       if (instance.style !== style && !sameStyle(style, instance.style)) {
         applyLayoutStyle(instance.yoga, instance.style, instance.type === "box");
       }
-      if (instance.type === "text" && textChanged(previous, instance.wire)) instance.yoga.markDirty();
+      if (measures(instance) && textChanged(previous, instance.wire)) instance.yoga.markDirty();
     }
     // Only the patched props can differ, unless the text inside a Text changed
     // in this commit and was not composed yet, or a NaN from layout is sent again.
@@ -409,14 +458,19 @@ export class Container {
       ? composeText(instance)
       : null;
     const geometry = instance.layout ? this.geometry(instance, instance.layout) : null;
-    return inline || geometry ? { ...instance.declared, ...inline, ...geometry } : instance.declared;
+    const extent = instance.extent && instance.declared.scroll !== undefined
+      ? { contentWidth: instance.extent.width, contentHeight: instance.extent.height }
+      : null;
+    return inline || geometry || extent
+      ? { ...instance.declared, ...inline, ...geometry, ...extent }
+      : instance.declared;
   }
 
   /** Sends a Text whose inline content changed. */
   private refresh(instance: Instance): void {
     const previous = sent(instance);
     instance.wire = this.compose(instance);
-    if (instance.yoga && textChanged(previous, instance.wire)) instance.yoga.markDirty();
+    if (instance.yoga && measures(instance) && textChanged(previous, instance.wire)) instance.yoga.markDirty();
     this.sendChanges(instance, previous);
   }
 
@@ -462,7 +516,8 @@ export class Container {
   private createLayoutNode(instance: Instance): YogaNode {
     const yoga = createLayoutNode();
     applyLayoutStyle(yoga, instance.style, instance.type === "box");
-    if (instance.type === "text") {
+    // An editable text is sized by its box, never measured: what it shows is the compositor's.
+    if (measures(instance)) {
       yoga.setMeasureFunc(textMeasure(this.textMetrics, () => instance.wire));
     }
     instance.yoga = yoga;
@@ -523,10 +578,18 @@ export class Container {
     if (!sameBox(instance.layout, box)) {
       instance.layout = box;
       this.place(instance, this.geometry(instance, box));
-      if (instance.onLayout) this.laidOut.add(instance);
+      if (instance.onLayout || this.layoutWatchers.has(instance)) this.laidOut.add(instance);
     }
     if (instance.type !== "box") return;
     for (const child of instance.children) if (child.yoga) this.applyLayout(child);
+    // A scroll container's content may grow while its own box stays.
+    if (instance.declared.scroll !== undefined) {
+      const extent = contentExtent(instance.yoga!);
+      if (instance.extent?.width !== extent.width || instance.extent?.height !== extent.height) {
+        instance.extent = extent;
+        this.place(instance, { contentWidth: extent.width, contentHeight: extent.height });
+      }
+    }
   }
 
   private isLayoutRoot(instance: Instance): boolean {
@@ -537,8 +600,8 @@ export class Container {
   private geometry(instance: Instance, box: LayoutBox): WireProps {
     const values: WireProps = this.isLayoutRoot(instance) ? {} : { x: box.x, y: box.y };
     values.width = box.width;
-    // Text takes its height from its lines.
-    if (instance.type !== "text") values.height = box.height;
+    // Text takes its height from its lines; an editable one has a box.
+    if (instance.type !== "text" || instance.declared.editable) values.height = box.height;
     return values;
   }
 
@@ -587,7 +650,7 @@ export class Container {
   /** Lays out again with the sizes the measurements brought. */
   private relayoutText(): void {
     const markText = (node: Instance) => {
-      if (node.type === "text" && node.yoga) node.yoga.markDirty();
+      if (node.yoga && measures(node)) node.yoga.markDirty();
       for (const child of node.children) markText(child);
     };
     for (const root of this.layoutRoots) markText(root);
@@ -640,6 +703,13 @@ function sameBox(left: LayoutBox | null, right: LayoutBox): boolean {
 function sameStyle(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
   const keys = Object.keys(left);
   return keys.length === Object.keys(right).length && keys.every((key) => left[key] === right[key]);
+}
+
+/** Whether INSTANCE is a text Yoga measures: one not editable, when its layout node was made. */
+function measures(instance: Instance): boolean {
+  if (instance.type !== "text") return false;
+  instance.measured ??= !instance.declared.editable;
+  return instance.measured;
 }
 
 function textChanged(previous: WireProps, next: WireProps): boolean {
@@ -703,11 +773,12 @@ const hostConfig = {
   // A Text node's string children are its content, not child nodes.
   shouldSetTextContent: (type: HostType, props: Record<string, unknown>) =>
     type === "text" && isTextContent(props.children),
-  createTextInstance(text: string, container: Container, context: object) {
+  // Inside a portal, React passes the portal's node as the container.
+  createTextInstance(text: string, container: Parent, context: object) {
     if (context !== textContext) {
       throw new TypeError(`Stage has no text nodes; wrap ${JSON.stringify(text)} in <Text>`);
     }
-    return container.createText(text);
+    return owner(container).createText(text);
   },
   commitTextUpdate(instance: Instance, _previous: string, text: string) {
     instance.container.setText(instance, text);
@@ -716,8 +787,8 @@ const hostConfig = {
     instance.container.contentChanged(instance);
   },
 
-  createInstance(type: HostType, props: Record<string, unknown>, container: Container, context: object) {
-    return container.create(type, props, context === textContext);
+  createInstance(type: HostType, props: Record<string, unknown>, container: Parent, context: object) {
+    return owner(container).create(type, props, context === textContext);
   },
   appendInitialChild(parent: Instance, child: Instance) {
     parent.container.appendInitial(parent, child);
@@ -730,20 +801,21 @@ const hostConfig = {
   appendChild(parent: Instance, child: Instance) {
     parent.container.insert(parent, child, null);
   },
-  appendChildToContainer(container: Container, child: Instance) {
-    container.insert(container, child, null);
+  // A portal's container is a node (see createPortal), the root's the Container itself.
+  appendChildToContainer(parent: Parent, child: Instance) {
+    owner(parent).insert(parent, child, null);
   },
   insertBefore(parent: Instance, child: Instance, before: Instance) {
     parent.container.insert(parent, child, before);
   },
-  insertInContainerBefore(container: Container, child: Instance, before: Instance) {
-    container.insert(container, child, before);
+  insertInContainerBefore(parent: Parent, child: Instance, before: Instance) {
+    owner(parent).insert(parent, child, before);
   },
   removeChild(parent: Instance, child: Instance) {
     parent.container.remove(parent, child);
   },
-  removeChildFromContainer(container: Container, child: Instance) {
-    container.remove(container, child);
+  removeChildFromContainer(parent: Parent, child: Instance) {
+    owner(parent).remove(parent, child);
   },
   clearContainer(container: Container) {
     for (const child of [...container.children]) container.remove(container, child);
@@ -792,6 +864,11 @@ const hostConfig = {
   prepareScopeUpdate: () => undefined,
   createFragmentInstance: () => null,
 };
+
+/** The container a parent belongs to: itself, or a node's. */
+function owner(parent: Parent): Container {
+  return parent instanceof Container ? parent : parent.container;
+}
 
 type Reconciler = ReturnType<typeof createReconciler>;
 export const reconciler: Reconciler = createReconciler(hostConfig as never);

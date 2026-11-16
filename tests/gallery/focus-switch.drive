@@ -1,0 +1,12 @@
+# shot-at: 3400
+# page: 3
+# Click the checkbox, Tab: the Switch's ring.
+extent 1280 800
+move 300 300
+glide $K_CHECK_X $K_ROW_Y 200
+click left
+sleep 200
+key Tab
+move 300 300
+sleep 300
+sleep 3000

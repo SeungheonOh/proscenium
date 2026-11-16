@@ -1,0 +1,8 @@
+# shot-at: 3200
+# The wheel over the ScrollView, one notch.
+extent 1280 800
+move 300 300
+glide $SCROLL_X $SCROLL_Y 300
+sleep 200
+wheel 1
+sleep 900

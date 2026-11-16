@@ -92,6 +92,15 @@ struct media_text_style {
     double width;       /* Wrap width in logical pixels; <= 0: one line per paragraph. */
     double line_height; /* Line pitch as a multiple of SIZE, as in CSS; <= 0: the font's. */
     int max_lines;      /* With a width, end with an ellipsis after this many lines; 0: no limit. */
+    double letter_spacing; /* Logical pixels added after each character, as CSS letter-spacing. */
+    const char *features;  /* OpenType features, as CSS font-feature-settings; NULL: none. */
+    int decoration;        /* MEDIA_UNDERLINE and MEDIA_LINE_THROUGH. */
+};
+
+/* Lines a text draws, as CSS text-decoration-line. */
+enum {
+    MEDIA_UNDERLINE = 1 << 0,
+    MEDIA_LINE_THROUGH = 1 << 1,
 };
 
 #define MEDIA_TEXT_STYLE_DEFAULT ((struct media_text_style){.size = 14, .weight = 400})
@@ -185,6 +194,66 @@ struct media_glyph {
  */
 const struct media_glyph *media_text_glyphs(struct media *media,
                                             const struct media_text_layout *layout, size_t *count);
+/*
+ * Editing geometry, on the owner thread, of the text a layout holds: byte offsets into
+ * its text, logical pixels from its origin, lines drawn their spacing apart.
+ */
+struct media_line {
+    /* Its bytes, less the paragraph separator after it. */
+    int start, length;
+    /* The next line goes on with its paragraph: a soft wrap. */
+    bool wrapped, rtl;
+    double x, width;
+    /* Its top, as drawn; its own height; how far the next line's top is (its height and
+     * the line spacing for the last); its baseline. */
+    double top, height, pitch, baseline;
+};
+/* LAYOUT's visual lines, at least one; NULL with COUNT 0 while it has no laid-out text. */
+const struct media_line *media_text_lines(const struct media_text_layout *layout, int *count);
+/* The visual line holding byte INDEX; UPSTREAM, at a wrapped line's start, the line before. */
+int media_text_line_of(const struct media_text_layout *layout, int index, bool upstream);
+
+struct media_caret {
+    double x, y, height, baseline;
+    int line;
+};
+/* Where a caret at byte INDEX shows: Pango's strong cursor, as tall as its line. UPSTREAM
+ * puts an INDEX that starts a wrapped line at the end of the line before, as End does. */
+void media_text_caret(const struct media_text_layout *layout, int index, bool upstream,
+                      struct media_caret *out);
+/* The caret position nearest (X, Y), UPSTREAM when it is the end of a wrapped line. */
+int media_text_hit(const struct media_text_layout *layout, double x, double y, bool *upstream);
+/* The caret position on visual LINE nearest X. */
+int media_text_line_hit(const struct media_text_layout *layout, int line, double x,
+                        bool *upstream);
+/* One caret position on visually: left for a negative DIRECTION, right for a positive. */
+int media_text_move_visually(const struct media_text_layout *layout, int index, int direction);
+
+enum media_step {
+    /* To the next or previous caret position: a grapheme cluster. */
+    MEDIA_STEP_CLUSTER,
+    /* Back as Backspace deletes: a cluster, or one character where the script says so. */
+    MEDIA_STEP_BACKSPACE,
+    /* Back to a word's start, or on to a word's end. */
+    MEDIA_STEP_WORD,
+};
+/* The offset one STEP from INDEX in DIRECTION (-1 or 1), logically, kept within the text. */
+int media_text_step(const struct media_text_layout *layout, int index, int direction,
+                    enum media_step step);
+/* The word at INDEX, or the run of spaces or punctuation there: what a double click takes. */
+void media_text_word_at(const struct media_text_layout *layout, int index, int *start, int *end);
+
+struct media_rect {
+    double x, y, width, height;
+};
+/*
+ * The rectangles a selection of bytes START to END covers, line boxes high, so lines
+ * selected meet; a paragraph break selected shows NEWLINE_WIDTH wide. Return how many,
+ * in *OUT, which the caller frees.
+ */
+int media_text_selection(const struct media_text_layout *layout, int start, int end,
+                         double newline_width, struct media_rect **out);
+
 /*
  * Past a few hundred fonts held for glyphs, let them go: font numbers start over, and
  * texts find their glyphs again. True when it did, for whatever glyphs were kept by

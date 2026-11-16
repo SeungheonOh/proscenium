@@ -15,6 +15,7 @@
 #include "util.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <math.h>
 #include <pthread.h>
 #include <signal.h>
@@ -92,6 +93,9 @@ struct media_laid_out {
      */
     bool rewrappable;
     double fit, laid_width;
+    /* Its visual lines, for editing, found when first asked for. */
+    struct media_line *lines;
+    int line_count;
 };
 
 /* A font glyphs were drawn from, held so its number keeps naming it. */
@@ -207,6 +211,11 @@ static struct media_text_style normalized(const struct media_text_style *style) 
     result.width = result.width > 0 ? clamp(result.width, 1, 100000) : 0;
     result.line_height = result.line_height > 0 ? clamp(result.line_height, 0.1, 10) : 0;
     result.max_lines = result.max_lines > 0 ? MIN(result.max_lines, 10000) : 0;
+    result.letter_spacing = isfinite(result.letter_spacing)
+                                ? clamp(result.letter_spacing, -1000, 1000)
+                                : 0;
+    if (result.features && !result.features[0]) result.features = NULL;
+    result.decoration &= MEDIA_UNDERLINE | MEDIA_LINE_THROUGH;
     if (result.align != MEDIA_ALIGN_CENTER && result.align != MEDIA_ALIGN_END) {
         result.align = MEDIA_ALIGN_START;
     }
@@ -230,6 +239,24 @@ static void configure_layout(PangoLayout *layout, const struct media_text_style 
                              double spacing) {
     if (!(style->markup && set_markup(layout, style->text))) {
         pango_layout_set_text(layout, style->text, -1);
+    }
+    /* The text's own letter spacing, features and lines, under what markup spans say. */
+    if (style->letter_spacing || style->features || style->decoration) {
+        PangoAttrList *attributes = pango_layout_get_attributes(layout);
+        attributes = attributes ? pango_attr_list_copy(attributes) : pango_attr_list_new();
+        PangoAttribute *own[4];
+        int count = 0;
+        if (style->letter_spacing)
+            own[count++] =
+                pango_attr_letter_spacing_new((int)nearbyint(style->letter_spacing * PANGO_SCALE));
+        if (style->features) own[count++] = pango_attr_font_features_new(style->features);
+        if (style->decoration & MEDIA_UNDERLINE)
+            own[count++] = pango_attr_underline_new(PANGO_UNDERLINE_SINGLE);
+        if (style->decoration & MEDIA_LINE_THROUGH)
+            own[count++] = pango_attr_strikethrough_new(TRUE);
+        for (int i = 0; i < count; i++) pango_attr_list_insert_before(attributes, own[i]);
+        pango_layout_set_attributes(layout, attributes);
+        pango_attr_list_unref(attributes);
     }
     PangoFontDescription *description = pango_font_description_new();
     pango_font_description_set_family(description, style->font);
@@ -313,18 +340,22 @@ static bool same_style(const struct media_text_style *left, const struct media_t
            same_string(left->font, right->font) && left->size == right->size &&
            left->weight == right->weight && left->italic == right->italic &&
            left->align == right->align && left->width == right->width &&
-           left->line_height == right->line_height && left->max_lines == right->max_lines;
+           left->line_height == right->line_height && left->max_lines == right->max_lines &&
+           left->letter_spacing == right->letter_spacing &&
+           same_string(left->features, right->features) && left->decoration == right->decoration;
 }
 
 static void copy_style(struct media_text_style *copy, const struct media_text_style *style) {
     *copy = *style;
     copy->text = style->text ? xstrdup(style->text) : NULL;
     copy->font = style->font ? xstrdup(style->font) : NULL;
+    copy->features = style->features ? xstrdup(style->features) : NULL;
 }
 
 static void free_style(struct media_text_style *style) {
     free((char *)style->text);
     free((char *)style->font);
+    free((char *)style->features);
     *style = (struct media_text_style){0};
 }
 
@@ -332,10 +363,11 @@ static void free_style(struct media_text_style *style) {
 static uint64_t style_hash(const struct media_text_style *style) {
     uint64_t hash = hash_bytes(HASH_SEED, style->text, strlen(style->text) + 1);
     hash = hash_bytes(hash, style->font, strlen(style->font) + 1);
-    double numbers[5] = {style->size, style->weight, style->width, style->line_height,
-                         style->max_lines};
+    double numbers[6] = {style->size,        style->weight,    style->width,
+                         style->line_height, style->max_lines, style->letter_spacing};
     hash = hash_bytes(hash, numbers, sizeof numbers);
-    int flags[3] = {style->markup, style->italic, (int)style->align};
+    if (style->features) hash = hash_bytes(hash, style->features, strlen(style->features) + 1);
+    int flags[4] = {style->markup, style->italic, (int)style->align, style->decoration};
     return hash_bytes(hash, flags, sizeof flags);
 }
 
@@ -344,6 +376,7 @@ static void free_laid_out(struct media_laid_out *laid) {
         vec_finish(laid->glyphs);
         free(laid->glyphs);
     }
+    free(laid->lines);
     g_object_unref(laid->layout);
     free_style(&laid->style);
     free(laid);
@@ -394,7 +427,7 @@ static uint64_t family_hash(const struct media_text_style *style) {
 /* Whether LAYOUT, laid out for STYLE, breaks alike at any width from its widest line up. */
 static bool rewrappable(PangoLayout *layout, const struct media_text_style *style) {
     if (!(style->width > 0) || style->align != MEDIA_ALIGN_START || style->markup ||
-        pango_layout_is_ellipsized(layout))
+        style->letter_spacing || pango_layout_is_ellipsized(layout))
         return false;
     /* Soft hyphens (U+00AD, and U+1806 for Mongolian) show only where a line breaks at
      * them; a tab's width is settled after the line breaks, and can make it wider. */
@@ -453,6 +486,13 @@ static struct media_laid_out *lay_out(struct media *media, const struct media_te
             /* As configure_layout sets it. */
             laid->spacing = (int)nearbyint(spacing * PANGO_SCALE);
             spaced_metrics(laid->layout, laid->spacing, spacing, &laid->metrics);
+        }
+        /* Pango trims a line's letter spacing at its ends, but breaks lines counting it, so
+         * text wrapped at its own width would break. Counted, as CSS counts it after the
+         * last letter too, the text fits the width it measures. */
+        if (normal.letter_spacing > 0) {
+            laid->metrics.width += normal.letter_spacing;
+            laid->metrics.right = MAX(laid->metrics.right, laid->metrics.width);
         }
     }
     /* Trimmed before it joins, the new text is never the one dropped. */
@@ -541,7 +581,8 @@ struct media_text_box media_text_raster_box(const struct media_text_metrics *met
 }
 
 /* Draw LAYOUT's lines from the user-space origin, SPACING Pango units further apart each,
- * as pango_cairo_show_layout draws a layout given that spacing. */
+ * as pango_cairo_show_layout draws a layout given that spacing, each baseline on a whole
+ * device pixel, as glyphs from the atlas sit (content.c). */
 static void show_spaced(cairo_t *cairo, PangoLayout *layout, int spacing) {
     PangoLayoutIter *iter = pango_layout_get_iter(layout);
     int index = 0;
@@ -549,10 +590,15 @@ static void show_spaced(cairo_t *cairo, PangoLayout *layout, int spacing) {
         PangoRectangle logical;
         pango_layout_iter_get_line_extents(iter, NULL, &logical);
         int baseline = pango_layout_iter_get_baseline(iter) + index++ * spacing;
+        double x = logical.x / (double)PANGO_SCALE, y = baseline / (double)PANGO_SCALE;
+        double device_x = x, device_y = y;
+        cairo_user_to_device(cairo, &device_x, &device_y);
+        device_y = round(device_y);
+        cairo_device_to_user(cairo, &device_x, &device_y);
         /* Moved by translating: a current point would round the line's origin to cairo's
          * fixed point, which can move its glyphs a quarter pixel. */
         cairo_save(cairo);
-        cairo_translate(cairo, logical.x / (double)PANGO_SCALE, baseline / (double)PANGO_SCALE);
+        cairo_translate(cairo, x, device_y);
         pango_cairo_show_layout_line(cairo, pango_layout_iter_get_line_readonly(iter));
         cairo_restore(cairo);
     } while (pango_layout_iter_next_line(iter));
@@ -595,7 +641,7 @@ static bool render_text(PangoContext *context, const struct media_laid_out *laid
         struct media_text_style normal = normalized(style);
         PangoLayout *layout = pango_layout_new(context);
         configure_layout(layout, &normal, metrics->spacing);
-        pango_cairo_show_layout(cairo, layout);
+        show_spaced(cairo, layout, 0);
         g_object_unref(layout);
     }
     cairo_destroy(cairo);
@@ -644,7 +690,8 @@ static uint32_t glyph_font_number(struct media *media, PangoFont *font) {
 
 /* LAID's glyphs, in the order Pango's renderer draws them; false when only Pango can. */
 static bool find_glyphs(struct media *media, struct media_laid_out *laid, struct vec *out) {
-    if (laid->style.markup) return false;
+    /* Lines through text are Pango's to draw. */
+    if (laid->style.markup || laid->style.decoration) return false;
     PangoLayoutIter *iter = pango_layout_get_iter(laid->layout);
     PangoLayoutLine *line = NULL;
     int line_index = -1;
@@ -715,6 +762,312 @@ const struct media_glyph *media_text_glyphs(struct media *media,
     static const struct media_glyph none;
     *count = laid->glyphs->length;
     return *count ? laid->glyphs->data : &none;
+}
+
+/* Editing geometry. */
+
+/* LAID's visual lines, found once. */
+static const struct media_line *laid_lines(struct media_laid_out *laid, int *count) {
+    if (!laid->lines) {
+        int total = MAX(1, pango_layout_get_line_count(laid->layout));
+        laid->lines = xcalloc((size_t)total, sizeof *laid->lines);
+        PangoLayoutIter *iter = pango_layout_get_iter(laid->layout);
+        int index = 0;
+        double unit = PANGO_SCALE, spacing = laid->spacing / unit;
+        do {
+            if (index >= total) break;
+            PangoLayoutLine *line = pango_layout_iter_get_line_readonly(iter);
+            PangoRectangle logical;
+            pango_layout_iter_get_line_extents(iter, NULL, &logical);
+            struct media_line *out = &laid->lines[index];
+            out->start = line->start_index;
+            out->length = line->length;
+            out->x = logical.x / unit;
+            out->width = logical.width / unit;
+            out->top = logical.y / unit + index * spacing;
+            out->height = logical.height / unit;
+            out->baseline = pango_layout_iter_get_baseline(iter) / unit + index * spacing;
+            out->rtl = line->resolved_dir == PANGO_DIRECTION_RTL;
+            index++;
+        } while (pango_layout_iter_next_line(iter));
+        pango_layout_iter_free(iter);
+        laid->line_count = MAX(1, index);
+        for (int i = 0; i + 1 < laid->line_count; i++) {
+            const struct media_line *line = &laid->lines[i];
+            laid->lines[i].wrapped = laid->lines[i + 1].start == line->start + line->length;
+            laid->lines[i].pitch = laid->lines[i + 1].top - line->top;
+        }
+        /* The last line's box, as the rest, holds its share of the line height. */
+        struct media_line *last = &laid->lines[laid->line_count - 1];
+        last->pitch = last->height + fmax(0, spacing);
+    }
+    *count = laid->line_count;
+    return laid->lines;
+}
+
+const struct media_line *media_text_lines(const struct media_text_layout *layout, int *count) {
+    *count = 0;
+    return layout->laid_out ? laid_lines(layout->laid_out, count) : NULL;
+}
+
+/* The text LAYOUT shows, and its length in bytes. */
+static const char *laid_text(const struct media_laid_out *laid, int *length) {
+    const char *text = pango_layout_get_text(laid->layout);
+    *length = (int)strlen(text);
+    return text;
+}
+
+/* INDEX within LAID's text, on a character's first byte. */
+static int clamp_index(const struct media_laid_out *laid, int index) {
+    int length;
+    const char *text = laid_text(laid, &length);
+    if (index <= 0) return 0;
+    if (index >= length) return length;
+    while (index > 0 && (text[index] & 0xc0) == 0x80) index--;
+    return index;
+}
+
+int media_text_line_of(const struct media_text_layout *layout, int index, bool upstream) {
+    int count;
+    const struct media_line *lines = media_text_lines(layout, &count);
+    if (!lines) return 0;
+    int found = 0;
+    for (int i = 0; i < count; i++) {
+        if (lines[i].start > index) break;
+        found = i;
+    }
+    /* At a wrapped line's start, upstream it ends the line before. */
+    if (upstream && found > 0 && lines[found].start == index && lines[found - 1].wrapped)
+        found--;
+    return found;
+}
+
+void media_text_caret(const struct media_text_layout *layout, int index, bool upstream,
+                      struct media_caret *out) {
+    *out = (struct media_caret){0};
+    struct media_laid_out *laid = layout->laid_out;
+    if (!laid) return;
+    index = clamp_index(laid, index);
+    int count;
+    const struct media_line *lines = laid_lines(laid, &count);
+    int line = media_text_line_of(layout, index, upstream);
+    double unit = PANGO_SCALE;
+    PangoRectangle strong;
+    pango_layout_get_cursor_pos(laid->layout, index, &strong, NULL);
+    out->x = strong.x / unit;
+    if (line < count - 1 && lines[line].wrapped && index == lines[line + 1].start) {
+        /* The end of a wrapped line: the trailing edge of its last character. */
+        int length;
+        const char *text = laid_text(laid, &length);
+        const char *last = g_utf8_find_prev_char(text, text + index);
+        int x = 0;
+        if (last) {
+            pango_layout_line_index_to_x(pango_layout_get_line_readonly(laid->layout, line),
+                                         (int)(last - text), TRUE, &x);
+            out->x = lines[line].x + x / unit;
+        }
+    }
+    out->line = line;
+    out->y = lines[line].top;
+    out->height = lines[line].height;
+    out->baseline = lines[line].baseline;
+}
+
+int media_text_line_hit(const struct media_text_layout *layout, int line, double x,
+                        bool *upstream) {
+    struct media_laid_out *laid = layout->laid_out;
+    *upstream = false;
+    if (!laid) return 0;
+    int count;
+    const struct media_line *lines = laid_lines(laid, &count);
+    line = CLAMP(line, 0, count - 1);
+    PangoLayoutLine *layout_line = pango_layout_get_line_readonly(laid->layout, line);
+    if (!layout_line) return 0;
+    int index = 0, trailing = 0;
+    pango_layout_line_x_to_index(layout_line, (int)lround((x - lines[line].x) * PANGO_SCALE),
+                                 &index, &trailing);
+    int length;
+    const char *text = laid_text(laid, &length);
+    index = clamp_index(laid, index);
+    /* After the whole cluster the point is nearer the end of. */
+    while (trailing-- > 0 && index < length) index = (int)(g_utf8_next_char(text + index) - text);
+    int end = lines[line].start + lines[line].length;
+    if (index > end) index = end;
+    /* Past a wrapped line's end is where the next line starts, shown at this one's end. */
+    *upstream = lines[line].wrapped && index == end && line + 1 < count;
+    return index;
+}
+
+int media_text_hit(const struct media_text_layout *layout, double x, double y, bool *upstream) {
+    *upstream = false;
+    int count;
+    const struct media_line *lines = media_text_lines(layout, &count);
+    if (!lines) return 0;
+    int line = 0;
+    for (int i = 0; i < count; i++) {
+        line = i;
+        if (y < lines[i].top + lines[i].pitch) break;
+    }
+    return media_text_line_hit(layout, line, x, upstream);
+}
+
+int media_text_move_visually(const struct media_text_layout *layout, int index, int direction) {
+    struct media_laid_out *laid = layout->laid_out;
+    if (!laid) return 0;
+    int length;
+    const char *text = laid_text(laid, &length);
+    index = clamp_index(laid, index);
+    int at = index;
+    /* The same index can be two places, a wrapped line's end and the next one's start:
+     * moving on from one may land on the other first. */
+    for (int tries = 0; tries < 2 && at == index; tries++) {
+        int next = 0, trailing = 0;
+        pango_layout_move_cursor_visually(laid->layout, TRUE, at, 0, direction > 0 ? 1 : -1, &next,
+                                          &trailing);
+        if (next < 0) return 0;
+        if (next == G_MAXINT) return length;
+        next = clamp_index(laid, next);
+        while (trailing-- > 0 && next < length) next = (int)(g_utf8_next_char(text + next) - text);
+        if (next == at) break;
+        at = next;
+    }
+    return at;
+}
+
+/* LAID's text's logical attributes, one per character and one past the end; the character
+ * offset of byte INDEX into CHARACTER. */
+static const PangoLogAttr *laid_attrs(const struct media_laid_out *laid, int index, int *character,
+                                      int *count) {
+    const PangoLogAttr *attrs = pango_layout_get_log_attrs_readonly(laid->layout, count);
+    int length;
+    const char *text = laid_text(laid, &length);
+    *character = (int)g_utf8_pointer_to_offset(text, text + CLAMP(index, 0, length));
+    return attrs;
+}
+
+static int char_to_byte(const struct media_laid_out *laid, int character) {
+    int length;
+    const char *text = laid_text(laid, &length);
+    return (int)(g_utf8_offset_to_pointer(text, character) - text);
+}
+
+int media_text_step(const struct media_text_layout *layout, int index, int direction,
+                    enum media_step step) {
+    struct media_laid_out *laid = layout->laid_out;
+    if (!laid) return 0;
+    index = clamp_index(laid, index);
+    int character, count;
+    const PangoLogAttr *attrs = laid_attrs(laid, index, &character, &count);
+    int last = count - 1;
+    int at = character;
+    switch (step) {
+    case MEDIA_STEP_CLUSTER:
+        do at += direction;
+        while (at > 0 && at < last && !attrs[at].is_cursor_position);
+        break;
+    case MEDIA_STEP_BACKSPACE:
+        if (at > 0 && attrs[at].backspace_deletes_character) {
+            at--;
+        } else {
+            do at--;
+            while (at > 0 && !attrs[at].is_cursor_position);
+        }
+        break;
+    case MEDIA_STEP_WORD:
+        /* Back to a word's start, on to a word's end, as GTK moves. */
+        if (direction < 0) {
+            do at--;
+            while (at > 0 && !attrs[at].is_word_start);
+        } else {
+            do at++;
+            while (at < last && !attrs[at].is_word_end);
+        }
+        break;
+    }
+    return char_to_byte(laid, CLAMP(at, 0, last));
+}
+
+/* Whether the character after position AT lies in a word: the nearest word boundary at or
+ * before it starts one. */
+static bool in_word(const PangoLogAttr *attrs, int at) {
+    for (int i = at; i >= 0; i--) {
+        if (attrs[i].is_word_start) return true;
+        if (attrs[i].is_word_end) return false;
+    }
+    return false;
+}
+
+void media_text_word_at(const struct media_text_layout *layout, int index, int *start, int *end) {
+    struct media_laid_out *laid = layout->laid_out;
+    *start = *end = 0;
+    if (!laid) return;
+    index = clamp_index(laid, index);
+    int character, count;
+    const PangoLogAttr *attrs = laid_attrs(laid, index, &character, &count);
+    int last = count - 1, length;
+    const char *text = laid_text(laid, &length);
+    /* Inside a word, or just after one: the word. */
+    int at = character;
+    bool inside = at < last && in_word(attrs, at);
+    if (!inside && at > 0 && attrs[at].is_word_end) {
+        at--;
+        inside = true;
+    }
+    int from = at, to = at;
+    if (inside) {
+        while (from > 0 && !attrs[from].is_word_start) from--;
+        to = from;
+        do to++;
+        while (to < last && !attrs[to].is_word_end);
+    } else {
+        /* Between words: the run of space or punctuation there, short of a line break. */
+        while (from > 0 && !attrs[from].is_word_end && !attrs[from].is_mandatory_break) from--;
+        while (to < last && !attrs[to].is_word_start && !attrs[to + 1].is_mandatory_break) to++;
+        if (to == from && to < last) to++;
+    }
+    *start = char_to_byte(laid, from);
+    *end = char_to_byte(laid, to);
+    /* A paragraph's separator is never part of a word. */
+    while (*end > *start && (text[*end - 1] == '\n' || text[*end - 1] == '\r')) (*end)--;
+}
+
+int media_text_selection(const struct media_text_layout *layout, int start, int end,
+                         double newline_width, struct media_rect **out) {
+    *out = NULL;
+    struct media_laid_out *laid = layout->laid_out;
+    if (!laid || start >= end) return 0;
+    int count;
+    const struct media_line *lines = laid_lines(laid, &count);
+    struct vec rects;
+    vec_init(&rects, sizeof(struct media_rect));
+    for (int i = 0; i < count; i++) {
+        const struct media_line *line = &lines[i];
+        int line_end = line->start + line->length;
+        int next = i + 1 < count ? lines[i + 1].start : INT_MAX;
+        if (end <= line->start || start >= MAX(line_end + 1, next)) continue;
+        double top = line->top, height = line->pitch;
+        int from = MAX(start, line->start), to = MIN(end, line_end);
+        if (from < to) {
+            int *ranges = NULL, ranges_count = 0;
+            pango_layout_line_get_x_ranges(pango_layout_get_line_readonly(laid->layout, i), from,
+                                           to, &ranges, &ranges_count);
+            for (int r = 0; r < ranges_count; r++) {
+                struct media_rect *rect = vec_push(&rects);
+                double left = ranges[2 * r] / (double)PANGO_SCALE;
+                double right = ranges[2 * r + 1] / (double)PANGO_SCALE;
+                *rect = (struct media_rect){left, top, right - left, height};
+            }
+            g_free(ranges);
+        }
+        /* A paragraph's end selected past: a sliver for its line break, as browsers show. */
+        if (!line->wrapped && end > line_end && start <= line_end && i + 1 < count) {
+            struct media_rect *rect = vec_push(&rects);
+            double edge = line->rtl ? line->x - newline_width : line->x + line->width;
+            *rect = (struct media_rect){edge, top, newline_width, height};
+        }
+    }
+    *out = rects.data;
+    return (int)rects.length;
 }
 
 /* FONT at SCALE device pixels per logical pixel: its face and options through a CTM of

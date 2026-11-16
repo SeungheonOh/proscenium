@@ -11,6 +11,12 @@ static const char *const GESTURES[] = {"swipe", "pinch", "hold", NULL};
 static const char *const ACTIONS[] = {"none", "move", "resize", "pan", "zoom", NULL};
 static const char *const ALIGNS[] = {"start", "center", "end", NULL};
 static const char *const FITS[] = {"fill", "contain", "cover", NULL};
+static const char *const SCROLLS[] = {"none", "x", "y", "both", NULL};
+static const char *const OVERSCROLLS[] = {"auto", "contain", "none", NULL};
+static const char *const THUMBS[] = {"x", "y", NULL};
+static const char *const KEYMAPS[] = {"emacs", "standard", NULL};
+static const char *const DECORATIONS[] = {"none", "underline", "line-through",
+                                          "underline line-through", NULL};
 static const char *const CURSORS[CURSOR_COUNT + 1] = {
     "none",      "default",     "pointer",     "text",        "crosshair", "move",    "grab",
     "grabbing",  "not-allowed", "help",        "wait",        "progress",  "zoom-in", "zoom-out",
@@ -50,6 +56,18 @@ const char *const EVENT_NAMES[EVENT_COUNT] = {
     "load",
     "error",
     "message",
+    "click",
+    "dblclick",
+    "auxclick",
+    "contextmenu",
+    "focus",
+    "blur",
+    "keydown",
+    "keyup",
+    "scroll",
+    "input",
+    "submit",
+    "select",
 };
 
 #define NUMBER(v) .has_default = true, .fallback = {.number = (v)}
@@ -71,7 +89,7 @@ const struct prop_spec PROP_SPECS[PROP_COUNT] = {
     [PROP_VISIBLE] = {"visible", TYPE_BOOLEAN, BOOLEAN(true)},
     [PROP_BACKFACE] = {"backface", TYPE_CHOICE, CHOICE(BACKFACE_VISIBLE, BACKFACES)},
     [PROP_COLOR] = {"color", TYPE_COLOR, ANIMATED(1e-3), COLOR0},
-    [PROP_RADIUS] = {"radius", TYPE_NUMBER, ANIMATED(1e-2), NUMBER(0)},
+    [PROP_RADIUS] = {"radius", TYPE_CORNERS, ANIMATED(1e-2), .has_default = true},
     [PROP_CLIP] = {"clip", TYPE_BOOLEAN, BOOLEAN(false)},
     [PROP_WINDOW] = {"window", TYPE_ID},
     [PROP_FULLSCREEN] = {"fullscreen", TYPE_BOOLEAN, BOOLEAN(false)},
@@ -115,12 +133,50 @@ const struct prop_spec PROP_SPECS[PROP_COUNT] = {
     [PROP_LEFT] = {"left", TYPE_NUMBER, NUMBER(0)},
     /* No default: a node without a cursor shows its parent's. */
     [PROP_CURSOR] = {"cursor", TYPE_CHOICE, .choices = CURSORS},
+    [PROP_STATE_GROUP] = {"stateGroup", TYPE_BOOLEAN, BOOLEAN(false)},
+    /* No default: a node without one takes no keyboard focus. */
+    [PROP_TAB_INDEX] = {"tabIndex", TYPE_NUMBER},
+    [PROP_FOCUS_SCOPE] = {"focusScope", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_SCROLL] = {"scroll", TYPE_CHOICE, CHOICE(SCROLL_NONE, SCROLLS)},
+    [PROP_CONTENT_WIDTH] = {"contentWidth", TYPE_NUMBER},
+    [PROP_CONTENT_HEIGHT] = {"contentHeight", TYPE_NUMBER},
+    [PROP_STICK_TO_END] = {"stickToEnd", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_OVERSCROLL] = {"overscroll", TYPE_CHOICE, CHOICE(OVERSCROLL_AUTO, OVERSCROLLS)},
+    /* No default: a node without one is no scroll thumb. */
+    [PROP_SCROLL_THUMB] = {"scrollThumb", TYPE_CHOICE, .choices = THUMBS},
+    [PROP_GROUP_OPACITY] = {"groupOpacity", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_LETTER_SPACING] = {"letterSpacing", TYPE_NUMBER, NUMBER(0)},
+    [PROP_FONT_FEATURES] = {"fontFeatures", TYPE_STRING},
+    [PROP_DECORATION] = {"decoration", TYPE_CHOICE, CHOICE(DECORATION_NONE, DECORATIONS)},
+    /* Four numbers as corners are: top, right, bottom, left. */
+    [PROP_CLIP_INSET] = {"clipInset", TYPE_CORNERS, ANIMATED(1e-2), .has_default = true},
+    [PROP_EDITABLE] = {"editable", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_MULTILINE] = {"multiline", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_READ_ONLY] = {"readOnly", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_PASSWORD] = {"password", TYPE_BOOLEAN, BOOLEAN(false)},
+    /* No default: no limit. */
+    [PROP_MAX_LENGTH] = {"maxLength", TYPE_NUMBER},
+    /* No default: the text's color. */
+    [PROP_CARET_COLOR] = {"caretColor", TYPE_COLOR},
+    [PROP_SELECTION_COLOR] = {"selectionColor", TYPE_COLOR},
+    [PROP_CAPTURE_KEYS] = {"captureKeys", TYPE_STRING},
+    [PROP_VALUE_REVISION] = {"valueRevision", TYPE_NUMBER},
+    [PROP_SUBMIT_ON_ENTER] = {"submitOnEnter", TYPE_BOOLEAN, BOOLEAN(false)},
+    [PROP_SELECT_ON_FOCUS] = {"selectOnFocus", TYPE_BOOLEAN, BOOLEAN(false)},
+    /* As CSS padding: top, right, bottom, left. */
+    [PROP_PADDING] = {"padding", TYPE_CORNERS, .has_default = true},
+    [PROP_PLACEHOLDER] = {"placeholder", TYPE_STRING},
+    /* No default: the text's color, faded. */
+    [PROP_PLACEHOLDER_COLOR] = {"placeholderColor", TYPE_COLOR},
+    [PROP_KEYMAP] = {"keymap", TYPE_CHOICE, CHOICE(KEYMAP_EMACS, KEYMAPS)},
 };
 
 #define TRANSFORM_PROPS                                                                            \
     PROP_X, PROP_Y, PROP_TRANSFORM, PROP_OPACITY, PROP_ORIGIN_X, PROP_ORIGIN_Y, PROP_VISIBLE,      \
         PROP_BACKFACE
 #define BOX_PROPS PROP_WIDTH, PROP_HEIGHT, PROP_RADIUS
+/* What makes a drawn node a control: a state group, and keyboard focus. */
+#define CONTROL_PROPS PROP_STATE_GROUP, PROP_TAB_INDEX
 #define END PROP_COUNT
 
 struct kind_row {
@@ -132,14 +188,21 @@ static const struct kind_row KINDS[KIND_COUNT] = {
     [KIND_ROOT] = {"root", {END}},
     [KIND_GROUP] = {"group",
                     {TRANSFORM_PROPS, BOX_PROPS, PROP_CLIP, PROP_DRAGGABLE, PROP_INTERACTIVE,
-                     PROP_CURSOR, END}},
+                     PROP_CURSOR, CONTROL_PROPS, PROP_FOCUS_SCOPE, PROP_SCROLL, PROP_CONTENT_WIDTH,
+                     PROP_CONTENT_HEIGHT, PROP_STICK_TO_END, PROP_OVERSCROLL, PROP_SCROLL_THUMB,
+                     PROP_GROUP_OPACITY, PROP_CLIP_INSET, END}},
     [KIND_TEXT] = {"text",
                    {TRANSFORM_PROPS, PROP_WIDTH, PROP_TEXT, PROP_MARKUP, PROP_FONT, PROP_FONT_SIZE,
                     PROP_FONT_WEIGHT, PROP_ITALIC, PROP_COLOR, PROP_ALIGN, PROP_LINE_HEIGHT,
-                    PROP_MAX_LINES, PROP_DRAGGABLE, PROP_INTERACTIVE, PROP_CURSOR, END}},
+                    PROP_MAX_LINES, PROP_DRAGGABLE, PROP_INTERACTIVE, PROP_CURSOR, CONTROL_PROPS,
+                    PROP_LETTER_SPACING, PROP_FONT_FEATURES, PROP_DECORATION, PROP_HEIGHT,
+                    PROP_EDITABLE, PROP_MULTILINE, PROP_READ_ONLY, PROP_PASSWORD, PROP_MAX_LENGTH,
+                    PROP_CARET_COLOR, PROP_SELECTION_COLOR, PROP_CAPTURE_KEYS,
+                    PROP_VALUE_REVISION, PROP_SUBMIT_ON_ENTER, PROP_SELECT_ON_FOCUS, PROP_PADDING,
+                    PROP_PLACEHOLDER, PROP_PLACEHOLDER_COLOR, PROP_KEYMAP, END}},
     [KIND_IMAGE] = {"image",
                     {TRANSFORM_PROPS, BOX_PROPS, PROP_SRC, PROP_FIT, PROP_DRAGGABLE,
-                     PROP_INTERACTIVE, PROP_CURSOR, END}},
+                     PROP_INTERACTIVE, PROP_CURSOR, CONTROL_PROPS, END}},
     [KIND_WEB] = {"web",
                   {TRANSFORM_PROPS, BOX_PROPS, PROP_SRC, PROP_DATA, PROP_REVISION, PROP_FOCUSABLE,
                    PROP_INTERACTIVE, PROP_AUTO_FOCUS, PROP_FRAME_TAG, PROP_CURSOR, END}},
@@ -519,6 +582,19 @@ bool prop_decode(enum prop_key key, const struct json_value *raw, struct prop_va
         }
         return protocol_fail(error, "Property %s has an unknown value.", spec->name);
     case TYPE_MODIFIERS: return decode_modifiers(raw, &out->modifiers, error);
+    case TYPE_CORNERS:
+        if (raw->type == JSON_NUMBER) {
+            if (!finite_number(raw, spec->name, &out->corners[0], error)) return false;
+            for (int i = 1; i < 4; i++) out->corners[i] = out->corners[0];
+            return true;
+        }
+        if (raw->type != JSON_ARRAY || raw->array.count != 4)
+            return protocol_fail(error, "Property %s requires a number or four.", spec->name);
+        for (int i = 0; i < 4; i++) {
+            if (!finite_number(&raw->array.items[i], spec->name, &out->corners[i], error))
+                return false;
+        }
+        return true;
     }
     return false;
 }

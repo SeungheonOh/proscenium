@@ -10,6 +10,7 @@
  *   up BUTTON
  *   click BUTTON
  *   wheel STEPS        scroll by notches; negative scrolls up
+ *   fingers DX DY MS   scroll with two fingers by (DX, DY) over MS milliseconds, then lift
  *   key NAME...        tap keys by keysym name, e.g. "key Return"
  *   chord MOD+...+NAME hold modifiers (super, ctrl, alt, shift) around a key
  *   hold KEY           press a modifier or key until "release KEY", e.g. around a drag
@@ -254,6 +255,29 @@ static bool run(char *line) {
             wl_display_roundtrip(display);
             sleep_ms(16);
         }
+    } else if (!strcmp(command, "fingers") && a && b && c) {
+        /* Two fingers on a touchpad move content by (DX, DY) over MS, then lift. */
+        double dx = atof(a), dy = atof(b);
+        int steps = (atoi(c) + 7) / 8;
+        for (int i = 0; i < steps; i++) {
+            zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_FINGER);
+            if (dx)
+                zwlr_virtual_pointer_v1_axis(pointer, now_ms(), WL_POINTER_AXIS_HORIZONTAL_SCROLL,
+                                             wl_fixed_from_double(dx / steps));
+            if (dy)
+                zwlr_virtual_pointer_v1_axis(pointer, now_ms(), WL_POINTER_AXIS_VERTICAL_SCROLL,
+                                             wl_fixed_from_double(dy / steps));
+            zwlr_virtual_pointer_v1_frame(pointer);
+            wl_display_roundtrip(display);
+            sleep_ms(8);
+        }
+        zwlr_virtual_pointer_v1_axis_source(pointer, WL_POINTER_AXIS_SOURCE_FINGER);
+        if (dx)
+            zwlr_virtual_pointer_v1_axis_stop(pointer, now_ms(), WL_POINTER_AXIS_HORIZONTAL_SCROLL);
+        if (dy)
+            zwlr_virtual_pointer_v1_axis_stop(pointer, now_ms(), WL_POINTER_AXIS_VERTICAL_SCROLL);
+        zwlr_virtual_pointer_v1_frame(pointer);
+        wl_display_roundtrip(display);
     } else if (!strcmp(command, "key")) {
         for (char *name = a; name; name = name == a   ? b
                                           : name == b ? c

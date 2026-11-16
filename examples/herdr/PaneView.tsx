@@ -9,20 +9,19 @@ import { useEffect, useState } from "react";
 import { dirname, resolve, sep } from "node:path";
 import {
   Box,
-  ease,
   Rect,
   Spacer,
   launch,
   Text,
   tween,
   useClipboard,
-  useKeyboardGrab,
   usePersistentState,
   Web,
   type Rectangle,
   type Transition,
   type WindowInfo,
 } from "proscenium";
+import { TextField } from "proscenium/ui";
 import codeViewerPage from "../pages/code-viewer/index.tsx?url";
 import { usePageChannel } from "./channel.js";
 import { DismissButton, isMenuPress, usePointAt } from "./Ui.js";
@@ -189,44 +188,35 @@ function ShowSwitch({ show, onShow }: { show: Split["show"]; onShow: (show: Spli
 /**
  * A world-drawn text field: Enter prompts the pane's agent (`herdr agent
  * prompt`), or runs the text as a command in a pane without one (`herdr pane run`).
+ * The compositor edits it (the kit's TextField), so typing shows at once and the
+ * caret, selection, clipboard and undo work as in any field; Escape cancels.
  */
 function PromptBar({ selection, width, onDone }: { selection: Selection; width: number; onDone: () => void }) {
   const [text, setText] = useState("");
   const [state, setState] = useState<{ sending: boolean; error: string | null }>({ sending: false, error: null });
   const { session, pane, agent } = selection;
 
-  useKeyboardGrab((event) => {
-    if (!event.pressed || state.sending) return;
-    if (event.key === "Escape") return onDone();
-    if (event.key === "Return" || event.key === "KP_Enter") {
-      if (!text.trim()) return onDone();
-      setState({ sending: true, error: null });
-      void sendToPane(session, pane.pane_id, text, Boolean(agent)).then((error) => {
-        if (error) setState({ sending: false, error });
-        else onDone();
-      });
-      return;
-    }
-    if (event.key === "BackSpace") {
-      const word = event.modifiers.includes("control");
-      setText((current) => (word ? current.replace(/\S*\s*$/, "") : current.slice(0, -1)));
-      return;
-    }
-    if (event.text && event.text >= " ") setText((current) => current + event.text);
-  });
+  const send = (value: string) => {
+    if (state.sending) return;
+    if (!value.trim()) return onDone();
+    setState({ sending: true, error: null });
+    void sendToPane(session, pane.pane_id, value, Boolean(agent)).then((error) => {
+      if (error) setState({ sending: false, error });
+      else onDone();
+    });
+  };
 
   const hint = agent ? `Prompt ${paneName(pane, agent)}; Enter sends, Escape cancels` : "Run a command in this pane";
   return (
-    <Box width={width} height={18} paddingX={6} alignItems="center" gap={6}
+    <Box width={width} height={18} paddingLeft={6} alignItems="center" gap={6}
          fill="#ffffff" border={{ width: 1, color: state.error ? "#cf222e" : "#0969da" }}>
       <Text size={12} weight="bold" color="#0969da">{agent ? "›" : "$"}</Text>
-      <Text size={12.5} color={text ? ink : muted} maxLines={1} flexShrink={1}>
-        {state.sending ? "Sending…" : state.error ?? (text || hint)}
-      </Text>
-      {!state.sending && !state.error && (
-        <Rect width={1.5} height={15} fill={ink}
-              animate={{ opacity: [1, 0, 1], duration: 1, iterations: Infinity, ease: ease.steps(2) }} />
-      )}
+      <TextField bare autoFocus value={state.sending ? "Sending…" : text} readOnly={state.sending}
+                 placeholder={state.error ?? hint} onChangeText={setText} onSubmit={send}
+                 captureKeys={["Escape"]} onKey={(event) => { if (event.key === "Escape") onDone(); }}
+                 style={{ flexGrow: 1, flexShrink: 1, height: 16 }}
+                 textStyle={{ size: 12.5, color: ink, lineHeight: 1.2 }}
+                 placeholderStyle={{ color: state.error ? "#cf222e" : muted }} />
     </Box>
   );
 }

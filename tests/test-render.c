@@ -99,6 +99,7 @@ static bool painted(struct renderer *renderer, const struct render_shading *shad
         if (render_draw_paint(renderer, shading, draw, report)) return true;
         if (report->error) return false;
         usleep(1000);
+        render_poll_builds(renderer);
     }
     return false;
 }
@@ -263,7 +264,11 @@ static void test_texture(struct renderer *renderer) {
     struct box box = {0, 0, 16, 16};
     render_draw_texture(
         renderer, &texture,
-        &(struct render_texture_draw){mat3_translation(30, 40), box, RENDER_FULL_UV, box, 0, 1},
+        &(struct render_texture_draw){.transform = mat3_translation(30, 40),
+                                      .box = box,
+                                      .uv = RENDER_FULL_UV,
+                                      .mask = box,
+                                      .opacity = 1},
         NULL, NULL);
     finish(renderer);
     int mismatches = 0;
@@ -299,7 +304,11 @@ static void test_downscale(struct renderer *renderer) {
     struct box box = {0, 0, 20, 20};
     render_draw_texture(
         renderer, &texture,
-        &(struct render_texture_draw){mat3_translation(10, 10), box, RENDER_FULL_UV, box, 0, 1},
+        &(struct render_texture_draw){.transform = mat3_translation(10, 10),
+                                      .box = box,
+                                      .uv = RENDER_FULL_UV,
+                                      .mask = box,
+                                      .opacity = 1},
         NULL, NULL);
     finish(renderer);
     check_smooth("box filtered texture", 10, 10, 20);
@@ -317,7 +326,11 @@ static void test_mipmap(struct renderer *renderer) {
     struct box box = {0, 0, 30, 30};
     render_draw_surface(
         renderer, &surface,
-        &(struct render_texture_draw){mat3_translation(10, 10), box, RENDER_FULL_UV, box, 0, 1},
+        &(struct render_texture_draw){.transform = mat3_translation(10, 10),
+                                      .box = box,
+                                      .uv = RENDER_FULL_UV,
+                                      .mask = box,
+                                      .opacity = 1},
         NULL, 42, NULL);
     GLuint copy = render_surface_mipmap(renderer, 42, &surface);
     finish(renderer);
@@ -351,8 +364,11 @@ static void test_backdrop(struct renderer *renderer) {
         begin(renderer);
         struct box whole = {0, 0, 192, 192};
         render_draw_texture(renderer, &texture,
-                            &(struct render_texture_draw){mat3_translation(32, 32), whole,
-                                                          RENDER_FULL_UV, whole, 0, 1},
+                            &(struct render_texture_draw){.transform = mat3_translation(32, 32),
+                                                          .box = whole,
+                                                          .uv = RENDER_FULL_UV,
+                                                          .mask = whole,
+                                                          .opacity = 1},
                             NULL, NULL);
         const float values[] = {blurred ? 8 : 0};
         struct render_shading shading = {shader, values, {48, 48}, 0, 0, {0, 0}};
@@ -408,7 +424,11 @@ static void test_filter(struct renderer *renderer) {
         begin(renderer);
         render_draw_texture(
             renderer, &texture,
-            &(struct render_texture_draw){mat3_translation(30, 40), box, RENDER_FULL_UV, box, 0, 1},
+            &(struct render_texture_draw){.transform = mat3_translation(30, 40),
+                                          .box = box,
+                                          .uv = RENDER_FULL_UV,
+                                          .mask = box,
+                                          .opacity = 1},
             &filter, &report);
         finish(renderer);
         if (!report.building) break;

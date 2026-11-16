@@ -46,6 +46,7 @@ import { MetaMinimap } from "./meta/MetaMinimap.js";
 import { MetaProvider, useMeta } from "./meta/MetaProvider.js";
 import { RoomPills } from "./meta/RoomPills.js";
 import { Rooms } from "./meta/Rooms.js";
+import { OverlayHost } from "proscenium/ui";
 
 function MetaLauncher() {
   const { focusOutput } = useMeta();
@@ -56,12 +57,14 @@ export default function Meta() {
   return (
     <ScreenEffects>
       <MetaProvider>
-        <MetaCamera />
-        <Rooms />
-        <MetaMinimap />
-        <Desktop barStart={RoomPills} />
-        <MetaLauncher />
-        <Keybindings />
+        <OverlayHost>
+          <MetaCamera />
+          <Rooms />
+          <MetaMinimap />
+          <Desktop barStart={RoomPills} />
+          <MetaLauncher />
+          <Keybindings />
+        </OverlayHost>
       </MetaProvider>
     </ScreenEffects>
   );

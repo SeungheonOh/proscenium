@@ -18,6 +18,7 @@
 #include "util.h"
 
 struct stage_page;
+struct editor;
 
 enum node_state {
     NODE_LIVE,
@@ -80,6 +81,8 @@ struct shading {
     bool leaving;
     /* Its shader failed to build, and the director was told. */
     bool reported;
+    /* Its uniforms as declared, flattened; UI states may show others. */
+    double declared[SHADER_COMPONENTS_MAX];
 };
 
 /* A shading uniform's value in `initial` or `exit`. */
@@ -92,6 +95,49 @@ struct shading_target {
 struct targets {
     struct prop_value values[PROP_COUNT];
     struct vec shadings; /* struct shading_target */
+};
+
+/*
+ * States of a control the compositor resolves itself as input arrives, as CSS
+ * :hover, :focus-within, :focus, :focus-visible and :active, in the order later ones
+ * override earlier ones.
+ */
+enum ui_state {
+    UI_HOVER,
+    UI_FOCUS_WITHIN,
+    UI_FOCUS,
+    UI_FOCUS_VISIBLE,
+    UI_PRESSED,
+    UI_STATE_COUNT,
+};
+#define UI_BIT(state) (1u << (state))
+
+/* Fingers' recent positions along one axis of a scroller, for the momentum they leave. */
+struct scroll_samples {
+    double times[16], positions[16];
+    int count;
+};
+
+/* A scroll container's offset, which the compositor owns and moves (scroll.c). */
+struct scroller {
+    /* The offset shown: how far the content has moved left and up, in its units. */
+    struct channel x, y;
+    /* How much its thumbs show, 0..1. */
+    struct channel thumb;
+    /* Fingers pulling past an end, along x and y: the distance pulled, of which the
+     * rubber band shows less. */
+    double over[2];
+    struct scroll_samples samples[2];
+    /* Fingers moved it since they last lifted. */
+    bool fingered;
+    /* When its thumbs fade, unless a thumb is hovered or dragged. */
+    double hide_at;
+    bool thumb_hovered, thumb_dragged;
+    /* How far it could scroll as last seen, for stickToEnd. */
+    double last_max[2];
+    bool known;
+    /* The offset last reported to the director. */
+    double reported[2];
 };
 
 struct node {
@@ -110,7 +156,7 @@ struct node {
     struct motion *default_motion;
     struct targets *initial, *exit;
     char *layout_id;
-    uint32_t handlers;
+    uint64_t handlers;
     struct vec layers; /* struct layer */
     /* Shaders it uses in declaration order, those leaving last. */
     struct shading *shadings;
@@ -128,6 +174,17 @@ struct node {
     /* A web node's page, and the source that failed to load, not retried. */
     struct stage_page *web_page;
     char *web_failed;
+
+    /* Values its UI states show instead of the declared ones, by state; NULL for none. */
+    struct targets *states[UI_STATE_COUNT];
+    /* Its states are those of its nearest ancestor or self with stateGroup. */
+    bool states_follow_group;
+    /* The UI states holding for it, as input set them. */
+    uint8_t ui_states;
+    /* A scroll container's offset, once it scrolls. */
+    struct scroller *scroller;
+    /* An editable text node's buffer, caret and history (edit.c). */
+    struct editor *editor;
 };
 
 struct scene {
@@ -205,6 +262,8 @@ double shading_time(const struct shading *shading, double now);
 const struct shading *node_stage_shading(const struct node *node, enum shader_stage stage);
 /* Displayed straight-alpha color. */
 void node_color(const struct node *node, enum prop_key key, double out[4]);
+/* A TYPE_CORNERS property as shown: top-left, top-right, bottom-right, bottom-left. */
+void node_corners(const struct node *node, enum prop_key key, double out[4]);
 /*
  * NODE's local space to its parent's: transformed about its origin, a point in
  * the WIDTH x HEIGHT box, then moved to (X, Y).
@@ -220,13 +279,28 @@ void node_jump(struct scene *scene, struct node *node, enum prop_key key, double
 void node_hold(struct node *node, enum prop_key key);
 void node_release(struct node *node, enum prop_key key);
 static inline bool node_handles(const struct node *node, enum event_name event) {
-    return node->handlers & (1u << event);
+    return node->handlers & EVENT_BIT(event);
 }
 /* Whether NODE handles EVENT or, for a bubbling EVENT, any of its ancestors does. */
 bool node_receives(const struct node *node, enum event_name event);
 
 #define NODE_FOR_CHILDREN(parent, child)                                                           \
     for (struct node *child = (parent)->first_child; child; child = child->next)
+
+/*
+ * Set the UI states holding for NODE at TIME: what its states, and those of the nodes
+ * following it as their group, override moves to show them with their transitions.
+ * True when anything moved.
+ */
+bool scene_set_ui_states(struct scene *scene, struct node *node, uint8_t states, double time);
+/* The UI states NODE shows: its own, or its group's. */
+uint8_t node_shown_states(const struct node *node);
+/* Whether NODE declares states. */
+bool node_has_states(const struct node *node);
+/* NODE's scroller, made on first use. */
+struct scroller *node_scroller(struct node *node);
+/* NODE's channels may have started or stopped moving, as a scroller's do. */
+void scene_track(struct scene *scene, struct node *node);
 
 /* Call FUNCTION on every live node in shading order. */
 void scene_for_each(struct scene *scene, void (*function)(struct node *node, void *data),

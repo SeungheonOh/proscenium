@@ -1,0 +1,12 @@
+# shot-at: 3400
+# page: 3
+# A double click on a word in the third field: the word is selected.
+extent 1280 800
+move 300 300
+glide 960 $K_FIELD3_Y 200
+click left
+sleep 60
+click left
+move 300 300
+sleep 300
+sleep 3000

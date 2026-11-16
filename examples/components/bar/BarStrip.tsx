@@ -4,11 +4,13 @@ import {
   Rect,
   Screen,
   Spacer,
+  useClipboard,
   useFocusedWindow,
   useWindow,
   type LayoutBox,
   type OutputInfo,
 } from "proscenium";
+import { useContextMenu } from "proscenium/ui";
 import { liquidGlass } from "../../lib/effects.js";
 import { colors, glassBorder, motion } from "../../lib/theme.js";
 import { RollingText } from "./BarText.js";
@@ -110,23 +112,16 @@ export function BarStrip({
         <Box flexDirection="row" alignItems="center" height={height} onLayout={setStatus}>
           <Highlight target={highlighted} active={openItem !== null} />
           {items.map((item) => (
-            <Box
+            <BarItem
               key={item.key}
-              flexDirection="row"
-              alignItems="center"
-              gap={6}
-              height={height}
-              paddingX={10}
-              cursor="pointer"
+              item={item}
               onLayout={(box) => setItemBoxes((boxes) => ({ ...boxes, [item.key]: box }))}
               onPointerEnter={() => setHoveredItem(item.key)}
               onPointerLeave={() => setHoveredItem((key) => (key === item.key ? null : key))}
-              onPointerDown={() => handlePress(item)}
-            >
-              {item.content}
-            </Box>
+              onPress={() => handlePress(item)}
+            />
           ))}
-          <Clock />
+          <ClockItem />
         </Box>
       </Box>
 
@@ -135,5 +130,56 @@ export function BarStrip({
         <Rect width={output.width} height={output.height} onPointerDown={onDismiss} />
       )}
     </Screen>
+  );
+}
+
+interface BarItemProps {
+  item: StatusItem;
+  onLayout: (box: LayoutBox) => void;
+  onPointerEnter: () => void;
+  onPointerLeave: () => void;
+  onPress: () => void;
+}
+
+/** One status item: the primary button opens its menu, the secondary its context menu. */
+function BarItem({ item, onLayout, onPointerEnter, onPointerLeave, onPress }: BarItemProps) {
+  const context = useContextMenu(item.contextMenu ?? [], { disabled: !item.contextMenu });
+  return (
+    <Box
+      flexDirection="row"
+      alignItems="center"
+      gap={6}
+      height={barLayout.height}
+      paddingX={10}
+      cursor="pointer"
+      onLayout={onLayout}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      onPointerDown={(event) => {
+        if ((event.button ?? 272) === 272) onPress();
+      }}
+      onContextMenu={context.onContextMenu}
+    >
+      {item.content}
+      {context.element}
+    </Box>
+  );
+}
+
+const copyTime = new Intl.DateTimeFormat(undefined, { hour: "2-digit", minute: "2-digit" });
+const copyDate = new Intl.DateTimeFormat(undefined, { dateStyle: "full" });
+
+/** The clock, whose context menu copies the date or the time. */
+function ClockItem() {
+  const clipboard = useClipboard();
+  const context = useContextMenu([
+    { label: "Copy time", onSelect: () => clipboard.copy(copyTime.format(new Date())) },
+    { label: "Copy date", onSelect: () => clipboard.copy(copyDate.format(new Date())) },
+  ]);
+  return (
+    <Box flexDirection="row" alignItems="center" height={barLayout.height} onContextMenu={context.onContextMenu}>
+      <Clock />
+      {context.element}
+    </Box>
   );
 }

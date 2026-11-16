@@ -9,7 +9,22 @@
 static const char *const PRELUDE_NAMES[] = {
     "size",   "radius",  "pixel",    "time", "pointer",     "paint",     "filter",
     "effect", "content", "backdrop", "main", "output_size", "to_output", "from_output",
+    "radii",
 };
+
+/* Whether SOURCE names the identifier NAME. */
+static bool names_identifier(const char *source, const char *name) {
+    size_t length = strlen(name);
+    for (const char *at = strstr(source, name); at; at = strstr(at + 1, name)) {
+        char before = at == source ? ' ' : at[-1], after = at[length];
+        bool word_before = (before >= 'a' && before <= 'z') || (before >= 'A' && before <= 'Z') ||
+                           (before >= '0' && before <= '9') || before == '_';
+        bool word_after = (after >= 'a' && after <= 'z') || (after >= 'A' && after <= 'Z') ||
+                          (after >= '0' && after <= '9') || after == '_';
+        if (!word_before && !word_after) return true;
+    }
+    return false;
+}
 
 bool uniform_name_ok(const char *name, size_t length) {
     static const char *const prefixes[] = {"gl_", "u_", "v_", "a_", "stage_"};
@@ -451,6 +466,7 @@ bool shaders_define(struct shaders *shaders, const struct json_value *op, struct
     }
     shader->id = xstrndup(id->string.chars, id->string.length);
     shader->source = xstrndup(source->string.chars, source->string.length);
+    shader->radii = names_identifier(shader->source, "radii");
     struct shader *existing = shaders_find(shaders, id->string.chars, id->string.length);
     if (existing) {
         bool same = same_shader(existing, shader);

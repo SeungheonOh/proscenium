@@ -301,7 +301,7 @@ void web_node_presented(struct node *node, struct output *output, double scale, 
 }
 
 void web_node_draw(struct server *server, struct node *node, struct mat3 transform, double width,
-                   double height, double radius, double opacity,
+                   double height, const double radii[4], double opacity,
                    const struct render_shading *filter, struct render_report *report) {
     struct web_page *page = web_node_page(node);
     if (!page) return;
@@ -315,8 +315,13 @@ void web_node_draw(struct server *server, struct node *node, struct mat3 transfo
         struct box box = {surface->box.x * content.a, surface->box.y * content.d,
                           surface->box.width * content.a, surface->box.height * content.d};
         struct render_texture_draw draw = {
-            transform, box, RENDER_FULL_UV, {0, 0, width, height}, i == 0 ? radius : 0, opacity,
+            .transform = transform,
+            .box = box,
+            .uv = RENDER_FULL_UV,
+            .mask = {0, 0, width, height},
+            .opacity = opacity,
         };
+        if (i == 0) memcpy(draw.radii, radii, sizeof draw.radii);
         render_draw_texture(server->renderer, &texture, &draw, filter, report);
     }
 }

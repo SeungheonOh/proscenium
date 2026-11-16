@@ -67,6 +67,13 @@ static void node_free(struct node *node) {
     motion_unref(node->default_motion);
     targets_free(node->initial);
     targets_free(node->exit);
+    for (int i = 0; i < UI_STATE_COUNT; i++) targets_free(node->states[i]);
+    if (node->scroller) {
+        channel_finish(&node->scroller->x);
+        channel_finish(&node->scroller->y);
+        channel_finish(&node->scroller->thumb);
+        free(node->scroller);
+    }
     free(node->layout_id);
     free(node->web_failed);
     layers_free(&node->layers);
@@ -158,6 +165,12 @@ static void base_color(const struct node *node, enum prop_key key, double out[4]
 void node_color(const struct node *node, enum prop_key key, double out[4]) {
     base_color(node, key, out);
     if (node->layers.length) layered(node, key, out, 4, true, true);
+}
+
+void node_corners(const struct node *node, enum prop_key key, double out[4]) {
+    /* Stored as a color is, without its clamp. */
+    base_color(node, key, out);
+    if (node->layers.length) layered(node, key, out, 4, true, false);
 }
 
 static void channel_list(const struct node *node, struct tlist *out) {
@@ -267,6 +280,10 @@ static bool node_running(const struct node *node, bool finite_only) {
         for (int i = 0; i < shading->shader->component_count; i++)
             if (channel_runs(&shading->channels[i], finite_only)) return true;
     }
+    const struct scroller *scroller = node->scroller;
+    if (scroller && (channel_active(&scroller->x) || channel_active(&scroller->y) ||
+                     channel_active(&scroller->thumb)))
+        return true;
     return false;
 }
 
@@ -359,7 +376,7 @@ double shading_time(const struct shading *shading, double now) {
 }
 
 bool node_receives(const struct node *node, enum event_name event) {
-    if (!((1u << event) & BUBBLING_EVENTS)) return node_handles(node, event);
+    if (!(EVENT_BIT(event) & (BUBBLING_EVENTS | KEY_EVENTS))) return node_handles(node, event);
     for (const struct node *current = node; current; current = current->parent) {
         if (node_handles(current, event)) return true;
     }
@@ -544,6 +561,15 @@ static void set_animated(struct node *node, enum prop_key key, const struct prop
         for (int i = 0; i < 4; i++)
             channel_retarget(&channels->items[i], value->color[i], motion, time);
         break;
+    case TYPE_CORNERS:
+        if (channels_resize(channels, 4)) {
+            const double *start = from ? from->corners : value->corners;
+            for (int i = 0; i < 4; i++)
+                channel_init(&channels->items[i], start[i], spec->tolerance);
+        }
+        for (int i = 0; i < 4; i++)
+            channel_retarget(&channels->items[i], value->corners[i], motion, time);
+        break;
     default:
         if (channels_resize(channels, 1))
             channel_init(channels->items, to_channel(key, from ? from->number : value->number),
@@ -559,6 +585,7 @@ static void displayed_value(struct scene *scene, struct node *node, enum prop_ke
     *out = (struct prop_value){.given = true};
     switch (PROP_SPECS[key].type) {
     case TYPE_COLOR: node_color(node, key, out->color); return;
+    case TYPE_CORNERS: node_corners(node, key, out->corners); return;
     case TYPE_TRANSFORM: node_transform_list(node, &out->transform); return;
     default:
         if (node_has_number(node, key)) out->number = node_number(node, key, 0);
@@ -566,6 +593,138 @@ static void displayed_value(struct scene *scene, struct node *node, enum prop_ke
                  !scene->natural_value(scene->data, node, key, &out->number))
             out->number = 0;
     }
+}
+
+/* UI states. */
+
+bool node_has_states(const struct node *node) {
+    for (int i = 0; i < UI_STATE_COUNT; i++)
+        if (node->states[i]) return true;
+    return false;
+}
+
+uint8_t node_shown_states(const struct node *node) {
+    if (!node->states_follow_group) return node->ui_states;
+    for (const struct node *group = node; group; group = group->parent) {
+        if (group->props[PROP_STATE_GROUP].given && group->props[PROP_STATE_GROUP].boolean)
+            return group->ui_states;
+    }
+    return node->ui_states;
+}
+
+/* What NODE shows of KEY: the value of the latest state holding that overrides it, else
+ * BASE. */
+static const struct prop_value *shown_value(const struct node *node, enum prop_key key,
+                                            const struct prop_value *base) {
+    uint8_t states = node_shown_states(node);
+    for (int s = UI_STATE_COUNT; states && s-- > 0;) {
+        const struct targets *targets = node->states[s];
+        if ((states & UI_BIT(s)) && targets && targets->values[key].given)
+            return &targets->values[key];
+    }
+    return base;
+}
+
+/* SHADING's uniforms as NODE shows them, flattened into OUT: as declared, with what the
+ * states holding override. */
+static void shading_shown(const struct node *node, const struct shading *shading, double *out) {
+    const struct shader *shader = shading->shader;
+    memcpy(out, shading->declared, shader->component_count * sizeof *out);
+    uint8_t states = node_shown_states(node);
+    for (int s = 0; states && s < UI_STATE_COUNT; s++) {
+        if (!(states & UI_BIT(s)) || !node->states[s]) continue;
+        VEC_FOR(&node->states[s]->shadings, struct shading_target, target) {
+            if (strcmp(target->shading, shading->id)) continue;
+            int u = shader_uniform(shader, target->value.name, strlen(target->value.name));
+            if (u < 0 || shader->counts[u] != target->value.count) continue;
+            memcpy(out + shader->offsets[u], target->value.components,
+                   target->value.count * sizeof *out);
+        }
+    }
+}
+
+/* Move what TARGETS name on NODE toward what NODE shows now that its states changed. */
+static void resolve_targets(struct scene *scene, struct node *node, const struct targets *targets,
+                            double time) {
+    for (int key = 0; key < PROP_COUNT; key++) {
+        const struct prop_spec *spec = &PROP_SPECS[key];
+        if (!targets->values[key].given || !spec->animated || !kind_animates(node->kind) ||
+            (node->held & (1u << key)))
+            continue;
+        const struct prop_value *base = node->props[key].given ? &node->props[key]
+                                        : spec->has_default    ? &spec->fallback
+                                                               : NULL;
+        const struct prop_value *shown = shown_value(node, key, base);
+        /* Nothing declared to return to: the value goes, as a reset one does. */
+        if (!shown) {
+            channels_free(&node->channels[key]);
+            continue;
+        }
+        /* A value first overridden starts from what is shown. */
+        struct prop_value from = {0};
+        bool have_from = !node->channels[key].count;
+        if (have_from) displayed_value(scene, node, key, &from);
+        set_animated(node, key, shown, time, have_from ? &from : NULL);
+        if (have_from) prop_value_finish(key, &from);
+    }
+    for (int i = 0; i < node->shading_count; i++) {
+        struct shading *shading = &node->shadings[i];
+        if (shading->leaving) continue;
+        bool named = false;
+        VEC_FOR(&targets->shadings, struct shading_target, target)
+            named = named || !strcmp(target->shading, shading->id);
+        if (!named) continue;
+        double values[SHADER_COMPONENTS_MAX];
+        shading_shown(node, shading, values);
+        retarget_shading(node, shading, values, time);
+    }
+}
+
+static void resolve_states(struct scene *scene, struct node *node, double time) {
+    for (int s = 0; s < UI_STATE_COUNT; s++)
+        if (node->states[s]) resolve_targets(scene, node, node->states[s], time);
+    track_activity(scene, node);
+}
+
+/* Resolve the nodes under NODE that follow it as their state group. */
+static bool resolve_followers(struct scene *scene, struct node *node, double time) {
+    bool moved = false;
+    NODE_FOR_CHILDREN(node, child) {
+        if (child->state != NODE_LIVE || node_bool(child, PROP_STATE_GROUP)) continue;
+        if (child->states_follow_group && node_has_states(child)) {
+            resolve_states(scene, child, time);
+            moved = true;
+        }
+        moved = resolve_followers(scene, child, time) || moved;
+    }
+    return moved;
+}
+
+bool scene_set_ui_states(struct scene *scene, struct node *node, uint8_t states, double time) {
+    if (node->ui_states == states) return false;
+    node->ui_states = states;
+    if (node->state != NODE_LIVE) return false;
+    bool moved = false;
+    if (node_has_states(node) && node_shown_states(node) == states) {
+        resolve_states(scene, node, time);
+        moved = true;
+    }
+    if (node_bool(node, PROP_STATE_GROUP)) moved = resolve_followers(scene, node, time) || moved;
+    return moved;
+}
+
+struct scroller *node_scroller(struct node *node) {
+    if (!node->scroller) {
+        node->scroller = xcalloc(1, sizeof *node->scroller);
+        channel_init(&node->scroller->x, 0, 0.05);
+        channel_init(&node->scroller->y, 0, 0.05);
+        channel_init(&node->scroller->thumb, 0, 1e-3);
+    }
+    return node->scroller;
+}
+
+void scene_track(struct scene *scene, struct node *node) {
+    track_activity(scene, node);
 }
 
 static void set_prop(struct scene *scene, struct node *node, enum prop_key key,
@@ -576,7 +735,9 @@ static void set_prop(struct scene *scene, struct node *node, enum prop_key key,
     if (reset) {
         prop_value_finish(key, &node->props[key]);
         if (animated) {
-            if (spec->has_default) set_animated(node, key, &spec->fallback, time, NULL);
+            const struct prop_value *shown =
+                shown_value(node, key, spec->has_default ? &spec->fallback : NULL);
+            if (shown) set_animated(node, key, shown, time, NULL);
             else channels_free(&node->channels[key]);
         }
         prop_value_finish(key, value);
@@ -606,7 +767,10 @@ static void set_prop(struct scene *scene, struct node *node, enum prop_key key,
     prop_value_finish(key, &node->props[key]);
     node->props[key] = *value;
     *value = (struct prop_value){0};
-    if (animated) set_animated(node, key, &node->props[key], time, have_from ? &from : NULL);
+    /* While a state overrides the value, the declaration changes only what it returns to. */
+    if (animated)
+        set_animated(node, key, shown_value(node, key, &node->props[key]), time,
+                     have_from ? &from : NULL);
     if (have_from) prop_value_finish(key, &from);
 }
 
@@ -638,10 +802,12 @@ struct pending {
     bool has_layers;
     struct vec layers;
     bool has_handlers;
-    uint32_t handlers;
+    uint64_t handlers;
     bool has_shadings;
     int shading_count;
     struct shading_decl shadings[SHADINGS_MAX];
+    bool has_states, states_group;
+    struct targets *states[UI_STATE_COUNT];
 };
 
 static void pending_free(struct pending *pending) {
@@ -656,6 +822,7 @@ static void pending_free(struct pending *pending) {
     motion_unref(pending->default_motion);
     targets_free(pending->initial);
     targets_free(pending->exit);
+    for (int i = 0; i < UI_STATE_COUNT; i++) targets_free(pending->states[i]);
     free(pending->layout_id);
     layers_free(&pending->layers);
 }
@@ -734,6 +901,34 @@ fail:
     return false;
 }
 
+/* `states`: {group?: boolean, hover?, focusWithin?, focus?, focusVisible?, pressed?: values as
+ * `exit` has}. */
+static bool decode_states(const struct node *node, const struct json_value *raw,
+                          struct pending *pending, struct protocol_error *error) {
+    static const char *const names[UI_STATE_COUNT] = {"hover", "focusWithin", "focus",
+                                                                "focusVisible", "pressed"};
+    pending->has_states = true;
+    if (raw->type == JSON_NULL) return true;
+    if (raw->type != JSON_OBJECT) return protocol_fail(error, "states must be an object.");
+    for (size_t i = 0; i < raw->object.count; i++) {
+        const struct json_member *member = &raw->object.members[i];
+        if (json_is_string(&member->key, "group")) {
+            if (member->value.type != JSON_TRUE && member->value.type != JSON_FALSE)
+                return protocol_fail(error, "states.group requires a boolean.");
+            pending->states_group = member->value.type == JSON_TRUE;
+            continue;
+        }
+        int state = -1;
+        for (int s = 0; s < UI_STATE_COUNT; s++)
+            if (json_is_string(&member->key, names[s])) state = s;
+        if (state < 0)
+            return protocol_fail(error, "Unknown state \"%s\".", member->key.string.chars);
+        if (member->value.type == JSON_NULL) continue;
+        if (!decode_targets(node, &member->value, &pending->states[state], error)) return false;
+    }
+    return true;
+}
+
 static bool decode_motions(const struct node *node, const struct json_value *object,
                            struct pending *pending, struct protocol_error *error) {
     pending->has_motions = true;
@@ -779,7 +974,7 @@ static bool decode_keyframes(enum prop_key key, const struct json_value *frames,
         else ok = prop_decode(key, &frames->array.items[i], &values[i], error);
     }
     int width = 1;
-    if (ok && spec->type == TYPE_COLOR) {
+    if (ok && (spec->type == TYPE_COLOR || spec->type == TYPE_CORNERS)) {
         width = 4;
     } else if (ok && spec->type == TYPE_TRANSFORM) {
         struct tlist shape = {0};
@@ -807,7 +1002,7 @@ static bool decode_keyframes(enum prop_key key, const struct json_value *frames,
         track->keyframes = xcalloc((size_t)count * width + 1, sizeof *track->keyframes);
         for (int i = 0; i < count; i++) {
             double *place = track->keyframes + i * width;
-            if (spec->type == TYPE_COLOR) {
+            if (spec->type == TYPE_COLOR || spec->type == TYPE_CORNERS) {
                 memcpy(place, values[i].color, 4 * sizeof *place);
             } else if (spec->type == TYPE_TRANSFORM) {
                 struct tlist padded;
@@ -1122,6 +1317,8 @@ static bool decode_props(const struct scene *scene, const struct node *node,
             pending->has_exit = true;
             if (raw->type != JSON_NULL && !decode_targets(node, raw, &pending->exit, error))
                 return false;
+        } else if (json_is_string(name, "states")) {
+            if (!decode_states(node, raw, pending, error)) return false;
         } else if (json_is_string(name, "layoutId")) {
             /* Identities compare in 128 bytes. */
             if (raw->type != JSON_NULL && (raw->type != JSON_STRING || raw->string.length > 120))
@@ -1140,7 +1337,7 @@ static bool decode_props(const struct scene *scene, const struct node *node,
                 const struct json_value *event = &raw->array.items[h];
                 if (event->type != JSON_STRING) continue;
                 enum event_name found = event_from_name(event->string.chars, event->string.length);
-                if (found != EVENT_COUNT) pending->handlers |= 1u << found;
+                if (found != EVENT_COUNT) pending->handlers |= EVENT_BIT(found);
             }
         } else {
             enum prop_key key;
@@ -1267,7 +1464,10 @@ static void set_shadings(struct node *node, struct shading_decl *decls, int coun
             }
             for (int c = 0; c < count; c++) channel_init(&channels[c], start[c], 1e-3);
         }
-        retarget_shading(node, shading, decl->values, time);
+        memcpy(shading->declared, decl->values, sizeof shading->declared);
+        double shown[SHADER_COMPONENTS_MAX];
+        shading_shown(node, shading, shown);
+        retarget_shading(node, shading, shown, time);
         if (old) shading_finish(old);
     }
     /* What is no longer declared moves out after what is, at most SHADINGS_MAX of it. A
@@ -1325,6 +1525,19 @@ static void apply_pending(struct scene *scene, struct node *node, struct pending
         pending->layout_id = NULL;
     }
     if (pending->has_handlers) node->handlers = pending->handlers;
+    if (pending->has_states) {
+        struct targets *old[UI_STATE_COUNT];
+        memcpy(old, node->states, sizeof old);
+        memcpy(node->states, pending->states, sizeof node->states);
+        memset(pending->states, 0, sizeof pending->states);
+        node->states_follow_group = pending->states_group;
+        /* What the old states or the new ones override moves to what shows now. */
+        for (int s = 0; s < UI_STATE_COUNT; s++) {
+            if (!creating && old[s]) resolve_targets(scene, node, old[s], time);
+            if (!creating && node->states[s]) resolve_targets(scene, node, node->states[s], time);
+            targets_free(old[s]);
+        }
+    }
     if (pending->has_layers) start_layers(node, &pending->layers, time);
     for (int i = 0; i < pending->value_count; i++) {
         set_prop(scene, node, pending->values[i].key, &pending->values[i].value,
@@ -1650,6 +1863,11 @@ void scene_advance(struct scene *scene, double time) {
                 struct shading *shading = &node->shadings[p];
                 for (int c = 0; c < shading->shader->component_count; c++)
                     sample_channel(&shading->channels[c], time, &moving, &finite);
+            }
+            if (node->scroller) {
+                sample_channel(&node->scroller->x, time, &moving, &finite);
+                sample_channel(&node->scroller->y, time, &moving, &finite);
+                sample_channel(&node->scroller->thumb, time, &moving, &finite);
             }
             prune_shadings(node);
             node->active = sample_layers(node, time, &finite) || moving;

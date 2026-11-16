@@ -13,7 +13,9 @@
 
 #include "content.h"
 #include "display.h"
+#include "edit.h"
 #include "input.h"
+#include "scroll.h"
 #include "server.h"
 #include "stage.h"
 
@@ -327,6 +329,7 @@ static bool apply_commit(struct director *director, const struct json_value *mes
     }
     scene_finish_commit(&server->scene, time);
     stage_reindex(server);
+    latency_changed(server);
     if (rejected)
         return protocol_fail(error, "%d op%s rejected; first: %s", rejected,
                              rejected == 1 ? "" : "s", first.message);
@@ -512,6 +515,53 @@ static bool inject(struct server *server, const struct json_value *message,
     return ok;
 }
 
+/* The node a message names by `node`; NULL for null with NULLABLE. */
+static bool node_field(struct server *server, const struct json_value *message,
+                       struct node **out, bool nullable, struct protocol_error *error) {
+    const struct json_value *raw = json_get(message, "node");
+    int64_t id;
+    *out = NULL;
+    if (nullable && (!raw || raw->type == JSON_NULL)) return true;
+    if (!json_integer(raw, 1, INT64_MAX / 2, &id) || !(*out = scene_node(&server->scene, id)))
+        return protocol_fail(error, "Unknown node.");
+    return true;
+}
+
+/* {"type": "focus-node", "node": id | null, "visible"?: bool}: keyboard focus to a node. */
+static bool focus_node(struct server *server, const struct json_value *message,
+                       struct protocol_error *error) {
+    struct node *node;
+    if (!node_field(server, message, &node, true, error)) return false;
+    const struct json_value *visible = json_given(message, "visible");
+    if (visible && visible->type != JSON_TRUE && visible->type != JSON_FALSE)
+        return protocol_fail(error, "visible requires a boolean.");
+    return input_focus_node(server, node, visible ? visible->type == JSON_TRUE : -1, error);
+}
+
+/* {"type": "scroll-to", "node": id, "x"?, "y"?, "transition"?}: a scroll container's offset. */
+static bool scroll_node(struct server *server, const struct json_value *message,
+                        struct protocol_error *error) {
+    struct node *node;
+    if (!node_field(server, message, &node, false, error)) return false;
+    bool has[2] = {false, false};
+    double at[2] = {0, 0};
+    const char *names[] = {"x", "y"};
+    for (int i = 0; i < 2; i++) {
+        const struct json_value *value = json_given(message, names[i]);
+        if (!value) continue;
+        if (value->type != JSON_NUMBER || !(fabs(value->number) < 1e12))
+            return protocol_fail(error, "scroll-to requires numbers.");
+        has[i] = true;
+        at[i] = value->number;
+    }
+    const struct json_value *transition = json_given(message, "transition");
+    struct motion *motion = NULL;
+    if (transition && !(motion = decode_motion(transition, error))) return false;
+    bool ok = scroll_to(server, node, has, at, motion, error);
+    motion_unref(motion);
+    return ok;
+}
+
 static bool dispatch(struct director *director, const struct json_value *message,
                      struct protocol_error *error) {
     struct server *server = director->link->server;
@@ -570,6 +620,13 @@ static bool dispatch(struct director *director, const struct json_value *message
         return true;
     }
     if (json_is_string(type, "inject")) return inject(server, message, error);
+    if (json_is_string(type, "focus-node")) return focus_node(server, message, error);
+    if (json_is_string(type, "edit")) {
+        struct node *node;
+        if (!node_field(server, message, &node, false, error)) return false;
+        return edit_command(server, node, message, error);
+    }
+    if (json_is_string(type, "scroll-to")) return scroll_node(server, message, error);
     if (json_is_string(type, "capture")) {
         int64_t id;
         struct capture_source source;
@@ -773,8 +830,10 @@ bool event_begin(struct server *server, struct event *event, struct node *node,
     json_int(&event->writer, node->id);
     json_key(&event->writer, "name");
     json_string(&event->writer, EVENT_NAMES[name]);
+    /* Typing's input events too: each carries the whole text, and the newest says all. */
     event->coalesce = name == EVENT_POINTERMOVE || name == EVENT_MOVE || name == EVENT_DRAG ||
-                      name == EVENT_RESIZE;
+                      name == EVENT_RESIZE || name == EVENT_SCROLL || name == EVENT_INPUT ||
+                      name == EVENT_SELECT;
     snprintf(event->key, sizeof event->key, "%lld/%s", (long long)node->id, EVENT_NAMES[name]);
     return true;
 }

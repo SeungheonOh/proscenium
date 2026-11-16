@@ -9,31 +9,69 @@
 import { isAbsolute, resolve } from "node:path";
 import type { ReactNode, Ref } from "react";
 import { type Color, toWireColor } from "./color.js";
-import type { StageDragEvent, StageElement, StageErrorEvent, StageEvent,
-  StageGestureEvent, StageLoadEvent, StageMeasureEvent, StagePointerEvent,
-  StageRequestEvent, StageResizeEvent, StageWheelEvent } from "./events.js";
+import type { StageClickEvent, StageContextMenuEvent, StageDragEvent, StageElement, StageErrorEvent,
+  StageEvent, StageFocusEvent, StageGestureEvent, StageKeyboardEvent, StageLoadEvent, StageMeasureEvent,
+  StagePointerEvent, StageRequestEvent, StageResizeEvent, StageScrollEvent, StageSelectEvent,
+  StageSubmitEvent, StageTextInputEvent, StageWheelEvent } from "./events.js";
 import type { Dimension, FlexContainerProps, FlexItemProps, LayoutBox } from "./layout.js";
 import { type Animation, wireAnimations } from "./animation.js";
 import { isMotion, type Motion, wireMotion } from "./motion.js";
-import { backdropBlur, boxPaint, boxShadow, dimFilter, planePaint, type Shading, type UniformValue,
-  wireShading, wireUniforms } from "./shader.js";
+import { backdropBlurWith, type BoxFeatures, boxInsetShadow, boxPaintWith, boxShadowWith, dimFilter,
+  gradientPaint, planePaint, type Shading, type UniformValue, wireShading, wireUniforms } from "./shader.js";
 import type { WireProps, WireValue } from "./protocol.js";
 import { radians, type Transform, type TransformFunction, wireTransform } from "./transform.js";
 
-/** A solid color, or a two-stop linear gradient; ANGLE is in degrees, 0 = left to right. */
-export type Paint = Color | { from: Color; to: Color; angle?: number };
+/** Four values in CSS order: top, right, bottom, left (`border-width`, `padding`). */
+export type Edges = readonly [number, number, number, number];
 
+/** Four values in CSS order: top-left, top-right, bottom-right, bottom-left (`border-radius`). */
+export type Corners = readonly [number, number, number, number];
+
+/** One corner radius for every corner, or four in CSS order. */
+export type Radius = number | Corners;
+
+/** A gradient's stop: a color, spaced as CSS spaces stops without positions, or a color at 0 to 1. */
+export type GradientStop = Color | readonly [Color, number];
+
+/**
+ * Up to four stops interpolated in Oklab, dithered so they never band: CSS
+ * `linear-gradient(in oklab, …)` at `angle` degrees (0 = left to right), or
+ * `radial-gradient(circle farthest-corner at <center>, in oklab, …)`.
+ */
+export interface Gradient {
+  stops: readonly GradientStop[];
+  angle?: number;
+  shape?: "linear" | "radial";
+  /** A radial gradient's center, as a fraction of the box; [0.5, 0.5] by default. */
+  center?: readonly [number, number];
+}
+
+/**
+ * A solid color; a two-stop linear gradient interpolated as CSS does by default (`from`,
+ * `to`, ANGLE in degrees, 0 = left to right); or a Gradient of up to four stops in Oklab.
+ */
+export type Paint = Color | { from: Color; to: Color; angle?: number } | Gradient;
+
+/** As one CSS `box-shadow`: offset, blur, spread (negative pulls it in), and `inset` inside the box. */
 export interface Shadow {
   color?: Color;
   blur?: number;
   x?: number;
   y?: number;
   spread?: number;
+  inset?: boolean;
 }
 
+/**
+ * A border along the inside of the box, as CSS `border`: `width` for every side or four
+ * (top, right, bottom, left), each drawn a whole number of output pixels, at least one;
+ * `color` a color or a two-stop gradient; `dash` dashed (`border-style: dashed`), with
+ * dashes three times the width long, or this long.
+ */
 export interface Border {
-  width?: number;
-  color?: Paint;
+  width?: number | Edges;
+  color?: Color | { from: Color; to: Color; angle?: number };
+  dash?: boolean | number;
 }
 
 export interface Grid {
@@ -103,15 +141,17 @@ export interface ShapeProps extends TransformProps {
   /** Logical pixels; percentages resolve inside a <Box>. */
   width?: Dimension;
   height?: Dimension;
-  radius?: number;
+  /** Corner radius: one, or four in CSS order (top-left, top-right, bottom-right, bottom-left). */
+  radius?: Radius;
   border?: Border;
-  shadow?: Shadow;
+  /** A shadow, or a list of them as CSS `box-shadow` lists them: the first on top. */
+  shadow?: Shadow | readonly Shadow[];
   /** Backdrop blur radius: frosted glass over whatever is drawn behind. */
   blur?: number;
 }
 
 /** Paint fields that can animate, as accepted by `initial` and `exit`. */
-export type PaintValues = Color | { from?: Color; to?: Color; angle?: number };
+export type PaintValues = Color | { from?: Color; to?: Color; angle?: number } | Gradient;
 
 /** Props that can be animated, as accepted by `initial` and `exit`. */
 export interface AnimatedValues {
@@ -122,12 +162,12 @@ export interface AnimatedValues {
   /** Animates function by function between lists of the same functions; see `TransformProps`. */
   transform?: Transform;
   opacity?: number;
-  radius?: number;
+  radius?: Radius;
   fill?: PaintValues;
   /** Text color. */
   color?: Color;
-  border?: { width?: number; color?: PaintValues };
-  shadow?: Shadow;
+  border?: { width?: number | Edges; color?: Color | { from?: Color; to?: Color; angle?: number } };
+  shadow?: Shadow | readonly Shadow[];
   grid?: Omit<Grid, "kind">;
   blur?: number;
   dim?: number;
@@ -169,6 +209,95 @@ export interface PointerHandlers {
 }
 
 /**
+ * States of a control the compositor resolves itself as the pointer and keys come, in the
+ * frame that shows them, as CSS `:hover`, `:active`, `:focus-within`, `:focus` and
+ * `:focus-visible`. `hover` holds while the pointer is over the node or its children;
+ * `pressed` while a primary press begun on it is held and the pointer is still over it,
+ * or Space is held on it focused; `focusWithin` while it or a node under it has keyboard
+ * focus (a field's frame around its text); `focus` while it has keyboard focus, and
+ * `focusVisible` when that came by keyboard. Where several hold, the later in this order
+ * wins: hover, focusWithin, focus, focusVisible, pressed.
+ */
+export type StateName = "hover" | "pressed" | "focusWithin" | "focus" | "focusVisible";
+
+/**
+ * What a state shows in place of the node's own values: the values `initial` and `exit`
+ * take, moving with the node's `transition`. A decoration's uniforms change only on a
+ * node that has the decoration; a `fill`, `border`, `shadow` or `blur` that only states
+ * name is added transparent for them.
+ */
+export type StateValues = AnimatedValues;
+
+export interface States extends Partial<Record<StateName, StateValues>> {
+  /**
+   * Show the states of the nearest node at or above this one with `stateGroup` instead
+   * of its own, as Tailwind's `group-hover`: a button's label and icon change with the
+   * button.
+   */
+  group?: boolean;
+}
+
+/** Handlers of a node the compositor serves as a control: clicks, menus, focus and keys. */
+export interface ControlHandlers {
+  /** A primary press let go of over the node, or Enter or Space on it focused; bubbles. */
+  onClick?: (event: StageClickEvent) => void;
+  /** The second click of a quick pair; the clicks still come first. */
+  onDoubleClick?: (event: StageClickEvent) => void;
+  /** A click of another button, as the middle one. */
+  onAuxClick?: (event: StageClickEvent) => void;
+  /** The secondary button went down, or Menu or Shift+F10 on the node focused; bubbles. */
+  onContextMenu?: (event: StageContextMenuEvent) => void;
+  onFocus?: (event: StageFocusEvent) => void;
+  onBlur?: (event: StageFocusEvent) => void;
+  /** Keys while the node, or one under it, has keyboard focus; they bubble. */
+  onKeyDown?: (event: StageKeyboardEvent) => void;
+  onKeyUp?: (event: StageKeyboardEvent) => void;
+}
+
+export interface ControlProps extends ControlHandlers {
+  /** Values to show while states hold, resolved in the compositor with no round trip. */
+  states?: States;
+  /** Children with `states.group` show this node's states. */
+  stateGroup?: boolean;
+  /**
+   * Take keyboard focus, as the DOM's `tabindex`: a press on the node (or a child)
+   * focuses it, and Tab and Shift+Tab reach it in tree order when it is 0 or more.
+   * While a node has focus, keys go to it, not to windows.
+   */
+  tabIndex?: number;
+}
+
+/**
+ * A group whose content scrolls natively, as CSS `overflow: auto`: the compositor keeps
+ * the offset, moves and clips the children, and scrolls with the wheel and fingers.
+ */
+export interface ScrollProps {
+  /** The axes it scrolls along. In a <Box>, its content's extent is sent as laid out. */
+  scroll?: "x" | "y" | "both";
+  /** While the end is in view, keep it in view as the content grows: a chat or a log. */
+  stickToEnd?: boolean;
+  /**
+   * As CSS `overscroll-behavior`: "auto" passes what it cannot scroll to the container
+   * around it, "contain" keeps it, "none" also keeps fingers from stretching past the ends.
+   */
+  overscroll?: "auto" | "contain" | "none";
+  /** The content's size, when no <Box> lays it out. */
+  contentWidth?: number;
+  contentHeight?: number;
+  /**
+   * On a child of a scrolling group: its scroll thumb along that axis. The compositor
+   * places it along the track, its declared `y` (or `x`) being the inset at either end
+   * and its `height` (or `width`) the shortest it gets, and shows it while scrolling;
+   * dragging it scrolls.
+   */
+  scrollThumb?: "x" | "y";
+  /** Tab and Shift+Tab keep within this subtree while focus is in it: a menu, a dialog. */
+  focusScope?: boolean;
+  /** Where the offset is headed, coalesced. */
+  onScroll?: (event: StageScrollEvent) => void;
+}
+
+/**
  * A draggable node follows the pointer inside the compositor, with no round
  * trip. Store the position from onDragEnd: once the drag ends, the node returns
  * to the x/y it is declared at.
@@ -187,26 +316,37 @@ export interface DragProps {
 }
 
 export interface GroupProps extends TransformProps, MotionProps, PointerHandlers, DragProps,
-  PassThroughProps, CursorProps, ShaderProps, ElementProps<GroupProps> {
+  PassThroughProps, CursorProps, ShaderProps, ControlProps, ScrollProps, ElementProps<GroupProps> {
   /**
    * Size of the group's box, for its transform origin, `clip` and shaders. A
    * sized group with pointer handlers catches the pointer anywhere inside it.
    */
   width?: Dimension;
   height?: Dimension;
-  /** Corner radius of the box, as its shaders see it. */
-  radius?: number;
-  /** Hide children outside the box (axis-aligned on screen). */
+  /** Corner radius of the box, as its shaders see it: one, or four in CSS order. */
+  radius?: Radius;
+  /**
+   * Hide children outside the box, as CSS `overflow: hidden`: outside its rounded corners
+   * too, where it keeps upright on screen.
+   */
   clip?: boolean;
+  /**
+   * Draw the node and its children as one layer that `opacity` fades, as CSS `opacity`
+   * does, instead of fading each part on its own, where overlapping parts show through
+   * each other. Costs an offscreen pass only while the node is translucent.
+   */
+  groupOpacity?: boolean;
   children?: ReactNode;
 }
 
 /** A group drawing a rounded box: its decoration props are those of `boxPaint`. */
 export interface RectProps extends ShapeProps, MotionProps, PointerHandlers, DragProps,
-  PassThroughProps, CursorProps, ShaderProps, ElementProps<RectProps> {
+  PassThroughProps, CursorProps, ShaderProps, ControlProps, ScrollProps, ElementProps<RectProps> {
   fill?: Paint;
-  /** Hide children outside the box (axis-aligned on screen). */
+  /** Hide children outside the box, as CSS `overflow: hidden`, its rounded corners too. */
   clip?: boolean;
+  /** Fade the node and its children as one layer, as CSS `opacity` does; see GroupProps. */
+  groupOpacity?: boolean;
   children?: ReactNode;
 }
 
@@ -214,6 +354,9 @@ export interface RectProps extends ShapeProps, MotionProps, PointerHandlers, Dra
 export interface BoxProps extends Omit<RectProps, "style">, FlexContainerProps {
   style?: Style<BoxProps>;
 }
+
+/** Lines drawn with text, as CSS `text-decoration-line` names them. */
+export type TextDecoration = "none" | "underline" | "line-through" | "underline line-through";
 
 /** Text content: a string, or children that are strings and numbers. */
 export type TextContent = string | number | readonly (string | number)[];
@@ -223,10 +366,11 @@ export type TextContent = string | number | readonly (string | number)[];
  * or `width` wide when given; it is reported through onMeasure. A <Text> inside
  * another styles its part of the text, as in React Native:
  * `<Text>Saved <Text weight="bold" color="#8f8">3</Text> files</Text>`; there
- * only `color`, `font`, `size`, `weight` and `italic` apply.
+ * only `color`, `font`, `size`, `weight`, `italic`, `letterSpacing`, `features`,
+ * `tabularNumbers` and `decoration` apply.
  */
 export interface TextProps extends TransformProps, MotionProps, PointerHandlers, DragProps,
-  PassThroughProps, CursorProps, ShaderProps, ElementProps<TextProps> {
+  PassThroughProps, CursorProps, ShaderProps, ControlProps, EditableTextProps, ElementProps<TextProps> {
   /** The text; string children are used when it is omitted. */
   text?: string;
   /** Read the text as Pango markup: <b>, <i>, <span foreground="#f80">, … */
@@ -240,14 +384,86 @@ export interface TextProps extends TransformProps, MotionProps, PointerHandlers,
   italic?: boolean;
   /** Wrap width; `align` applies within it. In a <Box>, the width the Box gives it. */
   width?: Dimension;
+  /** With `editable`, the box's height; a plain text's height is its lines'. */
+  height?: Dimension;
   align?: "start" | "center" | "end";
   /** Line height as a multiple of the font's own. */
   lineHeight?: number;
   /** With `width`: end with an ellipsis after this many lines. */
   maxLines?: number;
+  /** Pixels added after each character, as CSS `letter-spacing`; negative tightens. */
+  letterSpacing?: number;
+  /**
+   * OpenType features, as CSS `font-feature-settings`: `{ tnum: true, liga: false }`, or
+   * the CSS text, `'"tnum" 1, "liga" 0'`.
+   */
+  features?: Readonly<Record<string, boolean | number>> | string;
+  /** Figures of one width, for clocks and counters: CSS `font-variant-numeric: tabular-nums`. */
+  tabularNumbers?: boolean;
+  /** Lines through the text, as CSS `text-decoration-line`. */
+  decoration?: TextDecoration;
+  /** Its size, or with `editable` the size of its text up to `maxLines` lines. */
   onMeasure?: (event: StageMeasureEvent) => void;
   /** Strings, numbers and nested <Text>s; with `markup`, strings are markup. */
   children?: ReactNode;
+}
+
+/**
+ * A text the compositor edits itself, as an `<input>` or, `multiline`, a `<textarea>`: give
+ * it `tabIndex` to take focus, and it keeps its own text, caret, selection and undo
+ * history, takes keys and pointer presses in the same frame, and draws its caret and
+ * selection. `text` is its value: declared with the `valueRevision` the latest `onInput`
+ * carried, it replaces what is typed only when it is not that report's echo. The kit's
+ * `TextField` is built on it.
+ */
+export interface EditableTextProps {
+  /** Edit the text in the compositor, as an `<input>`: see EditableTextProps. */
+  editable?: boolean;
+  /** Lines that wrap and Return types, as a `<textarea>`; else one line that scrolls. */
+  multiline?: boolean;
+  /** Selectable and copyable, not editable: `readonly`. */
+  readOnly?: boolean;
+  /** Bullets for every character, never copied: `type="password"`. */
+  password?: boolean;
+  /** At most this many UTF-16 code units, as `maxlength` counts. */
+  maxLength?: number;
+  /** Shown while the text is empty: `placeholder`. */
+  placeholder?: string;
+  /** The placeholder's color, as `::placeholder`; by default the text's, faded. */
+  placeholderColor?: Color;
+  /** CSS `caret-color`; by default the text's. */
+  caretColor?: Color;
+  /** The selection's color, as `::selection` `background-color`; drawn under the text. */
+  selectionColor?: Color;
+  /**
+   * Keys it leaves alone, sent as keydown instead with no default action, e.g. Up and
+   * Down for a history, Tab for completion: keysym names, with modifiers as
+   * "Control+Return". A keydown is not a veto the director could answer in time.
+   */
+  captureKeys?: readonly string[];
+  /** The `revision` of the latest `onInput` heard; see EditableTextProps. */
+  valueRevision?: number;
+  /** In a multiline field Return submits and Shift+Return types a line break. */
+  submitOnEnter?: boolean;
+  /** Focus selects all the text, so typing replaces it. */
+  selectOnFocus?: boolean;
+  /**
+   * The keys it takes: "emacs" (the default), the usual keys and the readline and Emacs
+   * bindings, or "standard", a browser's. See docs/GUIDE.md for both lists.
+   */
+  keymap?: "emacs" | "standard";
+  /**
+   * Space between the box and its text, as CSS `padding` on the input: the text clips to
+   * the box, and presses in the padding place the caret too. One number, or top, right,
+   * bottom, left.
+   */
+  contentInset?: number | readonly [number, number, number, number];
+  /** Its text changed by typing, pasting, undo: the DOM's `input`. Coalesced. */
+  onInput?: (event: StageTextInputEvent) => void;
+  /** Return in one line, or with `submitOnEnter`: the text as it stood then. */
+  onSubmit?: (event: StageSubmitEvent) => void;
+  /** The caret or selection moved: the DOM's `select`, also for a caret alone. Coalesced. */
+  onSelect?: (event: StageSelectEvent) => void;
 }
 
 /**
@@ -256,7 +472,7 @@ export interface TextProps extends TransformProps, MotionProps, PointerHandlers,
  * natural size; with one of them it keeps its aspect ratio.
  */
 export interface ImageProps extends ShapeProps, MotionProps, PointerHandlers, DragProps,
-  PassThroughProps, CursorProps, ShaderProps, ElementProps<ImageProps> {
+  PassThroughProps, CursorProps, ShaderProps, ControlProps, ElementProps<ImageProps> {
   /** Absolute path, a path relative to the world file, or an imported image. */
   src: string;
   /** How the image fills the box; "fill" stretches it. */
@@ -458,6 +674,10 @@ const color = (name: string): Writer =>
 function isGradient(value: unknown): value is { from?: Color; to?: Color; angle?: number } {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+function hasStops(value: unknown): value is Gradient {
+  return isGradient(value) && Array.isArray((value as Gradient).stops);
+}
 const rotation = plain("rotation", isDefined, (value: number, out) => { out.rotation = value * radians; });
 const transformFunctions = plain("transform", isDefined, (value: Transform, out) => {
   out.transform = wireTransform(value);
@@ -500,11 +720,26 @@ const transform: Record<string, Writer> = {
   ...placement, originX: number("originX"), originY: number("originY"),
 };
 
+/** One radius, or four corners. */
+const radius = plain("radius", isDefined, (value: Radius, out) => {
+  out.radius = typeof value === "number" ? value : [...value];
+});
+
 const box: Record<string, Writer> = {
-  ...transform, width: size("width"), height: size("height"), radius: number("radius"),
+  ...transform, width: size("width"), height: size("height"), radius,
 };
 
 const modifiers: Writer = (value: string | string[], out) => { out.modifiers = modifierList(value); };
+
+/** Chords as an editable text's `captureKeys` takes them: "Control+Return", "PageUp". */
+const captureKeys: Writer = (value: string | readonly string[], out) => {
+  const chords = typeof value === "string" ? value.split(/[\s,]+/) : value;
+  out.captureKeys = chords.filter(Boolean).map((chord) => {
+    const parts = chord.split("+");
+    const key = parts.pop()!;
+    return [...parts, keyAliases[key.toLowerCase()] ?? key].join("+");
+  }).join(" ");
+};
 
 let assetBase = process.cwd();
 
@@ -567,6 +802,15 @@ export function spanAttributes(props: Props, outer: SpanFont): [string, SpanFont
   if (sized || font.italic !== outer.italic) {
     attributes += ` style="${font.italic ? "italic" : "normal"}"`;
   }
+  if (typeof props.letterSpacing === "number") {
+    attributes += ` letter_spacing="${Math.round(props.letterSpacing * 1024)}"`;
+  }
+  const spanFeatures = joinFeatures(featureText(props.features), props.tabularNumbers ? '"tnum" 1' : "");
+  if (spanFeatures) attributes += ` font_features="${escapeMarkup(spanFeatures)}"`;
+  if (typeof props.decoration === "string") {
+    attributes += ` underline="${props.decoration.includes("underline") ? "single" : "none"}"`;
+    attributes += ` strikethrough="${props.decoration.includes("line-through")}"`;
+  }
   if (props.color !== undefined) {
     const [red, green, blue, alpha] = toWireColor(props.color as Color);
     attributes += ` foreground="${hexColor(red, green, blue)}"`;
@@ -577,8 +821,37 @@ export function spanAttributes(props: Props, outer: SpanFont): [string, SpanFont
 
 const cursor = text("cursor");
 
+/** What makes a drawn node a control. */
+const control = { stateGroup: flag("stateGroup"), tabIndex: number("tabIndex") };
+
+/** CSS font-feature-settings text of FEATURES. */
+function featureText(features: unknown): string {
+  if (typeof features === "string") return features;
+  if (!features || typeof features !== "object") return "";
+  return Object.entries(features as Record<string, boolean | number>)
+    .map(([tag, value]) => `"${tag}" ${typeof value === "number" ? value : value ? 1 : 0}`).join(", ");
+}
+
+/** FIRST and SECOND, feature lists, as one. */
+function joinFeatures(first: unknown, second: string): string {
+  return [typeof first === "string" ? first : "", second].filter(Boolean).join(", ");
+}
+
+const features: Writer = (value: unknown, out) => {
+  const text = featureText(value);
+  if (text) out.fontFeatures = joinFeatures(out.fontFeatures, text);
+};
+
+const tabularNumbers: Writer = (value: boolean, out) => {
+  if (value) out.fontFeatures = joinFeatures(out.fontFeatures, '"tnum" 1');
+};
+
 const group = {
-  ...box, clip: flag("clip"), draggable: flag("draggable"), interactive: flag("interactive"), cursor,
+  ...box, clip: flag("clip"), groupOpacity: flag("groupOpacity"), draggable: flag("draggable"),
+  interactive: flag("interactive"), cursor,
+  ...control, focusScope: flag("focusScope"), scroll: text("scroll"), stickToEnd: flag("stickToEnd"),
+  overscroll: text("overscroll"), scrollThumb: text("scrollThumb"), contentWidth: number("contentWidth"),
+  contentHeight: number("contentHeight"),
 };
 
 const fields: Record<HostType, Record<string, Writer>> = {
@@ -591,11 +864,20 @@ const fields: Record<HostType, Record<string, Writer>> = {
     weight: (value: number | string, out) => { out.fontWeight = fontWeight(value); },
     italic: flag("italic"), width: size("width"), align: text("align"),
     lineHeight: number("lineHeight"), maxLines: number("maxLines"), draggable: flag("draggable"),
-    interactive: flag("interactive"), cursor,
+    interactive: flag("interactive"), cursor, ...control, letterSpacing: number("letterSpacing"), features,
+    tabularNumbers, decoration: text("decoration"), height: size("height"),
+    editable: flag("editable"), multiline: flag("multiline"), readOnly: flag("readOnly"),
+    password: flag("password"), maxLength: number("maxLength"), placeholder: text("placeholder"),
+    placeholderColor: color("placeholderColor"), caretColor: color("caretColor"),
+    selectionColor: color("selectionColor"), captureKeys, valueRevision: number("valueRevision"),
+    submitOnEnter: flag("submitOnEnter"), selectOnFocus: flag("selectOnFocus"), keymap: text("keymap"),
+    contentInset: (value: number | readonly number[], out) => {
+      out.padding = typeof value === "number" ? value : [...value];
+    },
   },
   image: {
     ...box, fit: text("fit"), draggable: flag("draggable"), interactive: flag("interactive"),
-    cursor,
+    cursor, ...control,
     src: (value: string, out) => { out.src = resolveAsset(value); },
   },
   web: {
@@ -658,6 +940,8 @@ const borderColorNames = ["borderColor", "borderColorEnd", "borderAngle"] as con
 function paintUniforms(value: PaintValues | undefined, names: readonly [string, string, string],
                        complete: boolean, out: Uniforms): void {
   const start = names[0], end = names[1], angle = names[2];
+  // A gradient of stops is a paint of its own, under the box's border.
+  if (hasStops(value)) value = undefined;
   if (value === undefined) {
     if (complete) {
       out[start] = clear;
@@ -675,22 +959,57 @@ function paintUniforms(value: PaintValues | undefined, names: readonly [string, 
   }
 }
 
-/** The box paint's uniforms of PROPS; with COMPLETE, every one. */
-function boxUniforms(type: HostType, props: Props, complete: boolean): Uniforms {
+/** Whether RADIUS gives its corners radii of their own. */
+function ownCorners(radius: unknown): boolean {
+  return Array.isArray(radius) && radius.some((corner) => corner !== radius[0]);
+}
+
+/**
+ * What the box paints of PROPS draw beyond the plain ones, from their values, `initial`,
+ * `exit` and `animate`: each feature is a program of its own, so a plain box costs what
+ * it did before there were any.
+ */
+function boxFeatures(props: Props): BoxFeatures {
+  const states = props.states as Record<string, unknown> | undefined;
+  const all = [props, props.initial as Props | undefined, props.exit as Props | undefined,
+    ...(states ? Object.values(states).filter((values): values is Props => typeof values === "object" && values !== null) : [])];
+  const animations = props.animate ? [props.animate].flat() as Props[] : [];
+  const corners = all.some((values) => ownCorners(values?.radius))
+    || animations.some((animation) => Array.isArray(animation.radius)
+      && (animation.radius as unknown[]).some((frame) => Array.isArray(frame)));
+  const sides = all.some((values) => Array.isArray((values?.border as Border | undefined)?.width));
+  const dash = all.some((values) => Boolean((values?.border as Border | undefined)?.dash));
+  return { corners, sides, dash };
+}
+
+/** The box paint's uniforms of PROPS, for a box paint with FEATURES; with COMPLETE, every one. */
+function boxUniforms(type: HostType, props: Props, complete: boolean, features: BoxFeatures): Uniforms {
   const out: Uniforms = {};
   const style = borders[type];
   paintUniforms(style === "inside" ? props.fill as PaintValues | undefined : undefined,
                 fillNames, complete, out);
-  const border = props.border as { width?: number; color?: PaintValues } | undefined;
-  if (border?.width !== undefined || complete) {
-    out.border = border?.width ?? 0;
-    out.outset = style === "frame" ? out.border : 0;
+  const border = props.border as Border | undefined;
+  const width = border?.width;
+  if (width !== undefined || complete) {
+    // The widest side, and how much thinner each side is, left, top, right, bottom.
+    const sides = typeof width === "object" ? width : null;
+    const widest = sides ? Math.max(0, ...sides) : width as number | undefined ?? 0;
+    out.border = widest;
+    if (features.sides) {
+      out.borderTrim = sides
+        ? [widest - sides[3], widest - sides[0], widest - sides[1], widest - sides[2]]
+        : [0, 0, 0, 0];
+    }
+    out.outset = style === "frame" ? widest : 0;
+    if (features.dash && (border?.dash !== undefined || complete)) {
+      out.dash = !border?.dash ? 0 : typeof border.dash === "number" ? border.dash : 3 * widest;
+    }
   }
   paintUniforms(border?.color, borderColorNames, complete, out);
   return out;
 }
 
-/** The `shadow` paint's uniforms; with COMPLETE, every one. */
+/** A `shadow` paint's uniforms; with COMPLETE, every one. */
 function shadowUniforms(shadow: Shadow, complete: boolean): Uniforms {
   const out: Uniforms = {};
   if (shadow.color !== undefined || complete) out.color = shadow.color === undefined ? clear : toWireColor(shadow.color);
@@ -698,6 +1017,72 @@ function shadowUniforms(shadow: Shadow, complete: boolean): Uniforms {
     if (shadow[key] !== undefined || complete) out[key] = shadow[key] ?? 0;
   }
   return out;
+}
+
+const noShadows: readonly Shadow[] = [];
+
+function shadowList(value: unknown): readonly Shadow[] {
+  return !value ? noShadows : Array.isArray(value) ? value as readonly Shadow[] : [value as Shadow];
+}
+
+/** The use ids of the INSET or outer shadows of LIST, first on top, with each shadow. */
+function shadowUses(list: readonly Shadow[], inset: boolean): [string, Shadow][] {
+  const out: [string, Shadow][] = [];
+  for (const shadow of list) {
+    if (Boolean(shadow.inset) !== inset) continue;
+    const base = inset ? "insetShadow" : "shadow";
+    out.push([out.length ? `${base}${out.length + 1}` : base, shadow]);
+  }
+  return out;
+}
+
+/** Straight sRGB to Oklab (Björn Ottosson, 2020), alpha kept. */
+function oklab(color: Color): [number, number, number, number] {
+  const [r, g, b, a] = toWireColor(color).map((channel, index) => index === 3 ? channel
+    : channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4) as number[];
+  const l = Math.cbrt(0.4122214708 * r! + 0.5363325363 * g! + 0.0514459929 * b!);
+  const m = Math.cbrt(0.2119034982 * r! + 0.6806995451 * g! + 0.1073969566 * b!);
+  const s = Math.cbrt(0.0883024619 * r! + 0.2817188376 * g! + 0.6299787005 * b!);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+          1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+          0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s, a!];
+}
+
+/** The gradient paint's uniforms of GRADIENT; with COMPLETE, every one. */
+function gradientUniforms(gradient: Gradient, complete: boolean): Uniforms {
+  const out: Uniforms = {};
+  const stops = gradient.stops;
+  if (stops.length) {
+    if (stops.length > 4) throw new TypeError(`A gradient has at most 4 stops, not ${stops.length}`);
+    const colors = stops.map((stop) => isStopAt(stop) ? stop[0] : stop);
+    const at = stops.map((stop) => isStopAt(stop) ? stop[1] : NaN);
+    // As CSS places stops without positions: the ends at 0 and 1, the rest evenly between.
+    if (Number.isNaN(at[0])) at[0] = 0;
+    if (Number.isNaN(at[at.length - 1])) at[at.length - 1] = 1;
+    for (let index = 1; index < at.length; index++) {
+      if (!Number.isNaN(at[index]!)) {
+        at[index] = Math.max(at[index]!, at[index - 1]!);
+        continue;
+      }
+      let next = index;
+      while (Number.isNaN(at[next]!)) next++;
+      const from = at[index - 1]!, step = (at[next]! - from) / (next - index + 1);
+      for (let k = index; k < next; k++) at[k] = from + step * (k - index + 1);
+    }
+    for (let k = 0; k < 4; k++) out[`color${k}`] = oklab(colors[Math.min(k, colors.length - 1)]!);
+    out.stops = [0, 1, 2, 3].map((k) => k < at.length ? at[k]! : 1) as unknown as UniformValue;
+  } else if (complete) {
+    for (let k = 0; k < 4; k++) out[`color${k}`] = clear;
+    out.stops = [0, 1, 1, 1];
+  }
+  if (gradient.angle !== undefined || complete) out.angle = (gradient.angle ?? 0) * radians;
+  if (gradient.shape !== undefined || complete) out.shape = gradient.shape === "radial" ? 1 : 0;
+  if (gradient.center !== undefined || complete) out.center = [...gradient.center ?? [0.5, 0.5]] as [number, number];
+  return out;
+}
+
+function isStopAt(stop: GradientStop): stop is readonly [Color, number] {
+  return Array.isArray(stop) && stop.length === 2 && typeof stop[1] === "number" && typeof stop[0] !== "number";
 }
 
 /** The plane's uniforms of a background's PROPS; with COMPLETE, every one. */
@@ -734,10 +1119,12 @@ function partMotions(parts: Parts | null, fallback?: Motion): Shading["transitio
   return parts;
 }
 
+const gradientNames = ["color0", "color1", "color2", "color3", "stops", "angle", "center"] as const;
 const planeColorNames = ["color"] as const;
 const planeGridNames = ["gridColor", "spacing", "weight"] as const;
 const fillAngleNames = ["fillAngle"] as const;
-const borderNames = ["border", "borderColor", "borderColorEnd", "borderAngle", "outset"] as const;
+const borderNames = ["border", "borderTrim", "borderColor", "borderColorEnd", "borderAngle", "outset",
+                     "dash"] as const;
 const borderAngleNames = ["borderAngle"] as const;
 const noShadings: readonly Shading[] = [];
 
@@ -763,15 +1150,28 @@ function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
                  transition: partMotions(addParts(addParts(null, motions.fill, planeColorNames),
                                                   motions.grid, planeGridNames), fallback) });
   }
-  if (props.shadow && style)
-    under.push({ id: "shadow", shader: boxShadow, uniforms: shadowUniforms(props.shadow as Shadow, true),
+  const features = boxFeatures(props);
+  // As CSS lists shadows, the first on top: drawn last.
+  const shadows = style ? shadowList(props.shadow) : noShadows;
+  for (const [id, shadow] of shadowUses(shadows, false).reverse()) {
+    under.push({ id, shader: boxShadowWith(features), uniforms: shadowUniforms(shadow, true),
                  transition: motions.shadow ?? fallback });
+  }
+  const insets: Shading[] = shadowUses(shadows, true).reverse().map(([id, shadow]) =>
+    ({ id, shader: boxInsetShadow, uniforms: shadowUniforms(shadow, true), transition: motions.shadow ?? fallback }));
   const blur = typeof props.blur === "number" && style
-    ? { id: "blur", shader: backdropBlur, uniforms: { blur: props.blur }, transition: motions.blur ?? fallback }
+    ? { id: "blur", shader: backdropBlurWith(features), uniforms: { blur: props.blur },
+        transition: motions.blur ?? fallback }
     : null;
-  const decorated = props.border !== undefined || (style === "inside" && props.fill !== undefined);
+  const gradient: Shading | null = style === "inside" && hasStops(props.fill) ? {
+    id: "gradient", shader: gradientPaint, uniforms: gradientUniforms(props.fill, true),
+    transition: partMotions(addParts(addParts(null, motions.fill, gradientNames), motions.fillAngle,
+                                     ["angle"]), fallback),
+  } : null;
+  const decorated = props.border !== undefined
+    || (style === "inside" && props.fill !== undefined && !gradient);
   const box: Shading | null = decorated ? {
-    id: "box", shader: boxPaint, uniforms: boxUniforms(type, props, true),
+    id: "box", shader: boxPaintWith(features), uniforms: boxUniforms(type, props, true, features),
     layer: style === "over" ? "over" : "under",
     transition: partMotions(addParts(addParts(addParts(addParts(null,
       motions.fill, fillNames), motions.fillAngle, fillAngleNames),
@@ -787,11 +1187,14 @@ function wireShaders(type: HostType, props: Props): WireValue[] | undefined {
     under.push(...ownUnder);
     if (box) under.push(box);
     if (blur) under.push(blur);
+    under.push(...insets);
   } else {
     if (blur) under.push(blur);
     under.push(...ownUnder);
-    if (box && style === "over") over.push(box);
-    else if (box) under.push(box);
+    if (gradient) under.push(gradient);
+    if (box && style === "over") over.push(box, ...insets);
+    else if (box) under.push(box, ...insets);
+    else under.push(...insets);
   }
   if ((type === "window" || type === "mirror") && typeof props.dim === "number")
     under.push({ id: "dim", shader: dimFilter, uniforms: { amount: props.dim }, transition: motions.dim ?? fallback });
@@ -810,7 +1213,7 @@ function checkShaders(type: HostType, uses: readonly Shading[]): void {
   for (const use of uses) {
     if (ids.has(use.id)) {
       throw new TypeError(`Two shaders of a ${type} share id ${JSON.stringify(use.id)} (decorations use `
-        + "box, shadow, blur, dim and plane)");
+        + "box, gradient, shadow, shadow2…, insetShadow…, blur, dim and plane)");
     }
     ids.add(use.id);
     stages[use.shader.stage]++;
@@ -824,17 +1227,23 @@ function checkShaders(type: HostType, uses: readonly Shading[]): void {
 }
 
 /** `initial` or `exit` values of the shaders VALUES name: the decorations' and the node's own. */
-function wireShaderTargets(type: HostType, values: Props): WireProps | undefined {
+function wireShaderTargets(type: HostType, values: Props, features: BoxFeatures): WireProps | undefined {
   if (!shaderTypes.has(type)) return undefined;
   const out: Record<string, Uniforms> = {};
   const add = (id: string, uniforms: Uniforms) => {
     if (Object.keys(uniforms).length) out[id] = { ...out[id], ...uniforms };
   };
-  if (values.shadow && borders[type]) add("shadow", shadowUniforms(values.shadow as Shadow, false));
+  if (values.shadow && borders[type]) {
+    const list = shadowList(values.shadow);
+    for (const inset of [false, true]) {
+      for (const [id, shadow] of shadowUses(list, inset)) add(id, shadowUniforms(shadow, false));
+    }
+  }
+  if (hasStops(values.fill) && borders[type] === "inside") add("gradient", gradientUniforms(values.fill, false));
   if (typeof values.blur === "number" && borders[type]) add("blur", { blur: values.blur });
   if (typeof values.dim === "number" && (type === "window" || type === "mirror")) add("dim", { amount: values.dim });
   if (type === "background") add("plane", planeUniforms(values, false));
-  else if (borders[type]) add("box", boxUniforms(type, values, false));
+  else if (borders[type]) add("box", boxUniforms(type, values, false, features));
   for (const [id, uniforms] of Object.entries((values.shaders as Record<string, Uniforms> | undefined) ?? {}))
     add(id, uniforms);
   const wire: WireProps = {};
@@ -853,6 +1262,9 @@ const handlerEvents: Record<string, string> = {
   onFullscreenRequest: "fullscreenrequest", onMaximizeRequest: "maximizerequest",
   onMinimizeRequest: "minimizerequest", onActivateRequest: "activaterequest",
   onMeasure: "measure", onLoad: "load", onError: "error", onMessage: "message",
+  onClick: "click", onDoubleClick: "dblclick", onAuxClick: "auxclick", onContextMenu: "contextmenu",
+  onFocus: "focus", onBlur: "blur", onKeyDown: "keydown", onKeyUp: "keyup", onScroll: "scroll",
+  onInput: "input", onSubmit: "submit", onSelect: "select",
 };
 
 function wireTransition(transition: Transition): WireProps {
@@ -885,6 +1297,7 @@ const layoutKeys = new Set([
   "flexDirection", "flexWrap", "justifyContent", "alignItems", "alignContent",
   "gap", "rowGap", "columnGap",
   "padding", "paddingX", "paddingY", "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
+  "scroll",
 ]);
 
 /** The host type the compositor knows a node as: a Rect or a Box is a group. */
@@ -944,14 +1357,21 @@ export function normalizeProps(type: HostType, given: Props): Normalized {
     const transition = wireTransition(props.transition as Transition);
     if (Object.keys(transition).length) wire.transition = transition;
   }
-  const shaders = wireShaders(type, props);
+  const states = props.states as States | undefined;
+  const shaders = wireShaders(type, states ? withStateDecorations(type, props, states) : props);
   if (shaders) wire.shaders = shaders;
+  // A box clips its children inside its border, as CSS clips to the padding box.
+  const clipBorder = (props.border as Border | undefined)?.width;
+  if (props.clip && borders[type] === "inside" && clipBorder) {
+    wire.clipInset = typeof clipBorder === "number" ? clipBorder : [...clipBorder];
+  }
+  if (states) wire.states = wireStates(type, states, boxFeatures(props));
   for (const key of ["initial", "exit"] as const) {
     if (props[key]) {
       const values: WireProps = {};
       // A copy: only its own props, as writeFields reads every enumerable one.
       writeFields(type, { ...props[key] as Props }, values, animatedNames);
-      const targets = wireShaderTargets(type, props[key] as Props);
+      const targets = wireShaderTargets(type, props[key] as Props, boxFeatures(props));
       if (targets) values.shaders = targets;
       wire[key] = values;
     }
@@ -969,6 +1389,52 @@ export function normalizeProps(type: HostType, given: Props): Normalized {
     ? props.onLayout as (layout: LayoutBox) => void
     : null;
   return { wire, handlers, style, onLayout };
+}
+
+const stateNames: readonly StateName[] = ["hover", "focusWithin", "focus", "focusVisible", "pressed"];
+
+/** `states` on the wire: each state's values written as `initial` and `exit` are. */
+function wireStates(type: HostType, states: States, features: BoxFeatures): WireProps {
+  const out: WireProps = {};
+  for (const name of stateNames) {
+    const values = states[name];
+    if (!values) continue;
+    const wire: WireProps = {};
+    writeFields(type, { ...values as Props }, wire, animatedNames);
+    const targets = wireShaderTargets(type, values as Props, features);
+    if (targets) wire.shaders = targets;
+    out[name] = wire;
+  }
+  if (states.group) out.group = true;
+  return out;
+}
+
+/** PROPS with transparent decorations its states name and it lacks, for them to change. */
+function withStateDecorations(type: HostType, props: Props, states: States): Props {
+  let out = props;
+  const add = (name: string, value: unknown) => {
+    if (out === props) out = { ...props };
+    out[name] = value;
+  };
+  for (const name of stateNames) {
+    const values = states[name];
+    if (!values) continue;
+    if (values.fill !== undefined && props.fill === undefined && borders[type] === "inside") add("fill", "transparent");
+    if (values.border !== undefined && props.border === undefined && borders[type]) add("border", { width: 0 });
+    if (values.shadow && borders[type]) {
+      // Each shadow a state shows needs one of the node's to change, outer and inset alike.
+      const own = shadowList(out.shadow), shown = shadowList(values.shadow);
+      const missing = (inset: boolean) =>
+        shadowUses(shown, inset).length - shadowUses(own, inset).length;
+      const extra: Shadow[] = [];
+      for (const inset of [false, true]) {
+        for (let k = missing(inset); k > 0; k--) extra.push(inset ? { inset: true } : {});
+      }
+      if (extra.length) add("shadow", [...own, ...extra]);
+    }
+    if (values.blur !== undefined && typeof props.blur !== "number" && borders[type]) add("blur", 0);
+  }
+  return out;
 }
 
 /** TRANSFORM's functions, each doing nothing: what a node with no transform of its own shows. */
@@ -1066,7 +1532,7 @@ type Change =
 
 /** Props normalizeProps reads besides fields, layout props and handlers. */
 const derivedKeys = ["style", "transition", "fill", "border", "shadow", "blur", "grid", "dim", "shaders",
-                     "initial", "exit", "animate", "layoutId"];
+                     "initial", "exit", "animate", "layoutId", "states"];
 
 /** How TYPE takes a change of each prop it reads; the rest it ignores. */
 function changesOf(type: HostType): Map<string, Change> {

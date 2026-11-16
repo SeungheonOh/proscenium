@@ -9,10 +9,16 @@ import { join } from "node:path";
 import type { ReactNode } from "react";
 import { Connection } from "./connection.js";
 import { Container, createRoot, reconciler } from "./host.js";
-import type { StageInputEvent, StageKeyEvent } from "./events.js";
-import type { InjectedPointer, ServerMessage } from "./protocol.js";
+import type { StageElement, StageInputEvent, StageKeyEvent } from "./events.js";
+import type { EditAction, InjectedPointer, ServerMessage } from "./protocol.js";
 import { type Motion, wireMotion } from "./motion.js";
 import { Store, type Rectangle } from "./store.js";
+import { textKeys } from "./layout.js";
+import { normalizeProps, type TextProps } from "./props.js";
+import type { WireProps, WireValue } from "./protocol.js";
+
+/** Keys of measureText's requests start here, far above any layout asks for. */
+const measureKeys = 2 ** 30;
 
 export interface CameraMove {
   x?: number;
@@ -58,6 +64,10 @@ export class Session {
   private readonly screenshots = new Map<number, {
     resolve: (shot: Screenshot) => void; reject: (error: Error) => void }>();
   private nextScreenshot = 1;
+  /** measureText's requests, by their first key; layout's keys stay below measureKeys. */
+  private readonly measures = new Map<number, { count: number; results: { width: number; height: number }[];
+    resolve: (sizes: { width: number; height: number }[]) => void; reject: (error: Error) => void }>();
+  private nextMeasure = measureKeys;
   private nextClipboardFile = 1;
   /** Whoever holds the keyboard, latest last: only the latest hears keys. */
   private readonly grabs: ((event: StageKeyEvent) => void)[] = [];
@@ -81,6 +91,8 @@ export class Session {
         this.container.requestResync();
         for (const { reject } of this.screenshots.values()) reject(new Error("The compositor went away."));
         this.screenshots.clear();
+        for (const { reject } of this.measures.values()) reject(new Error("The compositor went away."));
+        this.measures.clear();
       },
       orphaned: () => this.onRejected("The compositor exited."),
       drained: () => this.container.resume(),
@@ -197,6 +209,78 @@ export class Session {
     if (this.connection.connected) this.connection.send({ type: "watch-input", watch: this.watchers.size > 0 });
   }
 
+  /**
+   * Give keyboard focus to NODE, a node with `tabIndex`, or take it from whatever node has
+   * it with null. Its `focusVisible` state shows with `visible`, or by default when the
+   * latest input was a key.
+   */
+  focusNode(node: StageElement | null, options: { visible?: boolean } = {}): void {
+    // After what is committed, so a node just rendered is there to take focus.
+    this.container.afterCommitted(() =>
+      this.connection.send({ type: "focus-node", node: node?.id ?? null, visible: options.visible }));
+  }
+
+  /**
+   * Act on NODE, an editable text: select START to END (UTF-16 code units, as a string
+   * indexes it), select all, insert TEXT over the selection, delete it, undo, redo, or
+   * cut, copy and paste with the clipboard, as its keys would.
+   */
+  editText(node: StageElement, command: { action: EditAction; start?: number; end?: number;
+                                          direction?: "forward" | "backward"; text?: string }): void {
+    this.container.afterCommitted(() => this.connection.send({ type: "edit", node: node.id, ...command }));
+  }
+
+  /** Scroll NODE, a node with `scroll`, to OFFSET, with TRANSITION or at once. */
+  scrollTo(node: StageElement, offset: { x?: number; y?: number }, transition?: Motion): void {
+    this.container.afterCommitted(() => this.connection.send({
+      type: "scroll-to", node: node.id, x: offset.x, y: offset.y,
+      transition: transition ? wireMotion(transition) : undefined,
+    }));
+  }
+
+  /**
+   * The sizes the compositor's Pango gives TEXTS in STYLE (a Text's props), each wrapped to
+   * `style.width` when it is a number: e.g. the widths of a line's prefixes, to find the
+   * character under the pointer. One round trip for the lot.
+   */
+  measureText(style: TextProps, texts: readonly string[]): Promise<{ width: number; height: number }[]> {
+    if (texts.length === 0) return Promise.resolve([]);
+    if (!this.connection.connected) return Promise.reject(new Error("Not connected to the compositor."));
+    const { wire } = normalizeProps("text", { ...style, text: "", children: undefined });
+    const base: WireProps = {};
+    for (const key of textKeys) if (wire[key] !== undefined) base[key] = wire[key] as WireValue;
+    if (typeof style.width === "number") base.width = Math.floor(style.width);
+    const first = this.nextMeasure;
+    this.nextMeasure += texts.length;
+    return new Promise((resolve, reject) => {
+      this.measures.set(first, { count: texts.length, results: [], resolve, reject });
+      this.connection.send({
+        type: "measure",
+        requests: texts.map((text, index) => ({ key: first + index, props: { ...base, text } })),
+      });
+    });
+  }
+
+  private receiveMeasured(results: readonly { key: number; width: number; height: number }[]): void {
+    const layout: typeof results[number][] = [];
+    for (const result of results) {
+      if (result.key < measureKeys) {
+        layout.push(result);
+        continue;
+      }
+      for (const [first, pending] of this.measures) {
+        if (result.key < first || result.key >= first + pending.count) continue;
+        pending.results[result.key - first] = { width: result.width, height: result.height };
+        if (pending.results.filter(Boolean).length === pending.count) {
+          this.measures.delete(first);
+          pending.resolve(pending.results);
+        }
+        break;
+      }
+    }
+    if (layout.length) this.container.receiveMeasurements(layout);
+  }
+
   /** Move the pointer to (X, Y) on OUTPUT, in its logical pixels. */
   warpPointer(output: string, x: number, y: number): void {
     this.connection.send({ type: "warp-pointer", output, x, y });
@@ -244,7 +328,7 @@ export class Session {
           void this.receiveScreenshot(message);
           break;
         case "measured":
-          this.container.receiveMeasurements(message.results);
+          this.receiveMeasured(message.results);
           break;
         case "key": {
           const { type: _, ...event } = message;

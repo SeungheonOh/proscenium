@@ -1,0 +1,11 @@
+# shot-at: 3400
+# page: 3
+# File menu opened by a click, the pointer resting on Open recent: its submenu (and the sub-submenu is not opened).
+extent 1280 800
+move 300 300
+glide $K_FILE_X $K_FILE_Y 200
+click left
+sleep 400
+glide $K_RECENT_X $K_RECENT_Y 200
+sleep 700
+sleep 3000

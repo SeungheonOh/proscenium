@@ -60,6 +60,18 @@ void input_install_shortcuts(struct server *server);
 void input_release_director(struct server *server);
 /* While GRAB, keys no shortcut takes go to the director instead of clients and pages. */
 void input_grab_keyboard(struct server *server, bool grab);
+/*
+ * Give NODE keyboard focus, or (NULL) take it from whatever node has it. VISIBLE (1 or 0)
+ * says whether focusVisible shows; -1 has it show when the latest input was a key. While
+ * a node has focus, keys no shortcut takes go to it as keydown and keyup events, and
+ * windows and pages have no keyboard.
+ */
+bool input_focus_node(struct server *server, struct node *node, int visible,
+                      struct protocol_error *error);
+/* A window or page takes focus: no node keeps it. The caller gives the keyboard on. */
+void input_blur_node(struct server *server);
+/* After a commit: a node removed loses focus, and states follow what changed. */
+void input_after_commit(struct server *server);
 void input_forget_window(struct server *server, struct window *window);
 void input_forget_page(struct server *server, struct web_page *page);
 void input_node_dead(struct server *server, struct node *node);

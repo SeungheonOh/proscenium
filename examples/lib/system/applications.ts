@@ -16,6 +16,36 @@ export interface ApplicationInfo {
   /** Its icon: a theme icon name or a file path, or "". */
   icon: string;
   path: string;
+  /** What else its entry offers to do, e.g. "New Private Window". */
+  actions: readonly ApplicationAction[];
+}
+
+/** One of an application's desktop actions. */
+export interface ApplicationAction {
+  id: string;
+  name: string;
+  exec: string;
+}
+
+/** The [Desktop Action ID] groups of a desktop file, in its Actions order. */
+function desktopActions(text: string, ids: string): ApplicationAction[] {
+  const groups = new Map<string, Map<string, string>>();
+  let current: Map<string, string> | null = null;
+  for (const line of text.split("\n")) {
+    if (line.startsWith("[")) {
+      const match = line.trim().match(/^\[Desktop Action (.+)\]$/);
+      current = match ? new Map() : null;
+      if (match) groups.set(match[1]!, current!);
+    } else if (current && line.includes("=")) {
+      const equals = line.indexOf("=");
+      current.set(line.slice(0, equals).trim(), line.slice(equals + 1).trim());
+    }
+  }
+  return ids.split(";").filter(Boolean).flatMap((id) => {
+    const group = groups.get(id);
+    const name = group?.get("Name"), exec = group?.get("Exec");
+    return name && exec ? [{ id, name, exec }] : [];
+  });
 }
 
 function applicationDirectories(): string[] {
@@ -52,7 +82,8 @@ async function scanApplications(): Promise<ApplicationInfo[]> {
       if (seen.has(id)) continue;
       seen.add(id);
       const path = join(directory, file);
-      const entry = desktopEntry(await readFile(path, "utf8").catch(() => ""));
+      const text = await readFile(path, "utf8").catch(() => "");
+      const entry = desktopEntry(text);
       const name = entry.get("Name");
       if (entry.get("Type") !== "Application" || !name || !entry.get("Exec")) continue;
       if (entry.get("Hidden") === "true" || entry.get("NoDisplay") === "true") continue;
@@ -62,6 +93,7 @@ async function scanApplications(): Promise<ApplicationInfo[]> {
         detail: entry.get("GenericName") ?? entry.get("Comment") ?? "",
         icon: entry.get("Icon") ?? "",
         path,
+        actions: desktopActions(text, entry.get("Actions") ?? ""),
       });
     }
   }
@@ -141,4 +173,13 @@ export function iconFile(icon: string): string | null {
 export function launchApplication(id: string): void {
   const application = applications.value.find((candidate) => candidate.id === id);
   if (application) launch(["gio", "launch", application.path]);
+}
+
+/** Run one of an application's desktop actions, its Exec line without field codes. */
+export function launchApplicationAction(id: string, action: string): void {
+  const application = applications.value.find((candidate) => candidate.id === id);
+  const exec = application?.actions.find((candidate) => candidate.id === action)?.exec;
+  if (!exec) return;
+  // Field codes (%u, %F, …) stand for files and URLs, of which there are none here.
+  launch(exec.replace(/%[fFuUdDnNickvm]/g, "").replace(/%%/g, "%").trim());
 }

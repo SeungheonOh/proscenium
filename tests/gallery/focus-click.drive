@@ -1,0 +1,11 @@
+# shot-at: 3000
+# page: 2
+# A click on the focus box: its :focus ring (blue), which a click shows but focusVisible does not.
+extent 1280 800
+move 300 300
+glide $ST_FOCUS_X $ST_ROW2_Y 300
+sleep 200
+click left
+sleep 300
+move 300 300
+sleep 600

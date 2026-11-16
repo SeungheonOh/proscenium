@@ -106,8 +106,10 @@ const useLabel = makeStyles(({ colors, type }) => variants({
   variants: {
     variant: {
       body: { ...type.body, color: colors.soft },
+      label: { ...type.label, color: colors.ink },
       strong: { ...type.strong, color: colors.ink },
       caption: { ...type.caption, color: colors.ink },
+      small: { ...type.small, color: colors.muted },
       title: { ...type.title, color: colors.ink },
     } satisfies Record<LabelVariant, TextProps>,
     tone: {
@@ -125,7 +127,7 @@ const useLabel = makeStyles(({ colors, type }) => variants({
 }));
 
 export interface LabelProps extends TextProps {
-  /** The text style: body (the default), strong, caption or title. */
+  /** The text style: body (the default), label, strong, caption, small or title. */
   variant?: LabelVariant;
   /** Its color, if not the variant's own. */
   tone?: Tone;

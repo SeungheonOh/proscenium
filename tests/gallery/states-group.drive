@@ -1,0 +1,7 @@
+# shot-at: 3000
+# page: 2
+# The pointer on the stateGroup box: its fill, border and label colour change together.
+extent 1280 800
+move 300 300
+glide $ST_GROUP_X $ST_ROW1_Y 300
+sleep 900

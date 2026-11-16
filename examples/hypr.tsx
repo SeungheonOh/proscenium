@@ -26,6 +26,7 @@ import { Keybindings } from "./hypr/Keybindings.js";
 import { Scratchpad } from "./hypr/Scratchpad.js";
 import { WorkspacePills } from "./hypr/WorkspacePills.js";
 import { Workspaces } from "./hypr/Workspaces.js";
+import { OverlayHost } from "proscenium/ui";
 
 function HyprLauncher() {
   const { focusOutput } = useHypr();
@@ -36,11 +37,13 @@ export default function Hypr() {
   return (
     <ScreenEffects>
       <HyprProvider>
-        <Workspaces />
-        <Scratchpad />
-        <Desktop barStart={WorkspacePills} />
-        <HyprLauncher />
-        <Keybindings />
+        <OverlayHost>
+          <Workspaces />
+          <Scratchpad />
+          <Desktop barStart={WorkspacePills} />
+          <HyprLauncher />
+          <Keybindings />
+        </OverlayHost>
       </HyprProvider>
     </ScreenEffects>
   );

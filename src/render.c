@@ -31,6 +31,25 @@ static const char vertex_shader[] =
     "}\n";
 
 /*
+ * Text coverage blended as DirectWrite blends it, after Windows Terminal's dwrite.hlsl
+ * (MIT), as Zed ports it: coverage blended in gamma space draws dark text on light thin
+ * and light text on dark heavy. Coverage A of text in straight COLOR is first boosted
+ * by the enhanced contrast u_text_contrast, scaled down as the color lightens, then
+ * corrected by DirectWrite's ratios u_text_gamma for a gamma (DWrite_GetGammaRatios),
+ * indexed by the color's brightness. Full coverage stays full.
+ */
+#define TEXT_CORRECTION                                                                            \
+    "uniform vec4 u_text_gamma;\n"                                                                 \
+    "uniform float u_text_contrast;\n"                                                             \
+    "float stage_text_alpha(float a, vec3 color) {\n"                                              \
+    "  float b = dot(color, vec3(0.30, 0.59, 0.11));\n"                                            \
+    "  float k = u_text_contrast * clamp(4.0 * (0.75 - b), 0.0, 1.0);\n"                           \
+    "  a = a * (k + 1.0) / (a * k + 1.0);\n"                                                       \
+    "  vec4 g = u_text_gamma;\n"                                                                   \
+    "  return clamp(a + a * (1.0 - a) * ((g.x * b + g.y) * a + (g.z * b + g.w)), 0.0, 1.0);\n"     \
+    "}\n"
+
+/*
  * Textures. Drawn small, a texture is box filtered over one output pixel's
  * footprint. Only the mask box's own corners are rounded; popups outside it are
  * untouched. A filter recolors each texel before the mask applies.
@@ -42,7 +61,8 @@ static const char texture_prelude[] =
     "uniform float u_opacity;\n"
     "uniform float u_has_alpha;\n"
     "uniform vec4 u_mask;\n"
-    "uniform float u_mask_radius;\n"
+    "uniform vec4 u_mask_radii;\n"
+    "uniform float u_text;\n"
     "uniform float pixel;\n"
     "uniform vec2 u_filter_x;\n"
     "uniform vec2 u_filter_y;\n"
@@ -52,6 +72,10 @@ static const char texture_prelude[] =
     "  vec2 q = abs(point) - half_size + radius;\n"
     "  return min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - radius;\n"
     "}\n"
+    "float stage_corner(vec2 point, vec4 radii) {\n"
+    "  return point.x < 0.0 ? (point.y < 0.0 ? radii.x : radii.w)\n"
+    "                       : (point.y < 0.0 ? radii.y : radii.z);\n"
+    "}\n" TEXT_CORRECTION
     "vec4 stage_sample(vec2 uv) {\n"
     "  if (u_taps.x <= 1.0 && u_taps.y <= 1.0) return texture2D(u_texture, uv);\n"
     "  vec4 sum = vec4(0.0);\n"
@@ -71,20 +95,25 @@ static const char texture_main[] =
     "void main() {\n"
     "  vec4 color = stage_sample(v_uv);\n"
     "  color.a = mix(1.0, color.a, u_has_alpha);\n"
+    "  if (u_text > 0.5 && color.a > 0.0) {\n"
+    "    vec3 straight = color.rgb / color.a;\n"
+    "    color = vec4(straight, 1.0) * stage_text_alpha(color.a, straight);\n"
+    "  }\n"
     "  STAGE_FILTER\n"
     "  float coverage = 1.0;\n"
     "  vec2 half_size = u_mask.zw * 0.5;\n"
     "  vec2 point = v_local - u_mask.xy - half_size;\n"
-    "  if (u_mask_radius > 0.0 && abs(point.x) <= half_size.x && abs(point.y) <= half_size.y) {\n"
-    "    float corner = min(u_mask_radius, min(half_size.x, half_size.y));\n"
+    "  float corner = stage_corner(point, u_mask_radii);\n"
+    "  if (corner > 0.0 && abs(point.x) <= half_size.x && abs(point.y) <= half_size.y) {\n"
+    "    corner = min(corner, min(half_size.x, half_size.y));\n"
     "    coverage = clamp(0.5 - stage_box_distance(point, half_size, corner) / pixel, 0.0, 1.0);\n"
     "  }\n"
     "  gl_FragColor = color * (u_opacity * coverage);\n"
     "}\n";
 
 /*
- * Glyphs from the atlas: a white glyph tinted by the text's premultiplied color, or a
- * colored one (emoji) faded by its alpha.
+ * Glyphs from the atlas: a white glyph tinted by the text's premultiplied color, its
+ * coverage corrected as TEXT_CORRECTION says, or a colored one (emoji) faded by its alpha.
  */
 static const char glyph_vertex_shader[] =
     "attribute vec3 a_position;\n"
@@ -107,10 +136,19 @@ static const char glyph_fragment[] =
     "varying vec2 v_uv;\n"
     "varying vec4 v_color;\n"
     "varying float v_tint;\n"
-    "uniform sampler2D u_texture;\n"
+    "uniform sampler2D u_texture;\n" TEXT_CORRECTION
     "void main() {\n"
+    "  if (v_tint > 1.5) {\n"
+    "    gl_FragColor = v_color;\n"
+    "    return;\n"
+    "  }\n"
     "  vec4 texel = texture2D(u_texture, v_uv);\n"
-    "  gl_FragColor = mix(texel * v_color.a, v_color * texel.a, v_tint);\n"
+    "  if (v_tint < 0.5) {\n"
+    "    gl_FragColor = texel * v_color.a;\n"
+    "    return;\n"
+    "  }\n"
+    "  vec3 straight = v_color.rgb / max(v_color.a, 1e-6);\n"
+    "  gl_FragColor = v_color * stage_text_alpha(texel.a, straight);\n"
     "}\n";
 
 /*
@@ -182,6 +220,35 @@ static const struct shader passthrough_effect = {
     .backdrop_blur = -1,
 };
 
+/* What a rounded clip draws its node's children through: their pixels inside the node's
+ * rounded box, its corners `radii`. */
+static const struct shader rounded_effect = {
+    .stage = STAGE_EFFECT,
+    .source = "vec4 effect(vec2 position) {\n"
+              "  vec2 half_size = size * 0.5;\n"
+              "  vec2 point = position - half_size;\n"
+              "  float corner = point.x < 0.0 ? (point.y < 0.0 ? radii.x : radii.w)\n"
+              "                               : (point.y < 0.0 ? radii.y : radii.z);\n"
+              "  corner = min(corner, min(half_size.x, half_size.y));\n"
+              "  vec2 q = abs(point) - half_size + corner;\n"
+              "  float distance = min(max(q.x, q.y), 0.0) + length(max(q, 0.0)) - corner;\n"
+              "  return content(position) * clamp(0.5 - distance / pixel, 0.0, 1.0);\n"
+              "}",
+    .backdrop_blur = -1,
+    .radii = true,
+};
+
+/*
+ * How text coverage is corrected by default (see TEXT_CORRECTION); PROSCENIUM_TEXT_GAMMA
+ * and PROSCENIUM_TEXT_CONTRAST override them. They are fitted to Chromium's greyscale text
+ * (Skia), measured as ink in L* over the gallery's type grids (Noto Sans 10 to 20 px, 400
+ * and 700, both polarities, scales 1 and 2): blended uncorrected, ours drew dark on light
+ * within 2% of Chromium's but light on dark 2-4% light; Zed's gamma 1.8 and contrast 1 drew
+ * dark on light 9-17% heavy. A gamma of 1.2 lifts light text to it, and a contrast of
+ * 0.1 gives back what the gamma takes from dark text: both within 1% on average.
+ */
+#define TEXT_GAMMA 1.2
+#define TEXT_CONTRAST 0.1
 /* Seconds a frame may spend on work it could leave to later frames. */
 #define SPARE_TIME 0.003
 /* Seconds of drawing after which commands recorded so far go to the GPU. */
@@ -208,20 +275,24 @@ static const struct shader passthrough_effect = {
 #define BATCH_GEOMETRY 5
 /* Values one draw of a batched paint passes per vertex: what the prelude declares and
  * every uniform, whole vec4 attributes. */
-#define BATCH_INPUTS_MAX (UNIFORMS_MAX + 6)
-#define BATCH_COMPONENTS_MAX (SHADER_COMPONENTS_MAX + 4 * 6)
+#define BATCH_INPUTS_MAX (UNIFORMS_MAX + 7)
+#define BATCH_COMPONENTS_MAX (SHADER_COMPONENTS_MAX + 4 * 7)
 
 enum uniform {
     U_VIEWPORT,
     U_OPACITY,
     U_SIZE,
     U_RADIUS,
+    U_RADII,
     U_PIXEL,
     U_TIME,
     U_POINTER,
     U_HAS_ALPHA,
     U_MASK,
-    U_MASK_RADIUS,
+    U_MASK_RADII,
+    U_TEXT,
+    U_TEXT_GAMMA,
+    U_TEXT_CONTRAST,
     U_FILTER_X,
     U_FILTER_Y,
     U_TAPS,
@@ -250,12 +321,16 @@ static const char *const uniform_names[UNIFORM_COUNT] = {
     [U_OPACITY] = "u_opacity",
     [U_SIZE] = "size",
     [U_RADIUS] = "radius",
+    [U_RADII] = "radii",
     [U_PIXEL] = "pixel",
     [U_TIME] = "time",
     [U_POINTER] = "pointer",
     [U_HAS_ALPHA] = "u_has_alpha",
     [U_MASK] = "u_mask",
-    [U_MASK_RADIUS] = "u_mask_radius",
+    [U_MASK_RADII] = "u_mask_radii",
+    [U_TEXT] = "u_text",
+    [U_TEXT_GAMMA] = "u_text_gamma",
+    [U_TEXT_CONTRAST] = "u_text_contrast",
     [U_FILTER_X] = "u_filter_x",
     [U_FILTER_Y] = "u_filter_y",
     [U_TAPS] = "u_taps",
@@ -286,7 +361,7 @@ static const char *const uniform_names[UNIFORM_COUNT] = {
 struct program {
     GLuint handle;
     GLint at[UNIFORM_COUNT];
-    uint32_t set;
+    uint64_t set;
     float held[UNIFORM_COUNT][4];
 };
 
@@ -334,6 +409,8 @@ struct shaded {
     GLint locations[UNIFORMS_MAX];
     bool primed;
     float held[SHADER_COMPONENTS_MAX];
+    /* The frame (renderer epoch) that last asked whether its build finished. */
+    uint64_t polled;
 };
 
 /*
@@ -384,11 +461,15 @@ struct render_shader {
 
 struct renderer {
     struct program texture, external, blur_down, blur_up;
-    struct shaded *passthrough;
+    struct shaded *passthrough, *rounded;
     /* The program in use, while a frame draws. */
     GLuint current;
     /* The driver builds programs on threads of its own (KHR_parallel_shader_compile). */
     bool parallel_compile;
+    /* Counts frames begun, for asking about builds once a frame; while HOLD_BUILDS, no
+     * build is asked about, so a redraw sees the programs its frame saw. */
+    uint64_t epoch;
+    bool hold_builds;
     /* The driver's vertex attributes and varying vectors, which batched paints must fit. */
     GLint max_attributes, max_varyings;
     float vertices[MAX_VERTICES * 7];
@@ -423,6 +504,8 @@ struct renderer {
     struct vec buffer_targets;
     /* Glyphs: the program drawing them, and the atlas pages' textures. */
     struct program glyph_program;
+    /* How text coverage is corrected: DirectWrite's gamma ratios and enhanced contrast. */
+    float text_gamma[4], text_contrast;
     struct atlas_page pages[ATLAS_PAGES];
     int page_count;
 };
@@ -538,7 +621,7 @@ static bool build_ready(const struct renderer *renderer, const struct build *bui
 static void set_uniform(struct program *p, enum uniform u, int n, const float *values) {
     GLint at = p->at[u];
     if (at < 0) return;
-    uint32_t bit = 1u << u;
+    uint64_t bit = (uint64_t)1 << u;
     if ((p->set & bit) && !memcmp(p->held[u], values, n * sizeof *values)) return;
     p->set |= bit;
     memcpy(p->held[u], values, n * sizeof *values);
@@ -581,6 +664,35 @@ static void use(struct renderer *renderer, struct program *p) {
         renderer->current = p->handle;
     }
     set_2f(p, U_VIEWPORT, renderer->viewport_width, renderer->viewport_height);
+}
+
+/* Set P's text correction, as RENDERER has it. */
+static void set_text_correction(struct renderer *renderer, struct program *p) {
+    set_uniform(p, U_TEXT_GAMMA, 4, renderer->text_gamma);
+    set_uniform(p, U_TEXT_CONTRAST, 1, &renderer->text_contrast);
+}
+
+/*
+ * DirectWrite's ratios for blending text at GAMMA (1 to 2.2) into a target blended in
+ * gamma space, after DWrite_GetGammaRatios as Windows Terminal and Zed give it.
+ */
+static void text_gamma_ratios(double gamma, float out[4]) {
+    static const double ratios[13][4] = {
+        {0.0000, 0.0000, 0.0000, 0.0000},  {0.0166, -0.0807, 0.2227, -0.0751},
+        {0.0350, -0.1760, 0.4325, -0.1370}, {0.0543, -0.2821, 0.6302, -0.1876},
+        {0.0739, -0.3963, 0.8167, -0.2287}, {0.0933, -0.5161, 0.9926, -0.2616},
+        {0.1121, -0.6395, 1.1588, -0.2877}, {0.1300, -0.7649, 1.3159, -0.3080},
+        {0.1469, -0.8911, 1.4644, -0.3234}, {0.1627, -1.0170, 1.6051, -0.3347},
+        {0.1773, -1.1420, 1.7385, -0.3426}, {0.1908, -1.2652, 1.8650, -0.3476},
+        {0.2031, -1.3864, 1.9851, -0.3501},
+    };
+    const double norm13 = 65536.0 / (255 * 255) * 4, norm24 = 256.0 / 255 * 4;
+    int index = (int)CLAMP(lround(gamma * 10), 10, 22) - 10;
+    const double *r = ratios[index];
+    out[0] = (float)(r[0] / 4 * norm13);
+    out[1] = (float)(r[1] / 4 * norm24);
+    out[2] = (float)(r[2] / 4 * norm13);
+    out[3] = (float)(r[3] / 4 * norm24);
 }
 
 /* Slots. */
@@ -631,6 +743,8 @@ static const char *glsl_type(int count) {
 static void declare_inputs(struct strbuf *text, const struct shader *shader,
                            const char *qualifier) {
     strbuf_printf(text, "%s vec2 size;\n%s float radius;\n", qualifier, qualifier);
+    /* A batched paint passes the corners one by one only when it names them. */
+    if (shader->radii || qualifier[0] == 'u') strbuf_printf(text, "%s vec4 radii;\n", qualifier);
     if (shader->time) strbuf_printf(text, "%s float time;\n", qualifier);
     if (shader->pointer) strbuf_printf(text, "%s vec2 pointer;\n", qualifier);
     /* Where the node lies on its output: projective maps between local units and
@@ -764,7 +878,8 @@ static bool batch_layout_for(const struct renderer *renderer, const struct shade
     inputs[count++] = (struct batch_input){"size", 2, 2};
     inputs[count++] = (struct batch_input){"radius", 1, 4};
     if (shader->pointer) inputs[count++] = (struct batch_input){"pointer", 2, 5};
-    int source = 7;
+    if (shader->radii) inputs[count++] = (struct batch_input){"radii", 4, 7};
+    int source = 11;
     for (int i = 0; i < shader->uniform_count; i++) {
         inputs[count++] = (struct batch_input){shader->names[i], shader->counts[i], source};
         source += shader->counts[i];
@@ -825,7 +940,12 @@ static struct shaded *ready(struct renderer *renderer, const struct shader *shad
     struct render_report ignored;
     if (!report) report = &ignored;
     if (shaded->build.program) {
-        if (!build_ready(renderer, &shaded->build)) {
+        /* A build is asked about once a frame, at its first use, and not during a redraw
+         * holding builds: every item of a frame, and a check's full redraw of it, see the
+         * program alike, though the driver may finish it at any moment. */
+        bool asked = renderer->hold_builds || shaded->polled == renderer->epoch;
+        if (!renderer->hold_builds) shaded->polled = renderer->epoch;
+        if (asked || !build_ready(renderer, &shaded->build)) {
             report->building = true;
             return NULL;
         }
@@ -875,6 +995,7 @@ static void set_shading(struct shaded *shaded, const struct render_shading *shad
     struct program *p = &shaded->program;
     set_2f(p, U_SIZE, shading->size[0], shading->size[1]);
     set_1f(p, U_RADIUS, shading->radius);
+    set_4f(p, U_RADII, shading->radii[0], shading->radii[1], shading->radii[2], shading->radii[3]);
     set_1f(p, U_PIXEL, pixel);
     set_1f(p, U_TIME, shading->time);
     set_2f(p, U_POINTER, shading->pointer[0], shading->pointer[1]);
@@ -929,6 +1050,10 @@ struct renderer *render_create(void) {
         compiler_threads(0xffffffff);
         renderer->parallel_compile = true;
     }
+    const char *gamma = getenv("PROSCENIUM_TEXT_GAMMA");
+    const char *contrast = getenv("PROSCENIUM_TEXT_CONTRAST");
+    text_gamma_ratios(gamma ? atof(gamma) : TEXT_GAMMA, renderer->text_gamma);
+    renderer->text_contrast = contrast ? (float)fmax(0, atof(contrast)) : TEXT_CONTRAST;
     glGetIntegerv(GL_MAX_VERTEX_ATTRIBS, &renderer->max_attributes);
     glGetIntegerv(GL_MAX_VARYING_VECTORS, &renderer->max_varyings);
 
@@ -959,6 +1084,7 @@ struct renderer *render_create(void) {
         builds[i] = start_program(programs[i].vertex, programs[i].fragment, programs[i].attributes);
     builds[ARRAY_LENGTH(programs)] = start_shared(external.data);
     renderer->passthrough = start_shaded(NULL, &passthrough_effect, false, false);
+    renderer->rounded = start_shaded(NULL, &rounded_effect, false, false);
     struct strbuf error;
     strbuf_init(&error);
     bool ok = true;
@@ -973,8 +1099,11 @@ struct renderer *render_create(void) {
     if (!finish_program(&builds[ARRAY_LENGTH(programs)], &renderer->external, &error))
         wlr_log(WLR_INFO, "No external image program: %s", error.data);
     finish_shaded(renderer, &passthrough_effect, renderer->passthrough);
-    if (renderer->passthrough->error) {
-        wlr_log(WLR_ERROR, "Renderer effect program: %s", renderer->passthrough->error);
+    finish_shaded(renderer, &rounded_effect, renderer->rounded);
+    if (renderer->passthrough->error || renderer->rounded->error) {
+        wlr_log(WLR_ERROR, "Renderer effect program: %s",
+                renderer->passthrough->error ? renderer->passthrough->error
+                                             : renderer->rounded->error);
         ok = false;
     }
     strbuf_finish(&error);
@@ -1012,6 +1141,7 @@ void render_destroy(struct renderer *renderer) {
                                   &renderer->blur_up, &renderer->glyph_program};
     for (size_t i = 0; i < ARRAY_LENGTH(programs); i++) destroy_program(programs[i]);
     destroy_shaded(renderer->passthrough);
+    destroy_shaded(renderer->rounded);
     VEC_FOR(&renderer->rasters, struct slot_entry, entry) destroy_raster(entry->value);
     VEC_FOR(&renderer->mipmaps, struct slot_entry, entry) destroy_mipmap(entry->value);
     VEC_FOR(&renderer->blur_chains, struct blur_chain, chain) destroy_blur_chain(chain);
@@ -1143,6 +1273,7 @@ static void flush_batch(struct renderer *renderer) {
     if (!renderer->batch_vertices) return;
     bool glyphs = renderer->batch_kind == BATCH_GLYPHS;
     use(renderer, glyphs ? &renderer->glyph_program : &renderer->batch_shaded->program);
+    if (glyphs) set_text_correction(renderer, &renderer->glyph_program);
     int stride = renderer->batch_stride, data = (stride - BATCH_GEOMETRY) / 4;
     size_t floats = (size_t)renderer->batch_vertices * stride;
     /* A big batch goes up in one copy, where the driver would copy client arrays attribute
@@ -1186,7 +1317,7 @@ static void pack_batch_values(const struct render_shading *shading, double opaci
                               float *out) {
     const struct render_shader *owner = shading->shader;
     const struct batch_layout *layout = &owner->layout;
-    float gathered[7 + SHADER_COMPONENTS_MAX] = {
+    float gathered[11 + SHADER_COMPONENTS_MAX] = {
         (float)opacity,
         (float)pixel,
         (float)shading->size[0],
@@ -1194,9 +1325,13 @@ static void pack_batch_values(const struct render_shading *shading, double opaci
         (float)shading->radius,
         (float)shading->pointer[0],
         (float)shading->pointer[1],
+        (float)shading->radii[0],
+        (float)shading->radii[1],
+        (float)shading->radii[2],
+        (float)shading->radii[3],
     };
     int components = owner->shader->component_count;
-    if (components) memcpy(gathered + 7, shading->values, components * sizeof(float));
+    if (components) memcpy(gathered + 11, shading->values, components * sizeof(float));
     memset(out, 0, layout->components * sizeof(float));
     for (int i = 0; i < layout->count; i++)
         memcpy(out + layout->offsets[i], gathered + layout->sources[i],
@@ -1299,10 +1434,42 @@ void render_draw_glyph(struct renderer *renderer, int page, int gx, int gy, int 
     }
 }
 
+void render_draw_fill(struct renderer *renderer, struct mat3 t, struct box box,
+                      const float color[4]) {
+    if (!(box.width > 0) || !(box.height > 0)) return;
+    /* With whatever page glyphs are batching from, so text and its caret go in one draw. */
+    int page = renderer->batch_vertices && renderer->batch_kind == BATCH_GLYPHS
+                   ? renderer->batch_page
+                   : 0;
+    float *out = batch_reserve(renderer, BATCH_GLYPHS, NULL, page, GLYPH_STRIDE, 6);
+    static const int corners[6] = {0, 1, 2, 1, 3, 2};
+    for (int i = 0; i < 6; i++, out += GLYPH_STRIDE) {
+        int corner = corners[i];
+        double x = corner & 1 ? box.x + box.width : box.x;
+        double y = corner >= 2 ? box.y + box.height : box.y;
+        out[0] = (float)(t.a * x + t.c * y + t.e);
+        out[1] = (float)(t.b * x + t.d * y + t.f);
+        out[2] = (float)(t.g * x + t.h * y + t.i);
+        out[3] = out[4] = 0;
+        memcpy(out + 5, color, 4 * sizeof(float));
+        /* Solid: no texel. */
+        out[9] = 2;
+    }
+}
+
 /* Frames. */
+
+void render_hold_builds(struct renderer *renderer, bool hold) {
+    renderer->hold_builds = hold;
+}
+
+void render_poll_builds(struct renderer *renderer) {
+    renderer->epoch++;
+}
 
 void render_begin_frame(struct renderer *renderer, int width, int height) {
     flush_batch(renderer);
+    if (!renderer->hold_builds) renderer->epoch++;
     double now = now_seconds();
     renderer->spare = SPARE_TIME;
     renderer->submitted_at = now;
@@ -1576,7 +1743,9 @@ static bool draw_texture(struct renderer *renderer, const struct render_texture 
     set_1f(p, U_OPACITY, draw->opacity);
     set_1f(p, U_HAS_ALPHA, texture->has_alpha ? 1 : 0);
     set_4f(p, U_MASK, draw->mask.x, draw->mask.y, draw->mask.width, draw->mask.height);
-    set_1f(p, U_MASK_RADIUS, draw->radius);
+    set_4f(p, U_MASK_RADII, draw->radii[0], draw->radii[1], draw->radii[2], draw->radii[3]);
+    set_1f(p, U_TEXT, draw->text ? 1 : 0);
+    if (draw->text) set_text_correction(renderer, p);
     set_1f(p, U_PIXEL, 1 / scale);
     if (filtered) set_shading(filtered, filter, 1 / scale);
     glBindTexture(target, name);
@@ -1619,7 +1788,11 @@ static void copy_into_mipmap(struct renderer *renderer, const struct render_surf
     /* At half size the box filter averages each two by two texels; slot 0 asks for no copy. */
     struct box whole = {0, 0, target->width, target->height};
     draw_texture(renderer, &surface->texture,
-                 &(struct render_texture_draw){MAT3_IDENTITY, whole, RENDER_FULL_UV, whole, 0, 1},
+                 &(struct render_texture_draw){.transform = MAT3_IDENTITY,
+                                               .box = whole,
+                                               .uv = RENDER_FULL_UV,
+                                               .mask = whole,
+                                               .opacity = 1},
                  NULL, surface, 0, NULL);
     gl_restore_binding(&saved);
     renderer->viewport_width = viewport_width;
@@ -1974,9 +2147,17 @@ void render_draw_effect(struct renderer *renderer, const struct render_shading *
                         int origin_y, struct render_report *report) {
     flush_batch(renderer);
     struct shaded *shaded = shading ? main_program(renderer, shading->shader, report) : NULL;
-    struct program *p = shaded ? &shaded->program : &renderer->passthrough->program;
+    struct program *p = shaded            ? &shaded->program
+                        : draw->rounded ? &renderer->rounded->program
+                                        : &renderer->passthrough->program;
     use(renderer, p);
     struct box quad = draw->quad;
+    if (!shaded && draw->rounded) {
+        set_2f(p, U_SIZE, quad.width, quad.height);
+        set_4f(p, U_RADII, draw->radii[0], draw->radii[1], draw->radii[2], draw->radii[3]);
+        set_1f(p, U_PIXEL,
+               mat3_pixel_size(draw->transform, quad.x + quad.width / 2, quad.y + quad.height / 2));
+    }
     set_rows(p, draw->transform);
     set_2f(p, U_READ_OFFSET, origin_x, origin_y);
     set_2f(p, U_READ_SIZE, content->width, content->height);

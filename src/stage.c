@@ -9,6 +9,7 @@
 #include "display.h"
 #include "input.h"
 #include "link.h"
+#include "scroll.h"
 #include "stage.h"
 #include "webnode.h"
 
@@ -168,6 +169,7 @@ static void index_node(struct node *node, void *data) {
     case KIND_TEXT:
     case KIND_IMAGE: content_refresh_node(server, node); return;
     case KIND_WEB: list = &walk->webs; break;
+    case KIND_GROUP: scroll_refresh(server, node); return;
     default: return;
     }
     node_ref(node);
@@ -210,6 +212,7 @@ void stage_reindex(struct server *server) {
         qsort(window->nodes.data, window->nodes.length, sizeof(struct node *), compare_nodes);
     }
     input_install_shortcuts(server);
+    input_after_commit(server);
     struct output *output;
     double time = server_time(server);
     wl_list_for_each(output, &server->outputs, link) {

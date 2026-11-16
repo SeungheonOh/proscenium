@@ -32,11 +32,14 @@ import { Keybindings } from "./trellis/Keybindings.js";
 import { Marquee } from "./trellis/Marquee.js";
 import { MenuBar } from "./trellis/MenuBar.js";
 import { TrellisProvider, useTrellis } from "./trellis/TrellisProvider.js";
+import { OverlayHost } from "proscenium/ui";
 
 export default function Trellis() {
   return (
     <TrellisProvider>
-      <Desktop />
+      <OverlayHost>
+        <Desktop />
+      </OverlayHost>
     </TrellisProvider>
   );
 }

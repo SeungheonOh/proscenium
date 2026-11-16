@@ -1,0 +1,10 @@
+# shot-at: 3400
+# page: 3
+# A click in the long line, then End: it scrolls to show its end, the caret at the edge.
+extent 1280 800
+move 300 300
+glide $K_FIELD_X $K_LONG_Y 200
+click left
+key End
+move 300 300
+sleep 3000

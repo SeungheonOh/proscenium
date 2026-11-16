@@ -269,9 +269,10 @@ Notes on the ones with design decisions in them:
 
 `proscenium/ui`'s `TextField` is drawn by the world, not a client:
 
-- **Focus.** Focused, it holds the keyboard with `useKeyboardGrab`: keys come
-  to it, and windows lose keyboard focus meanwhile. One field is focused at a
-  time. A press anywhere else, Escape, or the field going away lets go.
+- **Focus.** It takes keyboard focus as any control does (`tabIndex`): a
+  click, Tab or `focus()`. Keys then come to its `onKeyDown`, and windows lose
+  keyboard focus meanwhile. A press anywhere else, Escape, Tab or the field
+  going away lets go.
 - **Caret.** A second, all-but-clear copy of the text lies over the first with
   a caret glyph inserted at the caret, wrapped between word joiners. Pango wraps
   both copies alike, so the caret lands where the text is on any line, without

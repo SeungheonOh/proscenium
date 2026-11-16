@@ -20,7 +20,8 @@ export interface AnimatableValues {
   /** Transform functions; every keyframe lists the same ones. */
   transform: Transform;
   opacity: number;
-  radius: number;
+  /** One radius for every corner, or four: top-left, top-right, bottom-right, bottom-left. */
+  radius: number | readonly [number, number, number, number];
   blur: number;
   dim: number;
   /** A solid fill. */
@@ -80,6 +81,9 @@ export type Animation = AnimationTiming & {
 const number = (value: number): WireValue => value;
 const angle = (value: number): WireValue => value * radians;
 const color = (value: Color): WireValue => toWireColor(value);
+/* Four corners always, so keyframes of one radius and of four interpolate alike. */
+const corners = (value: number | readonly number[]): WireValue =>
+  typeof value === "number" ? [value, value, value, value] : [...value];
 
 type Track = [string, (value: never) => WireValue];
 
@@ -88,7 +92,7 @@ type Tracks = Partial<{ [K in keyof AnimatableValues]: Track[] }>;
 const nodeTracks: Tracks = {
   x: [["x", number]], y: [["y", number]], width: [["width", number]],
   height: [["height", number]], transform: [["transform", wireTransform]],
-  opacity: [["opacity", number]], radius: [["radius", number]], color: [["color", color]],
+  opacity: [["opacity", number]], radius: [["radius", corners]], color: [["color", color]],
 };
 
 /**

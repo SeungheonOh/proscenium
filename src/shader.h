@@ -79,6 +79,8 @@ struct shader {
      * reading the node only where it draws is LOCAL. */
     bool time, pointer, backdrop, local, output;
     int backdrop_blur;
+    /* Its source names `radii`, the node's corners one by one: a batched paint passes them. */
+    bool radii;
     /* How far it draws beyond the box, per side. */
     struct shader_bound extent;
     /* A paint covers OPAQUE with full opacity, and draws nothing inside HOLE; a filter
@@ -126,7 +128,8 @@ bool shaders_define(struct shaders *shaders, const struct json_value *op, struct
 struct shader *shaders_find(const struct shaders *shaders, const char *id, size_t length);
 /* The index of SHADER's uniform NAME, or -1. */
 int shader_uniform(const struct shader *shader, const char *name, size_t length);
-/* BOUND for flattened VALUES, a corner RADIUS and PIXEL local units per output pixel. */
+/* BOUND for flattened VALUES, a corner RADIUS (the largest of the node's corners) and PIXEL
+ * local units per output pixel. */
 void shader_bound(const struct shader_bound *bound, const float *values, double radius,
                   double pixel, double out[4]);
 /* Whether REGION holds for VALUES: its conditions at least 1, or at most 0 with HOLE. */

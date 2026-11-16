@@ -1,0 +1,14 @@
+# shot-at: 3400
+# page: 3
+# The mixed-script field: End, then Shift+Ctrl+Left three times selects the Hebrew and Arabic
+# words and the CJK run, visually where they lie.
+extent 1280 800
+move 300 300
+glide $K_FIELD_X $K_MIXED_Y 200
+click left
+key End
+chord ctrl+shift+Left
+chord ctrl+shift+Left
+chord ctrl+shift+Left
+move 300 300
+sleep 3000

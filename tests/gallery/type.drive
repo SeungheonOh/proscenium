@@ -1,0 +1,10 @@
+# shot-at: 3200
+# A click into the TextField and some typing: focus ring, caret, text.
+extent 1280 800
+move 300 300
+glide $FIELD_X $FIELD_Y 300
+sleep 200
+click left
+sleep 300
+type Hello, gallery 12:34
+sleep 800

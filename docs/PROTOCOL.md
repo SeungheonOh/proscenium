@@ -71,7 +71,7 @@ leaves buffering to Node.
 coalesced instead:
 
 - pointer motion and drag and resize progress (`pointermove`, a binding's `move`,
-  `drag`, `resize`), keyed by node and event;
+  `drag`, `resize`) and `scroll`, keyed by node and event;
 - camera reports, keyed by output.
 
 A newer coalesced message replaces the pending one with the same key. Pending
@@ -163,6 +163,9 @@ and the runtime then shuts down.
 | `warp-pointer` | `output`, `x`, `y` | Moves the pointer to (`x`, `y`) in the output's logical pixels, as if it had moved there: what it is over now hears it. |
 | `inject` | `window`, `events` | Up to 512 pointer events straight to the window, as an agent sends them: `{"motion": [x, y]}` in the window's logical pixels from its top left, `{"button": code, "pressed": bool}`, `{"wheel": notches}`. The seat's pointer enters the window's surface under each point for them, wherever the window shows or not, and goes back to what the pointer is over after; a press focuses the window, and buttons left down are let go. The window then keeps getting frame callbacks for a moment, shown or not; empty `events` just does that. Refused while the pointer holds a button, a grab or a drag. |
 | `grab-keyboard` | `grab`: boolean | While `true`, keys no shortcut takes come to the director as `key` messages instead of reaching windows and pages, which lose keyboard focus meanwhile. A key goes where its press went until it is released. |
+| `focus-node` | `node`: id or `null`; optional `visible`: boolean | Gives keyboard focus to a node with `tabIndex`, or takes it from whatever node has it. Its `focusVisible` state shows with `visible`, by default when the latest input was a key. See [Controls](#controls). |
+| `edit` | `node`: an editable `text`; `action`: `select` (`start`, `end`, optional `direction`: `forward`/`backward`), `insert` (`text`), or any keymap command by name: `select-all`, `delete`, `undo`, `redo`, `cut`, `copy`, `paste`, `yank`, `kill-line`, … (see `GUIDE.md`, "Text keymaps") | Acts on an [editable text](#editable-text) as its keys would: offsets are UTF-16 code units. The DOM's `setSelectionRange`, `select()`, `execCommand("insertText")`. |
+| `scroll-to` | `node`: id; optional `x`, `y`; optional `transition` ([motion](#motions)) | Moves a scroll container's offset, clamped to its content, with the motion or at once. |
 | `watch-input` | `watch`: boolean | While `true`, every key and button press, wheel motion and gesture start is also told to the director as an `input` message; each still reaches its target. |
 | `share-accept` | `id`, then `window`, or `output` (default: the first) with optional `region {x, y, width, height}` in output-logical pixels | Starts a screen share. The client must have asked for that kind of source, and the region must lie within the output and be at least 8×8. |
 | `share-cancel` | `id` | Declines a pending share or stops a running one. |
@@ -209,6 +212,7 @@ Besides the [properties](#properties), `props` may carry these keys, which
 | `animate` | Array of up to 32 [animation tracks](#animation-tracks), or `null`. Replaces the node's animations. |
 | `layoutId` | String or `null`. The node's identity for motion hand-over. Window nodes have `window:<id>` implicitly. |
 | `handlers` | Array of [event names](#events). The compositor sends an event only for a name listed here, on the node or on an ancestor for bubbling events. Unknown names are ignored. |
+| `states` | `{group?: boolean, hover?, focusWithin?, focus?, focusVisible?, pressed?}`, each state's values as `exit` takes them, or `null`. What the node shows while a [UI state](#controls) holds, instead of its declared values; with `group`, the states are those of the nearest node at or above it with `stateGroup`. |
 
 While a native drag or resize holds a node's `x`, `y`, `width` or `height`,
 declarations for those keys wait until the manipulation ends.
@@ -268,9 +272,9 @@ other. The SDK's `<Rect>` and `<Box>` are sent as `group`.
 
 | `type` | Properties |
 | --- | --- |
-| `group` | transform, box, `clip`, `draggable`, `interactive`, `cursor` |
-| `text` | transform, `width`, `text`, `markup`, `font`, `fontSize`, `fontWeight`, `italic`, `color`, `align`, `lineHeight`, `maxLines`, `draggable`, `interactive`, `cursor` |
-| `image` | transform, box, `src`, `fit`, `draggable`, `interactive`, `cursor` |
+| `group` | transform, box, `clip`, `clipInset`, `groupOpacity`, `draggable`, `interactive`, `cursor`, `stateGroup`, `tabIndex`, `focusScope`, `scroll`, `contentWidth`, `contentHeight`, `stickToEnd`, `overscroll`, `scrollThumb` |
+| `text` | transform, `width`, `text`, `markup`, `font`, `fontSize`, `fontWeight`, `italic`, `color`, `align`, `lineHeight`, `maxLines`, `letterSpacing`, `fontFeatures`, `decoration`, `draggable`, `interactive`, `cursor`, `stateGroup`, `tabIndex`; editable: `height`, `editable`, `multiline`, `readOnly`, `password`, `maxLength`, `placeholder`, `placeholderColor`, `caretColor`, `selectionColor`, `captureKeys`, `valueRevision`, `submitOnEnter`, `selectOnFocus`, `keymap`, `padding` (see [Editable text](#editable-text)) |
+| `image` | transform, box, `src`, `fit`, `draggable`, `interactive`, `cursor`, `stateGroup`, `tabIndex` |
 | `web` | transform, box, `src`, `data`, `revision`, `focusable`, `interactive`, `autoFocus`, `frameTag`, `cursor` |
 | `window` | transform, box, `window`, `fullscreen`, `maximized`, `tiled`, `focusable`, `interactive`, `movable`, `resizable` |
 | `mirror` | transform, box, `window` |
@@ -320,7 +324,7 @@ it, with uniforms that animate like any property. Each has a stage:
 | `id` | 1 to 64 of `A-Za-z0-9_-.:`. The SDK derives it from the definition. |
 | `stage` | `"paint"`, `"filter"` or `"effect"`. |
 | `source` | GLSL ES 1.0 defining the stage's function. At most 64 KiB. Colors are premultiplied. |
-| `uniforms` | Name to 1, 2 or 4 values, in declaration order. At most 16 names, GLSL identifiers outside the `gl_`, `u_`, `v_`, `a_` and `stage_` prefixes, and none of `size`, `radius`, `pixel`, `time`, `pointer`, `paint`, `filter`, `effect`, `content`, `backdrop`, `main`, `output_size`, `to_output` and `from_output`. |
+| `uniforms` | Name to 1, 2 or 4 values, in declaration order. At most 16 names, GLSL identifiers outside the `gl_`, `u_`, `v_`, `a_` and `stage_` prefixes, and none of `size`, `radius`, `radii`, `pixel`, `time`, `pointer`, `paint`, `filter`, `effect`, `content`, `backdrop`, `main`, `output_size`, `to_output` and `from_output`. |
 | `reads` | What it reads beyond its uniforms: `time`, `pointer`, `output` (all stages); `backdrop` (paints and effects): `true`, or for a paint `{blur: <float uniform>}`; `local` (effects): it reads `content` only at its own position. |
 | `extent` | A [bound](#bounds): how far a paint or effect draws beyond the box. None: within it. |
 | `opaque` | A paint's [region](#bounds) it covers opaquely while its condition holds and the node is fully opaque; what it hides is never drawn. A filter's `{when?}`: opaque content stays opaque through it. |
@@ -336,7 +340,8 @@ The compositor wraps the source in a prelude that declares its uniforms and:
 | Name | Value |
 | --- | --- |
 | `size` | The node's box (`vec2`); the output's for `area: "output"`. |
-| `radius` | The node's corner radius. |
+| `radius` | The node's corner radius; the largest of its four when they differ. |
+| `radii` | The node's corners (`vec4`): top-left, top-right, bottom-right, bottom-left. A batched paint is passed them only when its source names `radii`. |
 | `pixel` | Local units per output pixel, for antialiasing. |
 | `time` | With `reads.time`: seconds the use's clock has run. |
 | `pointer` | With `reads.pointer`: the first seat's pointer in local units, far away unless it is on this output. |
@@ -354,7 +359,8 @@ draws nothing, a filter or an effect leaves the node drawn as it is.
 ### Bounds
 
 A bound gives four distances (left, top, right, bottom). A form sums `pad`
-(local units), `pixel` (output pixels), `radius` (times the corner radius),
+(local units), `pixel` (output pixels), `radius` (times the corner radius, the
+largest of four),
 each a number or four, and for each uniform in `uniforms` its value, first
 raised to its `floor`, times its coefficients: a number for every side, four,
 or (for a vec2 or vec4) an array of four per component. A bound is one form,
@@ -402,6 +408,7 @@ Every wire value is canonical, so the compositor only checks types and ranges:
 | choice | One of the listed strings. |
 | modifiers | An array of `"shift"`, `"control"`, `"alt"`, `"logo"`. |
 | transform | An array of at most 32 functions, each an array of its name and numbers (below). |
+| corners | A number for every corner, or `[top-left, top-right, bottom-right, bottom-left]` (CSS `border-radius` order). Either animates corner by corner; keyframes may mix the two. |
 
 Animated properties move through spring or tween channels; zoom animates its
 logarithm. Non-animated ones apply at once. Camera nodes animate nothing: they
@@ -418,8 +425,11 @@ declare targets for cameras the compositor owns.
 | `visible` | boolean | true | |
 | `backface` | `"visible"` or `"hidden"`: whether the node, and its subtree, draws and takes the pointer while turned away from the viewer | `"visible"` | |
 | `color` (text) | color | black | yes |
-| `radius` | number | 0 | yes |
-| `clip`, `draggable` | boolean | false | |
+| `radius` | corners | 0 | yes |
+| `clip` | boolean: children outside the box are not drawn, nor outside its rounded corners (CSS `overflow: hidden` with `border-radius`); hits are clipped to the box | false | |
+| `clipInset` | corners, read as `[top, right, bottom, left]`: what `clip` leaves out at each side, the border, as CSS clips to the padding box. Each side is drawn a whole number of output pixels, at least one, as border widths are, and the clip's corners become the box's less the wider side meeting at each. The SDK sends a Rect's or Box's border widths when it clips. | 0 | yes |
+| `groupOpacity` | boolean: `opacity` fades the node and its subtree as one layer drawn offscreen while the node is translucent, as CSS `opacity` does, instead of multiplying into each part | false | |
+| `draggable` | boolean | false | |
 | `cursor` | choice: `none`, `default`, `pointer`, `text`, `crosshair`, `move`, `grab`, `grabbing`, `not-allowed`, `help`, `wait`, `progress`, `zoom-in`, `zoom-out`, `ew-resize`, `ns-resize`, `nwse-resize`, `nesw-resize` | inherited | |
 | `window` | id | — | |
 | `fullscreen`, `maximized`, `tiled`, `movable`, `resizable` | boolean | false | |
@@ -430,6 +440,9 @@ declare targets for cameras the compositor owns.
 | `align` | choice: `start`, `center`, `end` | `start` | |
 | `lineHeight` | number (multiple of the font's) | the font's | |
 | `maxLines` | id | unlimited | |
+| `letterSpacing` | number: logical pixels after each character, as CSS `letter-spacing` (counted after the last too) | 0 | |
+| `fontFeatures` | string: OpenType features as CSS `font-feature-settings` writes them, e.g. `"tnum" 1, "liga" 0` | none | |
+| `decoration` | choice: `none`, `underline`, `line-through`, `underline line-through` (CSS `text-decoration-line`); text with lines draws as a raster | `none` | |
 | `src` | string (absolute path, page bundle or URL) | — | |
 | `fit` | choice: `fill`, `contain`, `cover` | `fill` | |
 | `data` | string (JSON text given to a page as its props) | — | |
@@ -448,6 +461,29 @@ declare targets for cameras the compositor owns.
 | `gesture` | choice: `swipe`, `pinch`, `hold` | `swipe` | |
 | `fingers` | id | 3 | |
 | `action` | choice: `none`, `move`, `resize`, `pan`, `zoom` | `none` | |
+| `stateGroup` | boolean: children with `states.group` show this node's states | false | |
+| `tabIndex` | number: takes keyboard focus; 0 or more also in Tab order | none (no focus) | |
+| `focusScope` | boolean: Tab and Shift+Tab keep within the subtree while focus is in it | false | |
+| `scroll` | choice: `none`, `x`, `y`, `both`: a scroll container | `none` | |
+| `contentWidth`, `contentHeight` | number: how far the content reaches, which it scrolls over | the box | |
+| `stickToEnd` | boolean: keep the end in view as the content grows, while it was in view | false | |
+| `overscroll` | choice: `auto`, `contain`, `none`, as CSS `overscroll-behavior` | `auto` | |
+| `scrollThumb` | choice: `x`, `y`: on a child of a scroll container, its thumb along that axis | none | |
+| `editable` | boolean: a text the compositor edits, as `<input>` (see [Editable text](#editable-text)) | false | |
+| `multiline` | boolean: with `editable`, lines that wrap, as `<textarea>` | false | |
+| `readOnly` | boolean: selectable and copyable, not editable, as `readonly` | false | |
+| `password` | boolean: a bullet per character, never copied, as `type="password"` | false | |
+| `maxLength` | number: UTF-16 code units at most, as `maxlength` | none | |
+| `placeholder` | string shown while the text is empty, as `placeholder` | none | |
+| `placeholderColor` | color, as `::placeholder` | `color` at half its alpha | |
+| `caretColor` | color, as CSS `caret-color` | `color` | |
+| `selectionColor` | color behind selected text, as `::selection` | a translucent blue | |
+| `captureKeys` | string: chords the node leaves alone, sent as `keydown` with no default action: keysym names with modifiers, space separated, e.g. `"Up Down control+Return"` | none | |
+| `valueRevision` | number: the `revision` of the latest `input` event the director heard, declared with `text` | none | |
+| `submitOnEnter` | boolean: in a `multiline` node Return sends `submit`, Shift+Return types a line break | false | |
+| `selectOnFocus` | boolean: focus selects the whole text | false | |
+| `keymap` | choice: `emacs`, `standard`: the keys it takes (see `GUIDE.md`, "Text keymaps") | `emacs` | |
+| `padding` | corners: top, right, bottom, left, as CSS `padding`: the text lies inside, the node's box clips it, presses anywhere in it edit | 0 | |
 
 ### Transform functions
 
@@ -543,9 +579,10 @@ inside it, and a background's `plane` comes first.
 
 | SDK prop | Use |
 | --- | --- |
-| `shadow: {color, blur, x, y, spread}`, `blur` (Rect, Box, Image, Web, Window) | `shadow` of `boxShadow`, moving with `transition.shadow`; `blur` of `backdropBlur`, uniform `blur`, moving with `transition.blur`. |
-| `fill` (Rect, Box) | `box` of `boxPaint`: a color sets `fill` and `fillEnd`; `{from, to, angle}` sets `fill`, `fillEnd` and `fillAngle` (radians). |
-| `border: {width, color}` | `box` of `boxPaint`: `border`, `borderColor`, `borderColorEnd`, `borderAngle`. A Window's and a Web's lies outside the box (`outset` = `width`); an Image's is drawn over it (`layer: "over"`). |
+| `shadow: {color, blur, x, y, spread, inset}` or a list of them, `blur` (Rect, Box, Image, Web, Window) | Outer shadows: uses `shadow`, `shadow2`, … of `boxShadow` in list order, drawn last first (CSS draws the first on top); inset ones: `insetShadow`, `insetShadow2`, … of `boxInsetShadow`, drawn over the fill; all moving with `transition.shadow`. `blur` of `backdropBlur`, uniform `blur`, moving with `transition.blur`. |
+| `fill` (Rect, Box) | `box` of `boxPaint`: a color sets `fill` and `fillEnd`; `{from, to, angle}` sets `fill`, `fillEnd` and `fillAngle` (radians). `{stops, angle, shape, center}` is `gradient` of `gradientPaint` instead, drawn before `box`: `color0`…`color3` (stops in Oklab L, a, b, with alpha), `stops` (their places, 0 to 1), `angle` (radians), `shape` (0 linear, 1 radial), `center`. |
+| `border: {width, color, dash}` | `box` of `boxPaint`: `border` (the widest side), `borderColor`, `borderColorEnd`, `borderAngle`; sides `[top, right, bottom, left]` add `borderTrim` (how much thinner each side is: left, top, right, bottom), `dash` adds `dash` (dash length, `3 × width` for `true`). A Window's and a Web's lies outside the box (`outset` = `width`); an Image's is drawn over it (`layer: "over"`). |
+| `radius: [tl, tr, br, bl]` | `radius` as four corners. With corners of their own, the box, shadows and blur use the standard shaders' corner variants (`boxPaintWith({corners})`, …), and sides and dashes theirs: the plain box keeps its plain program. |
 | `dim` (Window) | `dim` of `dimFilter`, uniform `amount`. |
 | `fill`, `grid: {kind, color, spacing, size}` (Background) | `plane` of `planePaint`: `color`, `gridColor`, `spacing`, `weight`, `lines`. |
 
@@ -557,6 +594,8 @@ uniforms they name, `transition.grid` the plane's.
 | SDK prop | Wire |
 | --- | --- |
 | `size`, `weight` | `fontSize`, `fontWeight` (`normal` 400, `bold` 700) |
+| `letterSpacing`, `decoration` | The same |
+| `features: {tnum: true}` or CSS text, `tabularNumbers` | `fontFeatures: '"tnum" 1'`, joined by commas |
 | String or number children | `text` |
 | Nested `<Text>` children | `text` as escaped Pango markup with `<span>`s, plus `markup: true` |
 
@@ -583,6 +622,9 @@ uniforms they name, `transition.grid` the plane's.
 | `onPointerDown`, `onDragEnd`, … | `handlers: ["dragend", "pointerdown", …]` (sorted) |
 | `transition` | One motion becomes `{default}`. Motions of decorations and `shaders` go to their uses; the rest are expanded to the wire properties they cover. |
 | `initial`, `exit` | The same writers as the props, limited to animated values; decorations and `shaders: {<use id>: {<uniform>: value}}` go to `shaders`. |
+| `states` | `{hover, pressed, focusWithin, focus, focusVisible}` written as `initial` is, and `group`. A `fill`, `border`, `shadow` or `blur` only states name is added transparent to the node's decorations, so its use exists for them to change. |
+| `onClick`, `onDoubleClick`, `onAuxClick`, `onContextMenu`, `onFocus`, `onBlur`, `onKeyDown`, `onKeyUp`, `onScroll` | `handlers`: `click`, `dblclick`, `auxclick`, `contextmenu`, `focus`, `blur`, `keydown`, `keyup`, `scroll` |
+| `<Box scroll>` | `contentWidth` and `contentHeight`: how far its laid-out children reach, with its padding; sent again whenever they change. |
 | `layoutId` | `layoutId` |
 | `animate` | One track per animated wire property, with units converted (angles in radians). Decorations address their uses' uniforms: `fill` → `shaders.box.fill` and `shaders.box.fillEnd`, `shadowBlur` → `shaders.shadow.blur`, and so on; `shaders: {<use id>: {<uniform>: keyframes}}` → `shaders.<use id>.<uniform>`. Keyframe functions are sampled at 60 a second (9 to 257 keyframes) and easing functions are baked into the keyframes. The `id` is `<key>/<property>` with a `key`, else a hash of the track. |
 
@@ -600,7 +642,7 @@ A removed prop is sent as `null`, which restores its default.
 | `focus` | `seat`, `window` (id or `null`) |
 | `modifiers` | `seat`, `modifiers` (held `shift`, `control`, `alt`, `logo`). Sent when they change. |
 | `camera` | `output`, `x`, `y`, `zoom`, `rotation` (radians). Where the camera is headed; coalesced per output, and sent only when changed. |
-| `clipboard` | `text`, copied by a client. Selections that password managers mark secret are never read. |
+| `clipboard` | `text`, copied by a client or in an [editable text](#editable-text). Selections that password managers mark secret are never read. |
 | `shares` | `shares: [{id, app, types, source, window, output}]`. `types` lists `"screen"` and/or `"window"`; `source` is `null` while the share waits for an answer. |
 | `captured` | `id`, `path`, `width`, `height`, or `id` and `error` |
 | `measured` | `results: [{key, width, height}]` |
@@ -635,8 +677,9 @@ skip rendering.
 `node` is the target node's id and `name` the event. The compositor sends an
 event only if the node lists that name in `handlers`. For the bubbling pointer
 events (`pointerdown`, `pointermove`, `pointerup`, `pointerenter`,
-`pointerleave`, `wheel`), it also sends the event when only an ancestor lists
-it, with `node` still being the node under the pointer.
+`pointerleave`, `wheel`, `click`, `dblclick`, `auxclick`, `contextmenu`) and
+key events (`keydown`, `keyup`), it also sends the event when only an ancestor
+lists it, with `node` still being the node under the pointer or with focus.
 
 The director then:
 
@@ -677,21 +720,194 @@ do, it also carries:
 | `moverequest`, `resizerequest` | A window whose client asked to move or resize | Pointer fields; `resizerequest` adds `edges` (xdg_toplevel edges). The pointer stays captured by the node until release. |
 | `fullscreenrequest`, `maximizerequest`, `minimizerequest` | A window | `value` (boolean) |
 | `activaterequest` | A window whose client asked to be shown and focused; unhandled, the window is focused | — |
-| `measure` | `text` | `width`, `height` after its layout changed |
+| `measure` | `text` | `width`, `height` after its layout changed; for an editable one, its text's width and the height of its line boxes up to `maxLines` |
+| `input` | An editable `text` whose text changed (typing, deleting, pasting, undo), or that took a declared value | `text`, `revision`, `selection-start`, `selection-end`, `selection-direction`; `replaced: true` when it answers a declared value (coalesced, but never a `replaced` one) |
+| `submit` | An editable `text`: Return on one line, or with `submitOnEnter` | `text`, `revision` as they stood at the key; pending `input` goes first |
+| `select` | An editable `text` whose caret or selection moved | `selection-start`, `selection-end`, `selection-direction` (coalesced) |
 | `load` | `image` (with `width`, `height`), `web` | — |
 | `error` | `image`, `web`; any node using a shader that failed to build | `message` |
 | `message` | `web` | `payload`: the JSON text of `{name, value}` from the page's `send()` |
+| `click`, `auxclick` | The nearest node holding both the node a press of one button began on and the node it was released over (`click` for the primary button); none when released elsewhere or after dragging a node along. Enter, or Space on release, on a focused node not handling `keydown` also sends `click` | `button`, `count` (presses within 400 ms and 5 pixels: 1, 2, …; 0 from keys), pointer fields (from keys, only `modifiers`) |
+| `dblclick` | As `click`, after the second click of a quick pair | As `click` |
+| `contextmenu` | The node under the pointer as the secondary button goes down; the focused node on Menu or Shift+F10 | `button` and pointer fields; from keys `keyboard: true`, `x`, `y`, `local-x`, `local-y` at the node's bottom left, and `modifiers` |
+| `focus`, `blur` | A node taking or losing keyboard focus | `focus` adds `visible`: focus came by keyboard |
+| `keydown`, `keyup` | The focused node | `key`, `text`, `code`, `repeat`, `modifiers`, as the `key` message's |
+| `scroll` | A scroll container whose offset changed | `scroll-x`, `scroll-y`: where it is headed, within its content (coalesced) |
 
 The director runs updates from a press as React DOM runs a click's, before it
 handles the next event. Updates from `pointermove`, `wheel`, `drag`, `resize`,
 `move` and `update` are batched.
+
+## Controls
+
+The compositor serves controls itself, so they answer in the frame that shows
+the input (`input.c`, `scroll.c`). Each part has a CSS counterpart, which a DOM
+output maps to.
+
+**UI states** (`:hover`, `:active`, `:focus-within`, `:focus`, `:focus-visible`). As the pointer
+moves (and as the scene moves under it), as buttons go down and up and as focus
+moves, the compositor sets which states hold for each node:
+
+| State | Holds while |
+| --- | --- |
+| `hover` | The topmost hit under the pointer is the node or lies under it. |
+| `pressed` | A primary press that began on the node (or under it) is held and `hover` holds; or Space, pressed on the node focused, is held. |
+| `focusWithin` | The node or a node under it has keyboard focus: a field's frame around its editable text. |
+| `focus` | The node has keyboard focus. |
+| `focusVisible` | `focus` holds and came by keyboard (Tab, or `focus-node` with `visible`). |
+
+What a node shows of an animated property, or of a uniform of one of its shader
+uses, is the value of the latest state holding that gives it, in the order
+`hover`, `focusWithin`, `focus`, `focusVisible`, `pressed`, else its declared value. When the
+states change, everything their values name moves there with the node's
+transitions; a `set` while a state overrides a value changes only what it
+returns to. A uniform changes only on a use the node has. With `states.group`,
+a node shows the states of the nearest node at or above it with `stateGroup`.
+Nodes with `states`, `stateGroup`, `tabIndex`, `scroll` or `scrollThumb` take
+the pointer, as nodes with handlers do.
+
+**Clicks.** A press of a button on a node remembers it; its release sends
+`click` (primary) or `auxclick` to the nearest node holding both it and the node
+under the pointer, and `dblclick` after a second primary click. Presses on the
+same output within 400 ms and 5 pixels count up in `count`. A press that a
+native move turned into a drag sends no click once the pointer moved 5 pixels.
+The secondary button sends `contextmenu` as it goes down, after `pointerdown`.
+
+**Focus.** A press on a node focuses the nearest node at or above it with
+`tabIndex`, or takes focus from the node that has it. Focusing a window or a
+page takes it too, as does the node leaving the scene. While a node has focus,
+windows and pages have no keyboard, and keys no shortcut takes go to it as
+`keydown` (repeated after 500 ms, about 33 times a second, with `repeat`) and
+`keyup`; they take precedence over `grab-keyboard`. After the node hears a key,
+these keys act: Tab and Shift+Tab (no other modifiers) focus the next or
+previous node with a `tabIndex` of 0 or more, live, visible and interactive, in
+tree order within the nearest node with `focusScope` around the focused node
+(else the whole scene), wrapping around, and show `focusVisible`; Menu and
+Shift+F10 send `contextmenu`; Enter sends `click`, and Space holds `pressed`
+and sends `click` as it is let go, unless the node handles `keydown` itself.
+Focus moving by keyboard scrolls the containers around the node to show it.
+
+**Scroll containers.** A group with `scroll` keeps an offset along its axes, in
+whole output pixels, moves its children by it (but for thumbs), clips them to
+its box and maps hits and event positions through it. It scrolls between 0 and
+`content - box` (whole pixels) along each axis, `content` being
+`contentWidth`/`contentHeight` or the box:
+
+- A wheel notch (`discrete`, or 15 units of `delta`) moves 56 pixels, gliding
+  on a critically damped spring; notches coming quickly add up.
+- `finger` and `continuous` sources move it one to one. Their stop (an axis
+  event with no delta) leaves momentum: a decay with a time constant of 0.35 s
+  from the speed of the last 0.1 s, or a spring to the end with that speed when
+  the decay would pass it. Pulling past an end stretches the offset by
+  `(1 - 1 / (d · 0.55 / box + 1)) · box` for a pull of `d`, which springs back
+  as the fingers lift.
+- What a container cannot take passes to the one around it along the same
+  axis; `overscroll: "contain"` keeps it, and `"none"` also keeps fingers from
+  stretching it.
+- After each commit the offset is kept within the content; with `stickToEnd` it
+  follows the end while the end was in view (and starts there).
+- A child with `scrollThumb` is drawn where the offset puts it along the track,
+  with its declared position along the axis as the inset at either end and its
+  declared length as the shortest it gets (shorter while stretched), its other
+  props as declared. Its opacity is multiplied by the container's thumb
+  visibility: 1 while scrolling, fading out over 0.4 s once 1.2 s passed with no
+  scrolling and the thumb is neither hovered nor dragged. A primary press on it
+  drags the offset along.
+- `scroll` events report where the offset is headed, coalesced; `scroll-to`
+  moves it.
+
+## Editable text
+
+A `text` with `editable` is a field the compositor edits itself (`edit.c`), as a
+browser edits an `<input>` (or, with `multiline`, a `<textarea>`), so typing
+never waits for the director. Give it `tabIndex` to take focus. It keeps its own
+text, caret, selection, scroll offset and undo history; its box is `width` ×
+`height` (or its text's size), its text lies inside `padding`, and it clips to
+its box. Offsets on the wire are UTF-16 code units, as JavaScript strings count
+them; inside they are bytes of UTF-8, and steps go by grapheme clusters.
+
+**Keys.** While it has focus, a key no shortcut takes edits it in the same turn
+of the event loop, and the next frame shows the result. Keys run named commands
+through a keymap (`keymap`: `emacs`, the default, adds the readline and Emacs
+bindings with a kill ring; `standard` is a browser's); the full lists are in
+`GUIDE.md`, "Text keymaps". The bindings both share:
+
+- Text a key types (after xkb Compose: dead keys and Compose sequences, from the
+  locale's table) goes in over the selection; control characters do not.
+- BackSpace and Delete by cluster (BackSpace by character where the script says),
+  with Control by word; Shift+Delete cuts.
+- Left and Right move visually by cluster (bidi text as it shows), with Control by
+  word; Home and End to the visual line's ends, with Control (or on one line) the
+  text's; Up, Down, PageUp and PageDown by visual lines keeping the x the caret
+  had (`multiline` only). Shift extends the selection with any of them.
+- Control+A (standard; Control+Shift+A with emacs) selects all; Control+C, X, V
+  (and Control+Insert, Shift+Insert) copy, cut and paste with the seat's clipboard, a client's selection too (read from its
+  owner without blocking the loop); Control+Z undoes, Control+Shift+Z (and
+  Control+Y with standard) redoes.
+  Typing joins one undo step until a pause of 1.5 s, another
+  kind of edit, or a word after a space; deletions join likewise.
+- Return sends `submit` on one line; in a `multiline` node it types a line break,
+  or with `submitOnEnter` sends `submit` unless Shift is held.
+- Keys it has no use for (Tab, Escape, Up and Down on one line, Control with
+  other letters, Alt and Super chords) go on as `keydown` and act as on any
+  focused node; Escape also takes focus away. Keys in `captureKeys` go on as
+  `keydown` and do nothing else: the director's `keydown` is asynchronous, so
+  it cannot veto a key, but it can say ahead which it wants.
+
+`readOnly` ignores what would change the text; `password` shows a bullet per
+character and never copies; `maxLength` cuts what goes in to fit.
+
+**Pointer.** A primary press places the caret where it falls, by Pango's hit
+test, as it goes down; Shift extends the selection; dragging selects, and past
+an edge scrolls at a speed that grows with the distance (16 ms steps), stopping
+when the pointer comes back or lets go. A double press selects a word and
+dragging extends by words; a triple press a paragraph (all of one line). A
+middle press pastes the primary selection there, and a selection made becomes
+the primary selection. A `multiline` node scrolls with the wheel.
+
+**Drawing.** The caret is a bar of whole device pixels, one logical pixel wide
+(two at 1.5 and 2), the line's height, in `caretColor`, shown only while the node
+has focus, nothing is selected and it is not `readOnly`. It is solid for 500 ms
+after input, then blinks 530 ms on and off from a timer armed for each change,
+and rests shown after 10 s without input: then nothing runs. The selection is
+drawn under the text as one rectangle per run, line boxes high, so selected
+lines meet, with a sliver for each line break; out of focus at half its alpha.
+One line is centered in the box and scrolls sideways to keep the caret in view;
+`multiline` lines take the line height's spacing half above and half below
+(CSS half-leading), and scroll down once they pass `maxLines` (with `maxLines`,
+the node scrolls only past those lines: the director grows its box to them from
+`measure`).
+
+**Value.** The node's `text` is its value. Each change the compositor makes
+counts a `revision`, sent with `input`. The director declares the value with
+the `valueRevision` of the latest `input` it heard:
+
+- declared text equal to what that revision's report said is an echo, and is
+  ignored, whatever was typed since;
+- anything else is taken: the text replaced, the caret at its end, the undo
+  history cleared. When the text then held is that report's plus more typed at
+  its end since, the more is kept after the new value (a field cleared as it
+  sends keeps what was typed after Return). The compositor answers with an
+  `input` carrying `replaced: true`, which is never coalesced away, so the
+  director learns the revision of its value;
+- without `valueRevision`, any change of `text` is taken.
+
+The kit's `TextField` passes no typing on while a value of its own is on its
+way, and holds typing after Return until the world has rendered, so a world
+clearing a field in `onSubmit` sees no stale echo (see `GUIDE.md`).
+
+**Input methods.** The compositor runs no `zwp_input_method_v2` (nor
+`text-input-v3`) yet, so editable nodes take no preedit; when it does, preedit
+enters the editor as an uncommitted span at the caret (where `replace` would
+insert it) and is drawn underlined by the same layout. Compose and dead keys work
+regardless.
 
 ## Request and response pairs
 
 **Text measurement** (`measure` / `measured`). A request is
 `{key, props}`, where `props` may hold the text properties `text`, `markup`,
 `font`, `fontSize`, `fontWeight`, `italic`, `align`, `width` (the wrap width),
-`lineHeight` and `maxLines`, in their wire form. The compositor answers on the
+`lineHeight`, `maxLines`, `letterSpacing` and `fontFeatures`, in their wire form. The compositor answers on the
 same turn: Pango lays out each text exactly as a text node would, and the
 compositor returns its logical `width` and `height`. The SDK:
 

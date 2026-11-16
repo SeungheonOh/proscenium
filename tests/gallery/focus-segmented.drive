@@ -1,0 +1,12 @@
+# shot-at: 3400
+# page: 3
+# Click the slider thumb, Tab: the chosen segment's ring.
+extent 1280 800
+move 300 300
+glide $K_SLIDER_X $K_SLIDER_Y 200
+click left
+sleep 200
+key Tab
+move 300 300
+sleep 300
+sleep 3000

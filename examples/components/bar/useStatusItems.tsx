@@ -10,6 +10,12 @@ import mutedIcon from "../../icons/volume-muted.svg";
 import volumeIcon from "../../icons/volume.svg";
 import { colors, motion } from "../../lib/theme.js";
 import type { MenuKind } from "../../pages/bar-menu/index.js";
+import type { MenuEntry } from "proscenium/ui";
+import { useClipboard } from "proscenium";
+import { mediaCommand } from "../../lib/system/media.js";
+import { setPowerProfile, usePowerProfile } from "../../lib/system/power.js";
+import { toggleMute } from "../../lib/system/sound.js";
+import { profileNames } from "./KitBarMenu.js";
 import { BarText, RollingText } from "./BarText.js";
 import { BatteryGauge } from "./BatteryGauge.js";
 
@@ -18,6 +24,8 @@ export interface StatusItem {
   /** The menu the item opens; items without one call `onPress` instead. */
   menu?: MenuKind;
   onPress?: () => void;
+  /** What a right click on it offers. */
+  contextMenu?: MenuEntry[];
   /** Laid out in a row; the item sizes to it. */
   content: ReactNode;
 }
@@ -53,6 +61,8 @@ export function useStatusItems(): StatusItem[] {
   const media = useMedia();
   const volume = useVolume();
   const battery = useBattery();
+  const profile = usePowerProfile();
+  const clipboard = useClipboard();
   const items: StatusItem[] = [];
 
   if (sharing.count > 0) {
@@ -64,6 +74,11 @@ export function useStatusItems(): StatusItem[] {
     items.push({
       key: "media",
       menu: "sound",
+      contextMenu: [
+        { label: media.playing ? "Pause" : "Play", onSelect: () => mediaCommand("PlayPause") },
+        { label: "Next", disabled: !media.canNext, onSelect: () => mediaCommand("Next") },
+        { label: "Previous", disabled: !media.canPrevious, onSelect: () => mediaCommand("Previous") },
+      ],
       content: (
         <>
           <Icon src={musicIcon} opacity={media.playing ? 0.85 : 0.4} />
@@ -83,6 +98,7 @@ export function useStatusItems(): StatusItem[] {
     items.push({
       key: "sound",
       menu: "sound",
+      contextMenu: [{ label: "Mute", checked: volume.muted, onSelect: toggleMute }],
       content: (
         <>
           <Icon src={volume.muted ? mutedIcon : volumeIcon} />
@@ -92,12 +108,23 @@ export function useStatusItems(): StatusItem[] {
     });
   }
 
-  items.push({ key: "clipboard", menu: "clipboard", content: <Icon src={clipboardIcon} /> });
+  items.push({
+    key: "clipboard",
+    menu: "clipboard",
+    contextMenu: [{ label: "Clear history", danger: true, disabled: clipboard.history.length === 0, onSelect: clipboard.clear }],
+    content: <Icon src={clipboardIcon} />,
+  });
 
   if (battery) {
     items.push({
       key: "battery",
       menu: "battery",
+      contextMenu: profile ? [
+        { type: "label", label: "Power mode" },
+        ...profile.available.map((name) => ({
+          label: profileNames[name] ?? name, checked: name === profile.current, onSelect: () => setPowerProfile(name),
+        })),
+      ] : undefined,
       content: (
         <>
           <BatteryGauge percent={battery.percent} charging={battery.charging} />

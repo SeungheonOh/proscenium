@@ -89,6 +89,35 @@ enum prop_key {
     PROP_BOTTOM,
     PROP_LEFT,
     PROP_CURSOR,
+    PROP_STATE_GROUP,
+    PROP_TAB_INDEX,
+    PROP_FOCUS_SCOPE,
+    PROP_SCROLL,
+    PROP_CONTENT_WIDTH,
+    PROP_CONTENT_HEIGHT,
+    PROP_STICK_TO_END,
+    PROP_OVERSCROLL,
+    PROP_SCROLL_THUMB,
+    PROP_GROUP_OPACITY,
+    PROP_LETTER_SPACING,
+    PROP_FONT_FEATURES,
+    PROP_DECORATION,
+    PROP_CLIP_INSET,
+    PROP_EDITABLE,
+    PROP_MULTILINE,
+    PROP_READ_ONLY,
+    PROP_PASSWORD,
+    PROP_MAX_LENGTH,
+    PROP_CARET_COLOR,
+    PROP_SELECTION_COLOR,
+    PROP_CAPTURE_KEYS,
+    PROP_VALUE_REVISION,
+    PROP_SUBMIT_ON_ENTER,
+    PROP_SELECT_ON_FOCUS,
+    PROP_PADDING,
+    PROP_PLACEHOLDER,
+    PROP_PLACEHOLDER_COLOR,
+    PROP_KEYMAP,
     PROP_COUNT,
 };
 
@@ -101,6 +130,8 @@ enum prop_type {
     TYPE_ID,
     TYPE_CHOICE,
     TYPE_MODIFIERS,
+    /* A number for every corner, or four: top-left, top-right, bottom-right, bottom-left. */
+    TYPE_CORNERS,
 };
 
 /* Choices, in the order of their protocol names in the schema. */
@@ -109,6 +140,11 @@ enum { GESTURE_SWIPE, GESTURE_PINCH, GESTURE_HOLD };
 enum { ACTION_NONE, ACTION_MOVE, ACTION_RESIZE, ACTION_PAN, ACTION_ZOOM };
 enum { ALIGN_START, ALIGN_CENTER, ALIGN_END };
 enum { FIT_FILL, FIT_CONTAIN, FIT_COVER };
+enum { SCROLL_NONE, SCROLL_X, SCROLL_Y, SCROLL_BOTH };
+enum { OVERSCROLL_AUTO, OVERSCROLL_CONTAIN, OVERSCROLL_NONE };
+enum { THUMB_X, THUMB_Y };
+enum { KEYMAP_EMACS, KEYMAP_STANDARD };
+enum { DECORATION_NONE, DECORATION_UNDERLINE, DECORATION_LINE_THROUGH, DECORATION_BOTH };
 enum cursor_shape {
     CURSOR_NONE,
     CURSOR_DEFAULT,
@@ -172,13 +208,30 @@ enum event_name {
     EVENT_LOAD,
     EVENT_ERROR,
     EVENT_MESSAGE,
+    EVENT_CLICK,
+    EVENT_DBLCLICK,
+    EVENT_AUXCLICK,
+    EVENT_CONTEXTMENU,
+    EVENT_FOCUS,
+    EVENT_BLUR,
+    EVENT_KEYDOWN,
+    EVENT_KEYUP,
+    EVENT_SCROLL,
+    EVENT_INPUT,
+    EVENT_SUBMIT,
+    EVENT_SELECT,
     EVENT_COUNT,
 };
 extern const char *const EVENT_NAMES[EVENT_COUNT];
+#define EVENT_BIT(event) ((uint64_t)1 << (event))
 /* Pointer events the director passes up through a node's ancestors, as the DOM does. */
 #define BUBBLING_EVENTS                                                                            \
-    ((1u << EVENT_POINTERDOWN) | (1u << EVENT_POINTERMOVE) | (1u << EVENT_POINTERUP) |             \
-     (1u << EVENT_POINTERENTER) | (1u << EVENT_POINTERLEAVE) | (1u << EVENT_WHEEL))
+    (EVENT_BIT(EVENT_POINTERDOWN) | EVENT_BIT(EVENT_POINTERMOVE) | EVENT_BIT(EVENT_POINTERUP) |    \
+     EVENT_BIT(EVENT_POINTERENTER) | EVENT_BIT(EVENT_POINTERLEAVE) | EVENT_BIT(EVENT_WHEEL) |      \
+     EVENT_BIT(EVENT_CLICK) | EVENT_BIT(EVENT_DBLCLICK) | EVENT_BIT(EVENT_AUXCLICK) |              \
+     EVENT_BIT(EVENT_CONTEXTMENU))
+/* Key events bubble from the focused node too, but claim no pointer. */
+#define KEY_EVENTS (EVENT_BIT(EVENT_KEYDOWN) | EVENT_BIT(EVENT_KEYUP))
 
 /* Transform functions, as CSS lists them: the last applies to the node first. */
 enum tfunc {
@@ -228,6 +281,7 @@ struct prop_value {
     union {
         double number;
         double color[4];
+        double corners[4];
         struct tlist transform;
         bool boolean;
         char *string;

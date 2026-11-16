@@ -263,8 +263,16 @@ struct server {
 
     /* Options. */
     bool damage_debug;
+    /* --scale: every output's scale; 0 leaves the backend's. */
+    double output_scale;
     /* PROSCENIUM_CHECK: compare every frame with a full redraw. */
     bool check;
+    /* PROSCENIUM_LATENCY: log how long a key takes to change the scene (an edit, or the
+     * director's commit) and to reach a committed frame. Seconds of the key and the change,
+     * and the frame showing it. */
+    bool latency;
+    double latency_key, latency_change;
+    const void *latency_frame;
     bool screen_sharing;
 
     struct wl_listener new_output, new_input, new_xdg_toplevel, new_xdg_popup, new_decoration,
@@ -368,6 +376,11 @@ void outputs_update_reservations(struct server *server);
 
 /* The scene. */
 void scene_changed(struct server *server);
+/* With PROSCENIUM_LATENCY, the scene changed: the first change after a key is timed. */
+static inline void latency_changed(struct server *server) {
+    if (server->latency && server->latency_key > 0 && !(server->latency_change > 0))
+        server->latency_change = now_seconds();
+}
 void invalidate_displays(struct server *server);
 /* Sample motion at TIME and keep frames coming while anything moves. */
 void server_advance(struct server *server, double time);

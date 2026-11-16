@@ -1,0 +1,7 @@
+# shot-at: 3000
+# page: 2
+# The pointer rests on the all-four box: border, shadow and scale together.
+extent 1280 800
+move 300 300
+glide $ST_ALL_X $ST_ROW1_Y 300
+sleep 900

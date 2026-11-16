@@ -150,6 +150,48 @@ which cover its plane. The SDK orders a node's paints as CSS layers its
 decorations: shadow, backdrop blur, the node's own paints under the content,
 fill and border, the content, paints over it.
 
+## The box vocabulary
+
+A box says what a CSS box says (GUIDE.md lists the props and their CSS). Each
+addition is a standard shader, or a variant of one, so the compositor still knows
+nothing of borders or shadows; only two things are its own, because a shader
+cannot do them.
+
+| CSS | Here |
+| --- | --- |
+| `border-radius` of four | The node's `radius` takes four corners, animated corner by corner. The prelude's `radii` holds them; `radius` is the largest, which bounds and older shaders keep using: an `opaque` or `hole` inset in `radius` stays conservative, as a smaller corner reaches less far in. |
+| `border-width` by side, `border-style: dashed` | `boxPaint`'s `borderTrim` and `dash`. `border` stays the widest side, so the gate and the bounds still read one uniform, and the inside's inset is `border` less each side's trim, linear as bounds must be. |
+| `box-shadow` lists, `inset` | One use per shadow. `boxInsetShadow` is the outer shadow's integral turned inside out (one less the blurred, shrunk, offset box, inside the box); its `hole` is the middle the blur does not reach, so an inset shadow is drawn and repainted as a ring. |
+| `linear-gradient(in oklab, …)`, `radial-gradient` | `gradientPaint`: four stops whose colors the SDK converts to Oklab, so the shader converts only once per pixel, back to sRGB; opaque while all four stops are. |
+| `overflow: hidden` with `border-radius` | The compositor's: a node that clips with rounded corners draws its children through a built-in effect masking them to its rounded box. Passes of the repair away from its corners (the box less its corner squares and a pixel) draw the children straight, so a scrolled list repaints offscreen only near the corners. |
+| `opacity` on a parent | The compositor's: with `groupOpacity`, a translucent node draws its content and subtree into an offscreen target over all they cover, then onto the frame at its opacity, through the effect machinery's passthrough. An opaque one draws as it always did. |
+
+**Cost of the plain box.** A paint batched with others passes every uniform and
+prelude value per vertex, and interpolating them costs the GPU per pixel. So
+each feature is a variant with a program of its own (`boxPaintWith({corners,
+sides, dash})`, `boxShadowWith`, `backdropBlurWith`), which the SDK picks from
+the props; the plain one reads `radius`, never `radii`, and keeps the uniforms
+it had. 1,200 bordered, shadowed cards sliding forever cost the compositor
+2.64–2.80 s of CPU per 5 s with this change and 2.66–2.74 s without (before the
+variants, one program for everything cost 3.05 s).
+
+Border widths snap in the shader to whole output pixels, at least one (`floor`,
+as Chromium draws them), so a 1 px border at 150% is one crisp device pixel; the
+`opaque` and `hole` insets add a pixel for it. The fill reaches under the border
+to the box's edge and the border is drawn over it, as CSS paints a background to
+the border box, so a translucent border tints the fill rather than showing what is
+behind the box; an opaque fill is therefore opaque over the whole box, less its
+rounded corners. A clipping box clips its children inside its border
+(`clipInset`), so they never paint over it. An outer shadow draws nothing inside
+its node's rounded box, as CSS clips it out of the border box: a translucent box,
+a frosted panel or a translucent window never shows its own shadow through itself,
+and a focus ring made of a spread shadow never tints a control's inside. Its
+`hole` is that inside, so every outer shadow is drawn and repainted as a ring.
+Gradients dither by triangular noise of a buffer pixel (two hashes, without the
+lines along an angle that interleaved gradient noise draws over a wide, flat
+gradient), which depends only on the pixel, so a repair draws what a full redraw
+does.
+
 ## Compositor
 
 | Where | What |

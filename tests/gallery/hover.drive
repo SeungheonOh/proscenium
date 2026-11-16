@@ -1,0 +1,6 @@
+# shot-at: 3000
+# The pointer rests on a button: its hover fill.
+extent 1280 800
+move 300 300
+glide $HOVER_X $HOVER_Y 300
+sleep 800

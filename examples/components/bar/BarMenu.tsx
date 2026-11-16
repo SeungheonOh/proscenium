@@ -10,6 +10,9 @@ import { glassBorder, motion } from "../../lib/theme.js";
 import menuPage from "../../pages/bar-menu/index.tsx?url";
 import type { BarMenuMessage, BarMenuProps, MenuKind } from "../../pages/bar-menu/index.js";
 import { barLayout } from "./layout.js";
+import { darkTheme, lightTheme } from "proscenium/ui";
+import { menuTheme, webMenus } from "../../lib/settings.js";
+import { KitBarMenu } from "./KitBarMenu.js";
 
 export interface OpenMenu {
   kind: MenuKind;
@@ -41,8 +44,17 @@ interface BarMenuHostProps {
   onClose: () => void;
 }
 
+/**
+ * The open menu under the item that opened it: drawn by the world with proscenium/ui, or,
+ * with PROSCENIUM_WEB_MENUS=1, the page in Chromium it was.
+ */
+export function BarMenu({ menu, onClose, web = webMenus }: BarMenuHostProps & { web?: boolean }) {
+  if (web) return <WebBarMenu menu={menu} onClose={onClose} />;
+  return <KitBarMenu menu={menu} onClose={onClose} theme={menuTheme === "dark" ? darkTheme : lightTheme} />;
+}
+
 /** The menu page: always loaded, springing open under the item that opened it. */
-export function BarMenu({ menu, onClose }: BarMenuHostProps) {
+function WebBarMenu({ menu, onClose }: BarMenuHostProps) {
   const outputs = useOutputs();
   const volume = useVolume();
   const battery = useBattery();

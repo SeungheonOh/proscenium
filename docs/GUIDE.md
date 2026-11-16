@@ -47,7 +47,9 @@ build/meson/proscenium --script examples/hypr.tsx
 
 The [README](../README.md#build) lists the libraries the build needs and how to
 build the Chromium helper that web nodes use. The compositor runs nested in a
-session or on a tty; `--headless --size 1280x720` runs it without a display, and
+session or on a tty; `--headless --size 1280x720` runs it without a display
+(`--scale 1.5` gives every output that scale, fractional ones too: the size is in
+device pixels, so `--size 1920x1080 --scale 1.5` is 1280 × 720 logical), and
 `scripts/run-session WORLD.tsx` makes it the desktop on this seat, as a systemd
 user unit logging to `$XDG_STATE_HOME/proscenium/run.log`.
 
@@ -275,12 +277,12 @@ The module's default export is the root component. Host components:
 | Component | Purpose |
 | --- | --- |
 | `Camera` | Declares an output's camera: world point at its center, `zoom`, `rotation`, `minZoom`/`maxZoom` and the `transition` of programmatic moves. The camera itself is compositor state; read it with `useCamera()`, move it with `moveCamera()`. No camera means world = output pixels. |
-| `Group` | Transform container; with `width`/`height` (and `radius`) it has a box, which `clip` keeps its children inside, `draggable` lets be dragged and its `shaders` paint. |
+| `Group` | Transform container; with `width`/`height` (and `radius`) it has a box, which `clip` keeps its children inside (inside its rounded corners too), `draggable` lets be dragged and its `shaders` paint. `groupOpacity` fades it and its children as one layer, as CSS `opacity` does. |
 | `Window` | A client window by id. `width`/`height` configure the client; omit them for its natural size. `radius`, `border`, `shadow`, `blur`, `dim`, `fullscreen`, `maximized`, `tiled`, `focusable`, `interactive`; `movable`/`resizable` allow native moves and resizes. A removed window with an `exit` animates out from its last frame, even after its client is gone. |
 | `Mirror` | A window drawn once more, live, at any size, e.g. as a switcher's preview: `window` and the decorations a `Window` takes. It takes no input and configures nothing. |
-| `Rect` | A group drawing a rounded box: `fill` (color or gradient), `radius`, `border`, `shadow`, `blur` (frosted glass), `clip`, `draggable`; pointer handlers. |
+| `Rect` | A group drawing a rounded box: `fill` (a color, a two-stop gradient, or up to four stops in Oklab), `radius` (one, or four corners), `border` (a width or four sides, dashed), `shadow` (one or a list, inset too), `blur` (frosted glass), `clip`, `groupOpacity`, `draggable`; pointer handlers. See [Boxes](#boxes). |
 | `Box` | A `Rect` that lays out its children with flexbox; see [Layout](#layout). `Spacer` takes up the free space in a row or column. |
-| `Text` | Text laid out by Pango: `<Text size={14} weight="bold">Hello {name}</Text>`. `font`, `color`, `italic`, `markup` (Pango markup), `width` with `align` and `maxLines`, `lineHeight`; `onMeasure` reports its size. A `Text` inside another styles its part, as in React Native: `<Text>Saved <Text weight="bold">3</Text> files</Text>`. |
+| `Text` | Text laid out by Pango: `<Text size={14} weight="bold">Hello {name}</Text>`. `font`, `color`, `italic`, `markup` (Pango markup), `width` with `align` and `maxLines`, `lineHeight`, `letterSpacing`, `features` (OpenType, e.g. `{ tnum: true }`), `tabularNumbers`, `decoration` (`"underline"`, `"line-through"`); `onMeasure` reports its size. A `Text` inside another styles its part, as in React Native: `<Text>Saved <Text weight="bold">3</Text> files</Text>`. |
 | `Image` | A decoded image file (PNG, JPEG, WebP, GIF, SVG, ...): `src`, `fit` (`fill`, `contain`, `cover`) plus the `Rect` box props; `onLoad` reports its natural size. `import photo from "./photo.jpg"` gives a `src`. |
 | `Web` | A page rendered by Chromium: a React DOM module, an HTML file, a built app directory or a URL. See [Web pages](#web-pages). |
 | `Background` | Infinite plane with `fill` and a `dots`/`lines` grid; `pan` makes dragging or scrolling it pan the camera, with momentum. |
@@ -373,9 +375,12 @@ Hooks and actions:
 | `useShares()`, `acceptShare(id, source)`, `cancelShare(id)` | Screen-sharing requests and running shares; see [Screen sharing](#screen-sharing). |
 | `screenshot(source?)`, `encodePng(shot)` | Pixels of a window, an output or a region of one, at full resolution; PNG encoding runs on a worker thread. |
 | `focus(id \| null)`, `close(id)`, `launch(command)` | Keyboard focus, polite close, start a client on this display. |
+| `focusNode(node \| null, { visible }?)`, `scrollTo(node, { x, y }, transition?)` | Keyboard focus to a node with `tabIndex` (from a ref), or from whatever node has it; a scroll container's offset. See [Controls](#controls). |
+| `measureText(style, texts)` | The sizes the compositor's Pango gives each of `texts` in a Text's `style` (wrapped to `style.width` when it is a number), in one round trip: e.g. a line's prefixes, to find the character under the pointer. |
+| `createPortal(children, node)` | Renders `children` as children of `node` (from a ref) wherever the element sits, as React DOM's `createPortal`: the UI kit's overlays use it. |
 | `warpPointer(output, x, y)` | Moves the pointer there, as if it had moved: e.g. to the middle of an output focused by keyboard. |
 | `injectPointer(window, events)` | Pointer events straight to a window, shown or not, the pointer itself untouched: `{ motion: [x, y] }` in the window's logical pixels, `{ button, pressed }` (evdev codes), `{ wheel: notches }`. A press focuses the window; the window keeps drawing a while after, so no events at all wakes it, e.g. after keys. For agents at the computer. |
-| `useKeyboardGrab(handler \| null)` | Holds the keyboard while a handler is given: keys no `Shortcut` takes come to it (`key`, `text`, `code`, `pressed`, `repeat`, `modifiers`) instead of windows and pages, which lose keyboard focus meanwhile. The latest grab holds it until it lets go. For dialogs, overviews and world-drawn text fields. |
+| `useKeyboardGrab(handler \| null)` | Holds the keyboard while a handler is given: keys no `Shortcut` takes come to it (`key`, `text`, `code`, `pressed`, `repeat`, `modifiers`) instead of windows and pages, which lose keyboard focus meanwhile. The latest grab holds it until it lets go. For overviews and worlds that take keys whole; controls take keyboard focus instead (see [Controls](#controls)). |
 | `useInput(handler \| null)` | Hears every key and button press, wheel turn and gesture start (`kind`, and `key` or `button`) while a handler is given; each still reaches its target. E.g. to close an overlay at any input. |
 | `dwindle`, `masterStack`, `columns`, `grid`, `inset` | Pure tiling layouts from window ids and an area to boxes. |
 
@@ -449,8 +454,10 @@ const ring = paintShader({
       transition={{ shaders: spring() }} />
 ```
 
-Every shader reads `size` (the node's box), `radius` (its corner radius),
-`pixel` (local units per output pixel) and its own uniforms, which are numbers,
+Every shader reads `size` (the node's box), `radius` (its corner radius, the
+largest when its corners differ), `radii` (its corners one by one: top-left,
+top-right, bottom-right, bottom-left), `pixel` (local units per output pixel)
+and its own uniforms, which are numbers,
 vec2s, vec4s or colors (straight RGBA: premultiply in the shader). Colors it
 returns are premultiplied; a paint's and an effect's are multiplied by the
 node's opacity. A shader is sent once, before the first commit that uses it,
@@ -462,14 +469,14 @@ counted in its own source.
 | --- | --- |
 | `uniforms` | Each uniform's number of values: 1, 2 or 4. |
 | `reads` | `time` (seconds the use's clock has run), `pointer` (in local units, followed with no message to the director), `output` (`to_output(p)`, `from_output(p)` and `output_size`: where the node lies on its output, in output-logical pixels, also with no message), `backdrop` (`backdrop(p)`, what is behind; a paint's `{ blur: "uniform" }` blurs it), `local` (an effect reading `content` only at its own position, so a change repaints only where it happened). |
-| `extent` | How far a paint or effect draws beyond the box, per side: `pad` plus `pixel` output pixels plus `radius` times the corner radius plus each uniform's value (raised to its `floor`) times its coefficients; a list of such forms means their largest. Pixels outside are never shaded, so keep it tight. |
+| `extent` | How far a paint or effect draws beyond the box, per side: `pad` plus `pixel` output pixels plus `radius` times the (largest) corner radius plus each uniform's value (raised to its `floor`) times its coefficients; a list of such forms means their largest. Pixels outside are never shaded, so keep it tight. |
 | `opaque` | A paint: where it is opaque (`{ inset, when }`), so what it hides is never drawn. A filter: `true` if opaque content stays opaque. |
 | `hole` | A paint: where it draws nothing (`{ inset, when }`), so a border alone draws and repaints only its ring. |
 | `gate` | Uniform components of which one must be above zero for the shader to show anything; otherwise it is skipped at no cost. |
 
 | Use | Meaning |
 | --- | --- |
-| `id` | Names the use on its node; its values animate on from what the use of the same id showed. The decorations take `box`, `shadow`, `blur`, `dim` and `plane`. |
+| `id` | Names the use on its node; its values animate on from what the use of the same id showed. The decorations take `box`, `gradient`, `shadow`, `shadow2`…, `insetShadow`, `insetShadow2`…, `blur`, `dim` and `plane`. |
 | `uniforms` | Values; changes animate with the use's `transition`, else `transition.shaders`, else the default. |
 | `layer` | A paint `"under"` the content (default) or `"over"` it; either way under the children. |
 | `area` | `"output"` covers the whole output; positions and `size` are then output pixels. |
@@ -490,19 +497,62 @@ The examples' windows burn in and out this way:
 ```
 
 The decoration props are shorthands for the standard shaders, which the SDK
-exports for use in `shaders` too: `fill` and `border` are `boxPaint`, `shadow`
-is `boxShadow`, `blur` is `backdropBlur`, a window's `dim` is `dimFilter`, and
-a background's `fill` and `grid` are `planePaint`. They draw in this order:
-shadow, backdrop blur, the node's own paints under its content, fill and
-border, the content, then paints over it. A window's or page's border is a
-frame outside it, drawn before the blur inside it; an image's is drawn over the
-image. The examples' shaders are in
+exports for use in `shaders` too: `fill` and `border` are `boxPaint`, a `fill`
+of `stops` is `gradientPaint`, `shadow` is `boxShadow` (`boxInsetShadow` when
+`inset`), `blur` is `backdropBlur`, a window's `dim` is `dimFilter`, and a
+background's `fill` and `grid` are `planePaint`. `boxPaintWith`,
+`boxShadowWith` and `backdropBlurWith` give their variants for corners of their
+own, border sides and dashes, each a program of its own so the plain box costs
+no more for them. They draw in this order: shadows (the last listed first),
+backdrop blur, the node's own paints under its content, a gradient fill, fill
+and border, inset shadows, the content, then paints over it. A window's or
+page's border is a frame outside it, drawn before the blur inside it; an
+image's is drawn over the image. The examples' shaders are in
 [`lib/effects.ts`](../examples/lib/effects.ts): windows burn in and out, the
 bar is liquid glass, a paint that bends and frosts what is behind it, and
 [`ScreenEffects`](../examples/components/ScreenEffects.tsx) puts three
 whole-screen effects on keys: a night light (Super+N), an old CRT (Super+R)
 and a magnifying lens that follows the pointer (Super+Z). See
 [SHADERS.md](SHADERS.md) for the design.
+
+### Boxes
+
+A box says what a CSS box says, and each prop maps to one CSS property, so a
+scene can be drawn by a browser as well:
+
+```tsx
+<Rect width={240} height={120} radius={[12, 12, 0, 0]} fill="#fff"
+      border={{ width: [0, 0, 1, 0], color: "#0001" }}
+      shadow={[{ color: "#00000014", blur: 3, y: 1 }, { color: "#00000026", blur: 16, y: 8, spread: -4 }]} />
+<Rect width={240} height={48} radius={8} fill={{ stops: ["#ff0040", "#ffd000", "#00c080", "#2040ff"], angle: 0 }} />
+<Rect width={240} height={160} radius={16} clip groupOpacity opacity={fading ? 0.4 : 1}>…</Rect>
+```
+
+| Prop | CSS |
+| --- | --- |
+| `radius={8}`, `radius={[tl, tr, br, bl]}` | `border-radius: 8px`, `border-radius: tl tr br bl` |
+| `border={{ width: 1, color }}`, `width: [top, right, bottom, left]` | `border: 1px solid color`, `border-width: top right bottom left` |
+| `border={{ dash: true }}`, `dash: 6` | `border-style: dashed` (dashes three widths long, or 6) |
+| `shadow={{ x, y, blur, spread, color }}`, a list, `inset: true` | `box-shadow: x y blur spread color`, a list (first on top), `inset` |
+| `fill={{ from, to, angle }}` | `linear-gradient((angle + 90)deg, from, to)` |
+| `fill={{ stops: [c0, [c1, 0.3], …], angle }}` | `linear-gradient(in oklab, (angle + 90)deg, c0, c1 30%, …)` |
+| `fill={{ stops, shape: "radial", center: [x, y] }}` | `radial-gradient(circle farthest-corner at x% y% in oklab, …)` |
+| `clip` (with a radius) | `overflow: hidden` with `border-radius` |
+| `groupOpacity` with `opacity` | `opacity` (without it, opacity multiplies into each child, which CSS has no equivalent for) |
+| `letterSpacing`, `features`, `tabularNumbers`, `decoration` | `letter-spacing`, `font-feature-settings`, `font-variant-numeric: tabular-nums`, `text-decoration-line` |
+
+Border widths are drawn a whole number of output pixels, at least one, as
+browsers draw them. Gradients of `stops` take up to four, interpolate in Oklab
+and are dithered, so a long, subtle one does not band. `radius`, `border`,
+`shadow` and `fill` animate and take `initial`, `exit` and `transition` as
+before; four corners animate corner by corner, a list of shadows shadow by
+shadow (by place in the list), and `animate={{ radius: [4, [16, 16, 0, 0]] }}`
+keyframes corners. A clip with rounded corners draws its children offscreen
+only for repaints near its corners; elsewhere they draw straight. A child
+reading its backdrop near those corners sees only what the clip holds, as in
+CSS a backdrop root would. A layer costs an offscreen pass only while its node
+is translucent; children reading their backdrop inside it see only the layer,
+as CSS backdrop filters inside an `opacity` do.
 
 ### Layout
 
@@ -540,9 +590,10 @@ that changed it.
 Input is resolved synchronously in the compositor against what was last
 presented, so clients never wait for the director:
 
-1. A matching `Shortcut` consumes a key; everything else goes to the world while
-   it holds the keyboard (`useKeyboardGrab`), else to the focused page, else to
-   the focused window. A key goes where its press went until it is released.
+1. A matching `Shortcut` consumes a key; everything else goes to the node with
+   keyboard focus (see [Controls](#controls)), else to the world while it holds
+   the keyboard (`useKeyboardGrab`), else to the focused page, else to the
+   focused window. A key goes where its press went until it is released.
    The pointer needs no such grab: the scene decides where it goes (item 2), so
    a screen-sized node with handlers already takes it all. A press on a window focuses it
    (click-to-focus), new windows receive focus when they map, and closing the
@@ -551,11 +602,13 @@ presented, so clients never wait for the director:
    window's node handles `onActivateRequest`, e.g. by showing its workspace first.
 2. A pointer press first tries `PointerBinding`s (exact modifier match). Then the
    topmost window, page or node under the pointer receives it. Nodes
-   are transparent to input unless they, or an ancestor, have pointer handlers or
-   a `cursor`; a `Rect`, `Box` or sized `Group` with them catches the pointer over
-   its whole box, like a div.
-3. As in the DOM, `onPointerDown`, `onPointerMove`, `onPointerUp` and `onWheel`
-   bubble from the node under the pointer through its ancestors, with
+   are transparent to input unless they, or an ancestor, have pointer handlers, a
+   `cursor`, `states`, `stateGroup`, `tabIndex`, `scroll` or `scrollThumb`; a
+   `Rect`, `Box` or sized `Group` with them catches the pointer over its whole
+   box, like a div.
+3. As in the DOM, `onPointerDown`, `onPointerMove`, `onPointerUp`, `onWheel`,
+   `onClick`, `onDoubleClick`, `onAuxClick` and `onContextMenu` bubble from the
+   node under the pointer through its ancestors, with
    `event.target`, `event.currentTarget` and `event.stopPropagation()`.
    `onPointerEnter` and `onPointerLeave` behave like `mouseenter` and
    `mouseleave`: each node hears them once as the pointer crosses its box,
@@ -572,11 +625,336 @@ Shortcuts and bindings are inactive while no director is connected, and a
 director that goes away gives the keyboard back. `useInput` only listens: what
 it hears still reaches its target, and nothing waits for the director.
 
+### Controls
+
+Controls drawn by the world respond in the frame that shows the pointer over
+them, with no round trip through React: the compositor resolves their states,
+clicks, keyboard focus and scrolling itself, as a browser does. Each feature has
+a CSS counterpart, named below.
+
+**States** (`:hover`, `:active`, `:focus-within`, `:focus`, `:focus-visible`). `states` gives
+values to show while a state holds, of the kinds `initial` and `exit` take
+(`fill`, `border`, `shadow`, `opacity`, `transform`, `color`, `shaders`, …),
+moving with the node's `transition`:
+
+```tsx
+<Box width={120} height={36} radius={8} fill="#2a2d34" transition={tween(0.12)} stateGroup tabIndex={0}
+     states={{ hover: { fill: "#3b5bdb" }, pressed: { transform: [scale(0.96)] },
+               focusVisible: { border: { width: 2, color: "#ffd43b" } } }}
+     onClick={save}>
+  <Text color="#c9ccd3" states={{ group: true, hover: { color: "#fff" } }}>Save</Text>
+</Box>
+```
+
+- `hover` holds while the pointer is over the node or one of its children;
+  `pressed` while a primary press begun on it is held and the pointer is still
+  over it (or Space is held on it focused); `focusWithin` while it or a node under
+  it has keyboard focus (a field's frame around its text); `focus` while it has
+  keyboard focus, and `focusVisible` only when that focus came by keyboard. Where
+  several hold, the later of hover, focusWithin, focus, focusVisible, pressed
+  wins, value by value.
+- `states={{ group: true, … }}` takes the states of the nearest node at or above
+  with `stateGroup`, as Tailwind's `group-hover`: a button's label and icon
+  change with the button.
+- A render that changes a value a state overrides changes what it returns to;
+  what shows stays the state's until the state ends. A state changes a
+  decoration's uniforms only on a node with the decoration; the SDK adds a
+  transparent `fill`, `border`, `shadow` or `blur` that only states name.
+  Leaving `states` out (as a disabled control does) shows none.
+
+**Clicks** (`click`, `auxclick`, `dblclick`, `contextmenu`). `onClick` hears a
+primary press let go of over the same node; it goes to the nearest node holding
+both where the press began and where it ended, and bubbles, so letting go
+elsewhere cancels. `event.count` counts presses in quick succession (within
+400 ms and 5 pixels): 2 is a double click, which `onDoubleClick` also hears.
+Other buttons' clicks come to `onAuxClick`. `onContextMenu` hears the secondary
+button go down, with the pointer's position to open a menu at, and Menu or
+Shift+F10 on a focused node (`keyboard: true`, placed at its bottom left). A
+press that dragged a node along is no click.
+
+**Focus** (`tabindex`, `focus`/`blur`, `keydown`/`keyup`). A `Box`, `Rect`,
+`Group`, `Text` or `Image` with `tabIndex` takes keyboard focus: a press on it,
+or a child, focuses it, and a press elsewhere takes focus away. Tab and
+Shift+Tab move focus in tree order among nodes with a `tabIndex` of 0 or more,
+within the nearest `focusScope` around the focused node (a menu, a dialog), and
+show `focusVisible`. While a node has focus, keys no `Shortcut` takes go to it
+as `onKeyDown` (repeating while held) and `onKeyUp`, which bubble, and windows
+and pages have no keyboard; Enter, and Space as it is let go, click it, unless
+it handles `onKeyDown` itself, as a text field does. `onFocus` and `onBlur`
+do not bubble. `focusNode(ref.current, { visible })` focuses a node from code,
+and `focusNode(null)` takes focus away; focusing a window or a page does too.
+`useKeyboardGrab` still works, for worlds that take keys whole.
+
+**Scrolling** (`overflow: auto`, `overscroll-behavior`, overlay scrollbars). A
+`Box` (or `Group`) with `scroll="y"`, `"x"` or `"both"` is a scroll container
+whose offset the compositor owns: it moves the children by it, clips them to
+its box, and scrolls natively. Wheel notches glide; two fingers track one to
+one and coast on when they lift; pulling past an end stretches it and settles
+back; what an inner container cannot take passes to the one around it, unless
+it has `overscroll="contain"` (`"none"` also keeps fingers from stretching it).
+Hits and event positions go through the offset. Inside a `Box` the host sends
+how far its children reach (`contentWidth`/`contentHeight`); give them
+yourself elsewhere. `stickToEnd` keeps the end in view as the content grows,
+while it was in view. `onScroll` hears where the offset is headed (`scrollX`,
+`scrollY`), coalesced, and `scrollTo(ref.current, { y }, transition?)` moves
+it from code. A child with `scrollThumb="y"` (or `"x"`) is the container's
+thumb: an ordinary node, styled and given `states` as any other, which the
+compositor places along the track (its declared `y` being the inset at either
+end and its `height` the shortest it gets), shows while scrolling, fades out
+1.2 s after, keeps while hovered or dragged, and lets drag the content.
+
+The UI kit (below) is built on these.
+
 Over a client the pointer shows the cursor that client set. Elsewhere it shows
 the `cursor` of the node under it, inherited from its parents, as CSS names it
 (`"pointer"`, `"text"`, `"grab"`, `"none"`, ...); native moves show a grabbing
 hand and resizes the edge's arrow. Shapes come from `XCURSOR_THEME` at
 `XCURSOR_SIZE`, rendered at each output's scale.
+
+### UI kit
+
+`proscenium/ui` is a kit of controls and surfaces built from the nodes above,
+in the manner of React Native: themes, `StyleSheet` and `variants`, and
+components that take `style` for their root and a style per part. Every
+control's look under the pointer, held down and focused is `states` the
+compositor resolves in the frame the input arrives, so hovering and pressing
+render nothing; changes animate in the compositor through `transition`; a still
+interface costs nothing.
+
+```tsx
+import { Button, OverlayHost, ThemeProvider, darkTheme } from "proscenium/ui";
+
+export default function World() {
+  return (
+    <ThemeProvider theme={darkTheme}>
+      <OverlayHost>
+        <Screen>…<Button label="Save" variant="filled" onPress={save} />…</Screen>
+      </OverlayHost>
+    </ThemeProvider>
+  );
+}
+```
+
+**Theme.** `lightTheme` and `darkTheme` (or `createTheme(overrides, base)`)
+hold the tokens; components read the one a `ThemeProvider` gives, and
+`makeStyles` builds styles from it once per theme.
+
+| Token | Holds |
+| --- | --- |
+| `colors` | Text (`ink`, `soft`, `muted`, `faint`), the accent and its tints, `danger`, `hover`/`press` overlays, `border`/`borderHover` and `field` for controls with a surface, `popover`, `tooltip`, `scrim`, `ring`, … |
+| `type` | Text roles: `body` (13/18, 400), `label` (on controls, 500), `strong`, `caption`, `small` (12/16, hints and shortcuts), `title`; whole-pixel line heights |
+| `controls` | Control heights: `small` 24, `medium` 28, `large` 32 |
+| `radii` | `xs` 4 (checkboxes, menu items), `sm` 6 (controls), `md` 8 (menus, segmented), `lg` 12 (cards) |
+| `shadows` | Lists of an ambient and a key shadow with negative spread: `control`, `pill`, `card`, `float` (menus), `modal`, `knob` |
+| `focus` | The keyboard focus ring: a 2 px near-solid accent ring outside a 2 px gap in `colors.ringOffset`, as shadows (`ring`), and the same at nothing (`ringClear`) for it to grow from |
+| `motion` | `fade` (critically damped, for colors and opacity: a hover never overshoots), `press`, `glide`, `pop` (slightly underdamped, for geometry), `layout`, `scroll`, … |
+
+**Controls.** `Button` (`variant` plain, tinted, filled, outline or danger;
+`size` small, medium or large; `icon`, `trailing`, `selected`), `IconButton`,
+`Checkbox`, `Switch`, `Slider`, `SegmentedControl`, `ProgressBar`, `Tabs`
+(underline or segmented), `Select`, `MenuButton`, `TextField`, and `List` of
+`ListItem`s (`label`, `description`, `detail`, `icon`, `selected`, `menu`).
+Each is reached by Tab, shows the theme's focus ring when focus came by
+keyboard, and answers the keys its native counterpart does: Enter and Space
+press buttons and toggle checkboxes and switches; arrows, Page Up/Down, Home and
+End move a slider (Shift for bigger steps); arrows choose in a segmented
+control or tabs, where Tab reaches only the chosen one; Up and Down move
+through a List and open a Select. `onPress` gets the click, whose `count` is 0
+when it came from a key. A `style` that is a function of the control's state
+(`({ hovered, pressed }) => …`) still works, at the cost of rendering as the
+state changes. `Pressable` is the base: a Box with `onPress`, `states`,
+`onContextMenu`, `tabIndex` 0 and `stateGroup`, so children with
+`states={{ group: true, … }}` follow it.
+
+Tab moves focus only once a node has it, so a world, panel or dialog meant
+for the keyboard gives one control `autoFocus` (`Button`, `IconButton`,
+`Select`, `MenuButton`, `TextField`, any `Pressable`), or calls `focusNode`.
+The kit's own surfaces never leave the keyboard stranded: a menu focuses itself
+(arrows then move into it), or its first item when opened from the keyboard; a
+`Select` its chosen option; a `Popover` and a `Dialog` themselves (or the
+Dialog's `initialFocus`), so Tab reaches their first control and Escape closes
+them; and focus goes back to the control that opened them.
+
+`TextField` is an editable text the compositor edits itself (see "Editable
+text" below), so typing, the caret and selecting never wait for the world: it
+answers keys and presses in the frame they come, as an `<input>` does. It takes
+focus as any control does (a click, Tab, `autoFocus` or its `focus()` handle;
+`blurTextFields()` takes it away). Its keys are those of the keymap below
+(Emacs by default), with the real clipboard (a client's copy too), a middle
+click for the primary selection, dead keys and Compose; dragging selects (and
+scrolls past an edge), a double click takes a word, a triple click a line; the
+context menu has Undo, Redo, Cut, Copy, Paste and Select all. Props: `value`,
+`onChangeText`, `onSubmit` (Return; in a `multiline` field Shift+Return types a
+line break, `submitOnEnter={false}` to make Return do so), `placeholder`,
+`multiline` with `maxLines` (it grows to that many lines, then scrolls),
+`readOnly`, `password`, `maxLength` (UTF-16 code units, as `value.length`),
+`selectOnFocus`, `disabled`, `bare`, `leading` and `trailing` slots (a search
+glyph, a clear button), `autoFocus`, `width`, `style`, `textStyle`,
+`placeholderStyle` (its color), `onFocusChange`, `onSelectionChange`. The
+handle has `focus()`, `blur()`, `selectAll()`, `setSelection(start, end)` and
+`insertText(text)` (an emoji picker, a completion). The caret is the accent,
+the selection `colors.selection`, the frame shows the focus ring while the text
+has focus (`focusWithin`).
+
+Keys a world wants while the field has focus are named ahead in `captureKeys`
+(e.g. `["Up", "Down", "Escape"]` for a list under a search field, `["Tab"]` for
+completion) and reach `onKey`, which also hears the keys the field has no use
+for (Tab, Escape, shortcuts); its return value no longer matters. A field with
+`onKey` and no `captureKeys` leaves Up, Down, PageUp, PageDown and Escape on one
+line and Escape in a multiline field. Escape not captured takes focus away.
+
+The value is controlled, with reconciliation: the field declares `value` back
+with the revision of the compositor's report it last heard, so an echo arriving
+after newer keystrokes changes nothing, while a value the world chooses (a field
+cleared as it sends, a completion) replaces the text, and what was typed after
+the report is kept after it. Typing heard while such a value is on its way is
+not passed to `onChangeText`; the compositor's answer brings it. Typing after
+Return waits until the world has rendered, so `onSubmit={(text) => { send(text);
+setDraft(""); }}` clears the field even while the user types on.
+
+**Text keymaps.** A field takes the keys of its keymap: `"emacs"`, the default,
+or `"standard"`, set kit-wide by the theme's `textKeymap`
+(`createTheme({ textKeymap: "standard" })`), per field by `keymap`, and on the
+wire by the `keymap` prop. Keys are looked up in the keymap, then in what both
+share; a chord a `shortcut` node or the field's `captureKeys` claims is not the
+field's. Alt and Control chords neither keymap binds type nothing and go on as
+`keydown`. Held keys repeat, C-h, C-d and C-k too. M- is Alt; Shift with any
+movement extends the selection.
+
+Both keymaps:
+
+| Keys | Does |
+| --- | --- |
+| Left, Right | a character, visually (with a selection and no Shift: to its edge) |
+| Ctrl+Left, Ctrl+Right | a word |
+| Up, Down, PageUp, PageDown | a visual line, a page (multiline; on one line they go on as keydown) |
+| Home, End | the visual line's start and end (the text's on one line) |
+| Ctrl+Home, Ctrl+End | the text's start and end |
+| BackSpace, Delete | delete a character back or forward, or the selection |
+| Ctrl+BackSpace, Ctrl+Delete | delete a word back or forward |
+| Shift+Delete, Ctrl+X | cut the selection |
+| Ctrl+C, Ctrl+Insert | copy the selection |
+| Ctrl+V, Shift+Insert | paste |
+| Ctrl+Z, Ctrl+Shift+Z | undo, redo |
+| Return | submit (one line, or `submitOnEnter` without Shift); a line break |
+
+`"standard"` adds Ctrl+A (select all) and Ctrl+Y (redo), as browsers on Linux
+and Windows do. `"emacs"` adds the readline and Emacs bindings, as macOS text
+fields and GTK's Emacs key theme have them:
+
+| Keys | Command | Does |
+| --- | --- | --- |
+| C-a, C-e | `line-start`, `line-end` | the visual line's start and end |
+| C-b, C-f | `backward-char`, `forward-char` | a character, logically |
+| C-p, C-n | `previous-line`, `next-line` | a visual line (multiline) |
+| M-b, M-f | `backward-word`, `forward-word` | a word |
+| M-<, M-> | `text-start`, `text-end` | the text's start and end |
+| C-d, C-h | `delete-forward`, `delete-backward` | delete a character |
+| M-d, M-BackSpace | `kill-word`, `backward-kill-word` | kill a word forward, back |
+| C-w | `kill-region` | kill the selection, or the word back without one |
+| C-k | `kill-line` | kill to the line's end; at its end, the line break |
+| C-u | `kill-line-start` | kill back to the line's start |
+| C-y | `yank` | paste the clipboard: the last kill, or a copy made elsewhere |
+| M-y | `yank-pop` | after a yank, replace it with the kill before |
+| M-w | `copy-region` | copy the selection (and keep it in the kill ring) |
+| C-t, M-t | `transpose-chars`, `transpose-words` | swap the characters or words at the caret |
+| M-u, M-l, M-c | `upcase-word`, `downcase-word`, `capitalize-word` | the word after the caret |
+| C-Space | `set-mark` | start a selection that movement extends |
+| C-g | `cancel` | drop the mark and the selection |
+| C-/, C-_ | `undo` | undo |
+| C-o, C-j | `open-line`, `newline` | a line break after or before the caret (multiline) |
+| Ctrl+Shift+A | `select-all` | select all |
+
+Kills go to a kill ring shared by every field and to the clipboard; kills in a
+row join into one (forward kills after, backward ones before), and an edit, a
+movement or a press ends the run.
+
+Where the two meet, the Emacs meaning wins, so with `"emacs"` these standard
+shortcuts move or go: select all is Ctrl+Shift+A, not Ctrl+A (line start); redo
+is only Ctrl+Shift+Z, as Ctrl+Y yanks; and Ctrl+B, D, E, F, H, K, N, P, T, U and
+W, which browsers leave to the page (bold, bookmark, find, history, new window,
+print, new tab, view source, close tab), are the field's while it has focus:
+a world wanting one names it in `captureKeys`. Ctrl+C, Ctrl+X (with a
+selection), Ctrl+V and Ctrl+Z keep their standard meaning. Not bound: C-v and
+M-v (pages: Ctrl+V pastes), C-x prefixes, C-s and C-r (search), numeric
+arguments, and M-y without a yank before it.
+
+**Editable text.** Under `TextField` is `<Text editable tabIndex={0} …>`, usable
+alone: `text` (the value) with `valueRevision`, `multiline`, `readOnly`,
+`password`, `maxLength`, `placeholder`, `placeholderColor`, `caretColor`
+(CSS `caret-color`), `selectionColor` (`::selection`), `captureKeys`,
+`submitOnEnter`, `selectOnFocus`, `contentInset` (the input's CSS padding),
+`width` and `height`; `onInput` (`text`, `revision`, `selectionStart`,
+`selectionEnd`, `replaced`), `onSubmit`, `onSelect`, `onMeasure` (its lines'
+height up to `maxLines`) and `onKeyDown`. `editText(node, { action })` selects,
+selects all, inserts, deletes, undoes, redoes, cuts, copies or pastes. Offsets
+are UTF-16 code units, as JavaScript strings index. `docs/PROTOCOL.md`
+("Editable text") has the details.
+
+**Floating surfaces.** Menus, popovers, tooltips and dialogs draw above
+everything on an output, in a layer `<OverlayHost>` puts after its children:
+wrap the world in one, once, near the root. Each surface renders into the layer
+through a portal (`createPortal(children, node)` in the SDK, as React DOM's), so
+context, state and handlers stay where it is declared. Without an
+`OverlayHost` a surface renders a `<Screen>` of its own where it is declared,
+which works but paints in tree order, under anything declared after it.
+
+A surface is placed beside an anchor (a ref to a node, or a point or box on an
+output) so that it never leaves the output: on the side asked for (below by
+default), flipping to the other side when only that has room, and shifting
+along the edge. It measures itself before it first shows, then grows in from
+the anchor with a short scale and fade as one layer (`groupOpacity`), and
+shrinks out as it goes (`exit`). A node's place on its output comes from the
+director's tree (the sum of `x`/`y` up to its `Screen`, or through the camera);
+transforms and scroll offsets are not in that sum, so the kit corrects it from
+the pointer events that open a surface (`rememberAnchor`). A surface places
+itself again when the outputs change, or when its anchor or a Box around it is
+laid out anew while it shows (`watchLayout(node, listener)` in the SDK hears a
+node's new boxes from anywhere).
+
+```tsx
+<Menu open={open} onClose={() => setOpen(false)} anchor={buttonRef} items={[
+  { label: "New window", shortcut: "Ctrl+N", icon: windowIcon, onSelect: newWindow },
+  { type: "submenu", label: "Open recent", items: recent.map((file) => ({ label: file, onSelect: () => open(file) })) },
+  "-",
+  { label: "Word wrap", checked: wrap, onSelect: toggleWrap },
+  { label: "Delete", danger: true, onSelect: remove },
+]} />
+
+<ContextMenu items={[{ label: "Copy", shortcut: "Ctrl+C", onSelect: copy }]} padding={12}>
+  <Label>Right click me</Label>
+</ContextMenu>
+```
+
+- `Menu`: `items` is a list (items `{ label, onSelect, shortcut, icon,
+  checked, disabled, danger, keepOpen }`, `"-"` for a separator,
+  `{ type: "label" }`, `{ type: "submenu", items }`) or JSX of `MenuItem`,
+  `Submenu`, `MenuSeparator` and `MenuLabel`. Items highlight under the pointer
+  in the compositor's frame, and the highlight is keyboard focus, so the
+  pointer and the keys move one highlight. Up, Down, Home and End move; typing
+  jumps to an item by its start; Enter or Space picks; Right and Left open and
+  close submenus; Escape closes. A submenu opens as the pointer rests on its
+  item (160 ms) and stays open while the pointer crosses other items on the way
+  (320 ms). A press outside, Escape or picking an item closes the menu, and
+  focus goes back to the anchor if it takes focus.
+- `ContextMenu` is a Box whose children open a menu at the pointer on a right
+  press, or below them on Menu or Shift+F10; `useContextMenu(items)` gives
+  `onContextMenu` and the menu `element` for any node.
+- `MenuButton` opens a menu below a button; `Select` a list of options with the
+  chosen one ticked, as wide as its button at least.
+- `Popover`: any content beside an anchor, closed by a press outside or Escape,
+  with Tab kept within it (`focusScope`).
+- `Tooltip`: `<Tooltip content="Close"><IconButton … /></Tooltip>` shows after
+  the pointer rests 500 ms, at once while the pointer moves between controls
+  with tooltips, on keyboard focus, and hides on a press or as the pointer
+  leaves.
+- `Dialog`: a modal surface over a scrim on every output, with a `title`,
+  `description`, content and `actions`; Escape or a press on the scrim closes
+  it, and Tab keeps within it.
+
+The kit's own marks (ticks, chevrons) are `Glyph`s, strokes of Rects, so they
+need no font or image file. `place`, `moveIndex`, `typeahead` and `applyKey`
+(text editing) are pure and exported for components of your own.
 
 ### Web pages
 
@@ -850,6 +1228,22 @@ committed.
   the output, then runs its shader over that area.
   What it contains is diffed, damaged and culled as usual; a non-local effect is
   repaired like a backdrop reader, whole.
+- Boxes keeping still on an upright transform (a scale and an offset from the
+  output's pixels) snap each edge to a whole output pixel as their display items
+  are built, wherever layout put them: at 150% boxes sharing an edge share it and
+  a 1 px hairline is one pixel, not two half-lit ones. Each edge rounds alone, so
+  it lands where it would for any other box, whatever output scale each output
+  has. A box whose position, size or transform moves, or under a camera that
+  moved since the last frame, is drawn where it falls, so motion stays smooth,
+  and snaps (by under half a pixel) in the frame after it stops.
+- Glyphs sit on whole device pixels down and quarter pixels across, and text
+  rasters put each line's baseline on a whole device pixel, so horizontal stems
+  stay crisp. Text coverage is blended as DirectWrite blends it (Windows
+  Terminal's shaders, as Zed ports them): an enhanced-contrast boost of dark
+  text, then gamma correction. The defaults, a contrast of 0.1 and a gamma of 1.2,
+  are fitted to Chromium's greyscale text: both polarities draw within 1% of its
+  ink (Zed's 1 and 1.8 drew dark text on light 9-17% heavier).
+  `PROSCENIUM_TEXT_CONTRAST` and `PROSCENIUM_TEXT_GAMMA` override them.
 - Text is laid out once per change and rasterized per output at the scale it is
   seen; while a zoom is under way rasters step in half octaves, and the first
   still frame renders them exactly. Pango lays text out at its logical size and
@@ -950,7 +1344,9 @@ standard input ([`tests/drive.c`](../tests/drive.c)): `move`, `glide`,
 and `sleep`, so a session can be driven like a desktop. With
 `PROSCENIUM_CHECK=1` the compositor compares every frame with a full redraw of
 the same display, which damage tracking must reproduce pixel for pixel, and logs
-the frames that differ. [`tests/headless.sh`](../tests/headless.sh) puts these
+the frames that differ. Shader programs build on the driver's threads, and a frame
+asks whether one finished only once, at its first use; the full redraw asks none,
+so it draws what its frame drew while a program builds. [`tests/headless.sh`](../tests/headless.sh) puts these
 together on a private session bus and scratch directories:
 `tests/headless.sh examples/hypr.tsx tests/hypr.drive` types into terminals,
 moves and resizes a window, switches workspaces and opens the launcher, then

@@ -1,0 +1,15 @@
+# shot-at: 3200
+# page: 2
+# Click the tab box, Tab to the next focusable and Shift+Tab back: the keyboard focus ring (yellow).
+extent 1280 800
+move 300 300
+glide $ST_TAB_X $ST_ROW1_Y 300
+sleep 200
+click left
+sleep 200
+key Tab
+sleep 200
+chord shift+Tab
+sleep 300
+move 300 300
+sleep 600

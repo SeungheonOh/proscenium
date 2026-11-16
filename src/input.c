@@ -36,10 +36,13 @@
 #include <wlr/types/wlr_virtual_pointer_v1.h>
 #include <wlr/types/wlr_xcursor_manager.h>
 #include <wlr/util/log.h>
+#include <xkbcommon/xkbcommon-compose.h>
 #include <xkbcommon/xkbcommon.h>
 
 #include "display.h"
+#include "edit.h"
 #include "link.h"
+#include "scroll.h"
 #include "stage.h"
 #include "web.h"
 
@@ -81,6 +84,17 @@ struct pressed_key {
     bool repeat;
     /* The director held the keyboard when it was pressed: its release goes there too. */
     bool grabbed;
+    /* The focused node it went to, which hears its release too. */
+    struct node *node; /* referenced */
+};
+
+/* A press on a node that may become a click: where it began, and how many came quickly. */
+struct click_press {
+    uint32_t code;
+    struct node *node; /* referenced */
+    struct output *output;
+    double x, y;
+    int count;
 };
 
 /* A key as the director hears of it: its keysym's name and the text it types. */
@@ -88,6 +102,7 @@ struct key_names {
     char name[64];
     char text[16];
     bool repeats;
+    xkb_keysym_t sym;
 };
 
 struct input {
@@ -138,6 +153,30 @@ struct input {
     struct wl_global *virtual_keyboard_global, *virtual_pointer_global;
     /* The one client that sees the virtual devices on a real seat; empty on a headless one. */
     char drive[PATH_MAX];
+
+    /* UI states: the node under the pointer, the one a primary press began on, a node held
+     * down by Space, and the nodes some state holds for now. */
+    struct node *state_hit, *press_node, *key_pressed; /* referenced */
+    struct vec stated;                                 /* struct node *, referenced */
+    /* The node with keyboard focus, and whether focus came by keyboard; a window or page
+     * taking focus from it gives the keyboard on itself. */
+    struct node *focused; /* referenced */
+    bool focus_visible, client_focusing;
+    /* The latest input was a key, so focus given from code shows as from the keyboard. */
+    bool keyboard_last;
+    /* Or a key the focused node repeats. */
+    bool repeating_focus;
+    /* An editable node a primary press selects in while it is held. */
+    struct node *edit_drag; /* referenced */
+    /* Dead keys and Compose sequences typed into editable nodes, from the locale's table. */
+    struct xkb_compose_table *compose_table;
+    struct xkb_compose_state *compose;
+    bool compose_tried;
+    /* Presses on nodes that may become clicks, and the last press, which counts them. */
+    struct click_press clicks[8];
+    int click_count;
+    struct click_press last_press;
+    double last_press_time;
 
     /* Windows agents sent input, kept drawing until a while after. */
     struct agent_wake {
@@ -453,6 +492,428 @@ static void set_entered(struct server *server, struct node *node) {
     if (old) node_unref(old);
 }
 
+/* Controls: UI states, clicks and keyboard focus, resolved here as input comes. */
+
+/* Seconds and output pixels within which presses count as one multi-click. */
+#define MULTI_CLICK_TIME 0.4
+#define MULTI_CLICK_SLOP 5.0
+
+/* Whether NODE is ANCESTOR or lies under it. */
+static bool within(const struct node *node, const struct node *ancestor) {
+    for (; node; node = node->parent)
+        if (node == ancestor) return true;
+    return false;
+}
+
+static uint8_t wanted_states(const struct input *in, const struct node *node) {
+    if (node->state != NODE_LIVE) return 0;
+    uint8_t states = 0;
+    bool hovered = in->state_hit && within(in->state_hit, node);
+    if (hovered) states |= UI_BIT(UI_HOVER);
+    /* As :active, a press holds while the pointer stays over what it began on. */
+    if ((hovered && in->press_node && within(in->press_node, node)) ||
+        (in->key_pressed && within(in->key_pressed, node)))
+        states |= UI_BIT(UI_PRESSED);
+    if (in->focused && within(in->focused, node)) states |= UI_BIT(UI_FOCUS_WITHIN);
+    if (node == in->focused) {
+        states |= UI_BIT(UI_FOCUS);
+        if (in->focus_visible) states |= UI_BIT(UI_FOCUS_VISIBLE);
+    }
+    return states;
+}
+
+static bool listed(const struct vec *nodes, const struct node *node) {
+    VEC_FOR(nodes, struct node *, slot) if (*slot == node) return true;
+    return false;
+}
+
+/* Give NODE the states it should hold, noting it in NEXT while it holds any. */
+static bool settle_states(struct server *server, struct node *node, struct vec *next) {
+    uint8_t states = wanted_states(input_of(server), node);
+    bool moved = scene_set_ui_states(&server->scene, node, states, server_time(server));
+    if (states && !listed(next, node)) {
+        node_ref(node);
+        *(struct node **)vec_push(next) = node;
+    }
+    return moved;
+}
+
+/* Bring every node's UI states up to date with the pointer, presses and focus; what they
+ * override starts moving in the frame that shows them. */
+static void refresh_states(struct server *server) {
+    struct input *in = input_of(server);
+    struct vec next;
+    vec_init(&next, sizeof(struct node *));
+    bool moved = false;
+    VEC_FOR(&in->stated, struct node *, slot) moved = settle_states(server, *slot, &next) || moved;
+    struct node *chains[] = {in->state_hit, in->key_pressed, in->focused};
+    for (size_t i = 0; i < ARRAY_LENGTH(chains); i++) {
+        for (struct node *node = chains[i]; node && node->parent; node = node->parent)
+            moved = settle_states(server, node, &next) || moved;
+    }
+    VEC_FOR(&in->stated, struct node *, slot) node_unref(*slot);
+    vec_finish(&in->stated);
+    in->stated = next;
+    if (moved) scene_changed(server);
+}
+
+/* The pointer may be over another node now: hover follows it. */
+static void pick_states(struct server *server) {
+    struct input *in = input_of(server);
+    struct hit *hit = pick(server, node_input_target);
+    struct node *node = hit ? hit->node : NULL;
+    scroll_hover(server, node);
+    if (node == in->state_hit) return;
+    set_ref(&in->state_hit, node);
+    refresh_states(server);
+}
+
+static void emit_key(struct server *server, struct node *node, enum event_name name,
+                     uint32_t keycode, const struct key_names *names, bool repeat) {
+    struct event event;
+    if (!event_begin(server, &event, node, name)) return;
+    json_key(&event.writer, "key");
+    json_string(&event.writer, names->name);
+    json_key(&event.writer, "text");
+    json_string(&event.writer, names->text);
+    json_key(&event.writer, "code");
+    json_int(&event.writer, keycode);
+    json_key(&event.writer, "repeat");
+    json_bool(&event.writer, repeat);
+    json_key(&event.writer, "modifiers");
+    modifiers_write(server->seat_state.modifiers, &event.writer);
+    event_end(server, &event);
+}
+
+/* Focus NODE, or nobody: it hears focus, the node before it blur. VISIBLE when focus came
+ * by keyboard, which focusVisible shows. */
+static void set_focus(struct server *server, struct node *node, bool visible) {
+    struct input *in = input_of(server);
+    if (node && node->state != NODE_LIVE) node = NULL;
+    struct node *old = in->focused;
+    if (node == old && (!node || visible == in->focus_visible)) return;
+    if (old) node_ref(old);
+    set_ref(&in->focused, node);
+    in->focus_visible = node && visible;
+    if (node != old) {
+        set_ref(&in->key_pressed, NULL);
+        if (in->repeating_focus) {
+            in->repeating_focus = false;
+            if (in->repeat_timer) wl_event_source_timer_update(in->repeat_timer, 0);
+        }
+        if (in->compose) xkb_compose_state_reset(in->compose);
+        if (old) edit_focus(server, old, false);
+        if (node) edit_focus(server, node, true);
+        struct event event;
+        if (old && old->state == NODE_LIVE && event_begin(server, &event, old, EVENT_BLUR))
+            event_end(server, &event);
+        if (node && event_begin(server, &event, node, EVENT_FOCUS)) {
+            json_key(&event.writer, "visible");
+            json_bool(&event.writer, visible);
+            event_end(server, &event);
+        }
+        if (node && visible) scroll_into_view(server, node);
+    }
+    if (old) node_unref(old);
+    refresh_states(server);
+    /* Windows and pages have no keyboard while a node has focus. */
+    if (!in->client_focusing) keyboard_sync_focus(server);
+}
+
+/* Whether NODE can hold focus: it takes focus, takes input, and shows, as do its
+ * ancestors. A hidden node holding it would take every key from windows and pages. */
+static bool focusable(const struct node *node) {
+    if (node->state != NODE_LIVE || !node->props[PROP_TAB_INDEX].given ||
+        !node_bool(node, PROP_INTERACTIVE))
+        return false;
+    for (; node; node = node->parent)
+        if (!node_bool(node, PROP_VISIBLE)) return false;
+    return true;
+}
+
+bool input_focus_node(struct server *server, struct node *node, int visible,
+                      struct protocol_error *error) {
+    struct input *in = input_of(server);
+    if (node && !focusable(node))
+        return protocol_fail(error, "Node %lld takes no focus.", (long long)node->id);
+    set_focus(server, node, visible < 0 ? in->keyboard_last : visible);
+    return true;
+}
+
+void input_blur_node(struct server *server) {
+    struct input *in = input_of(server);
+    if (!in || !in->focused) return;
+    in->client_focusing = true;
+    set_focus(server, NULL, false);
+    in->client_focusing = false;
+}
+
+/* What a press on NODE focuses: it or its nearest ancestor taking focus. */
+static struct node *focus_target(struct node *node) {
+    for (; node && node->parent; node = node->parent)
+        if (node->props[PROP_TAB_INDEX].given) return node;
+    return NULL;
+}
+
+/* Whether NODE takes part in Tab traversal: it takes focus at a tabIndex of 0 or more and
+ * shows. */
+static bool tabbable(const struct node *node) {
+    return node->state == NODE_LIVE && node->props[PROP_TAB_INDEX].given &&
+           node->props[PROP_TAB_INDEX].number >= 0 && node_bool(node, PROP_INTERACTIVE);
+}
+
+static void collect_tabbable(struct node *node, struct vec *out) {
+    NODE_FOR_CHILDREN(node, child) {
+        if (child->state != NODE_LIVE || !node_bool(child, PROP_VISIBLE)) continue;
+        if (tabbable(child)) *(struct node **)vec_push(out) = child;
+        collect_tabbable(child, out);
+    }
+}
+
+/* Tab and Shift+Tab: focus moves to the next node taking it in tree order, within the
+ * nearest focus scope around the focused node, wrapping around. */
+static void traverse(struct server *server, bool backward) {
+    struct input *in = input_of(server);
+    struct node *current = in->focused;
+    if (!current) return;
+    struct node *scope = current;
+    while (scope->parent && !node_bool(scope, PROP_FOCUS_SCOPE)) scope = scope->parent;
+    struct vec order;
+    vec_init(&order, sizeof(struct node *));
+    collect_tabbable(scope, &order);
+    if (order.length) {
+        size_t index = order.length;
+        for (size_t i = 0; i < order.length; i++)
+            if (*(struct node **)vec_at(&order, i) == current) index = i;
+        size_t count = order.length;
+        size_t next = index == count ? (backward ? count - 1 : 0)
+                      : backward     ? (index + count - 1) % count
+                                     : (index + 1) % count;
+        set_focus(server, *(struct node **)vec_at(&order, next), true);
+    }
+    vec_finish(&order);
+}
+
+/* Enter or Space on NODE clicks it, unless it takes its keys itself, as a text field does. */
+static bool activates(const struct node *node) {
+    return node->state == NODE_LIVE && !node_handles(node, EVENT_KEYDOWN) && !node->editor;
+}
+
+enum compose_result { COMPOSE_NONE, COMPOSE_PENDING, COMPOSE_DONE };
+
+/* SYM through the locale's Compose sequences: a dead key or Compose starting one waits,
+ * and the sequence's end gives its text in OUT. */
+static enum compose_result compose_key(struct server *server, xkb_keysym_t sym, char *out,
+                                       size_t size) {
+    struct input *in = input_of(server);
+    if (!in->compose_tried) {
+        in->compose_tried = true;
+        const char *locale = getenv("LC_ALL");
+        if (!locale || !*locale) locale = getenv("LC_CTYPE");
+        if (!locale || !*locale) locale = getenv("LANG");
+        if (!locale || !*locale) locale = "C";
+        struct xkb_context *context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
+        if (context) {
+            in->compose_table =
+                xkb_compose_table_new_from_locale(context, locale, XKB_COMPOSE_COMPILE_NO_FLAGS);
+            if (!in->compose_table && strcmp(locale, "C"))
+                in->compose_table =
+                    xkb_compose_table_new_from_locale(context, "C", XKB_COMPOSE_COMPILE_NO_FLAGS);
+            xkb_context_unref(context);
+        }
+        if (in->compose_table)
+            in->compose = xkb_compose_state_new(in->compose_table, XKB_COMPOSE_STATE_NO_FLAGS);
+    }
+    if (!in->compose || sym == XKB_KEY_NoSymbol) return COMPOSE_NONE;
+    if (xkb_compose_state_feed(in->compose, sym) != XKB_COMPOSE_FEED_ACCEPTED)
+        return COMPOSE_NONE;
+    switch (xkb_compose_state_get_status(in->compose)) {
+    case XKB_COMPOSE_COMPOSING: return COMPOSE_PENDING;
+    case XKB_COMPOSE_COMPOSED:
+        xkb_compose_state_get_utf8(in->compose, out, size);
+        xkb_compose_state_reset(in->compose);
+        return COMPOSE_DONE;
+    case XKB_COMPOSE_CANCELLED:
+        xkb_compose_state_reset(in->compose);
+        /* A sequence that matched nothing types nothing, as GTK's does. */
+        out[0] = '\0';
+        return COMPOSE_DONE;
+    default: return COMPOSE_NONE;
+    }
+}
+
+/* Whether a key pressed for the editable NODE edits it; the rest go on as keydown. A key it
+ * captures goes on, with no default action; CAPTURED says so. */
+static bool key_edits(struct server *server, struct node *node, const struct key_names *names,
+                      bool *captured) {
+    struct edit_key key = {names->name, names->text, server->seat_state.modifiers};
+    *captured = edit_captures(node, &key);
+    if (*captured) return false;
+    char composed[64];
+    switch (compose_key(server, names->sym, composed, sizeof composed)) {
+    case COMPOSE_PENDING: return true;
+    case COMPOSE_DONE:
+        if (!composed[0]) return true;
+        key.text = composed;
+        break;
+    case COMPOSE_NONE: break;
+    }
+    return edit_key(server, node, &key);
+}
+
+static void emit_key_click(struct server *server, struct node *node) {
+    struct event event;
+    if (!event_begin(server, &event, node, EVENT_CLICK)) return;
+    json_key(&event.writer, "button");
+    json_int(&event.writer, BTN_LEFT);
+    json_key(&event.writer, "count");
+    json_int(&event.writer, 0);
+    json_key(&event.writer, "modifiers");
+    modifiers_write(server->seat_state.modifiers, &event.writer);
+    event_end(server, &event);
+}
+
+/* A context menu asked for from the keyboard: placed at the node's bottom left. */
+static void emit_key_menu(struct server *server, struct node *node) {
+    struct event event;
+    if (!event_begin(server, &event, node, EVENT_CONTEXTMENU)) return;
+    double width, height;
+    node_size(server, node, &width, &height);
+    json_key(&event.writer, "keyboard");
+    json_bool(&event.writer, true);
+    json_key(&event.writer, "x");
+    json_number(&event.writer, node_number(node, PROP_X, 0));
+    json_key(&event.writer, "y");
+    json_number(&event.writer, node_number(node, PROP_Y, 0) + height);
+    json_key(&event.writer, "local-x");
+    json_number(&event.writer, 0);
+    json_key(&event.writer, "local-y");
+    json_number(&event.writer, height);
+    json_key(&event.writer, "modifiers");
+    modifiers_write(server->seat_state.modifiers, &event.writer);
+    event_end(server, &event);
+}
+
+/* A key pressed or released for NODE, which has focus: it hears it, and the keys a
+ * control answers to by default act. */
+static void key_for_node(struct server *server, struct node *node, uint32_t keycode,
+                         const struct key_names *names, bool pressed, bool repeat) {
+    struct input *in = input_of(server);
+    if (node->state != NODE_LIVE) return;
+    /* An editable node edits with the key, in this turn; what it has no use for, or
+     * captures, goes on to the director. */
+    bool captured = false;
+    if (pressed && node->editor && key_edits(server, node, names, &captured)) return;
+    emit_key(server, node, pressed ? EVENT_KEYDOWN : EVENT_KEYUP, keycode, names, repeat);
+    if (captured) return;
+    uint32_t modifiers = server->seat_state.modifiers;
+    bool plain = !(modifiers & (MOD_CONTROL | MOD_ALT | MOD_LOGO));
+    if (!pressed) {
+        if (in->key_pressed == node && !strcmp(names->name, "space")) {
+            set_ref(&in->key_pressed, NULL);
+            refresh_states(server);
+            emit_key_click(server, node);
+        }
+        return;
+    }
+    if (repeat) return;
+    if (plain && (!strcmp(names->name, "Tab") || !strcmp(names->name, "ISO_Left_Tab"))) {
+        traverse(server, (modifiers & MOD_SHIFT) || !strcmp(names->name, "ISO_Left_Tab"));
+    } else if ((plain && !strcmp(names->name, "Menu")) ||
+               (!strcmp(names->name, "F10") && modifiers == MOD_SHIFT)) {
+        emit_key_menu(server, node);
+    } else if (plain && activates(node) &&
+               (!strcmp(names->name, "Return") || !strcmp(names->name, "KP_Enter"))) {
+        emit_key_click(server, node);
+    } else if (plain && node->editor && !strcmp(names->name, "Escape")) {
+        /* Escape leaves a field, as the kit's fields always did. */
+        set_focus(server, NULL, false);
+    } else if (plain && activates(node) && !strcmp(names->name, "space")) {
+        /* Space presses as a held button does, and clicks as it is let go. */
+        set_ref(&in->key_pressed, node);
+        refresh_states(server);
+    }
+}
+
+/* A press of button CODE began on NODE: it may become a click, a secondary one asks for a
+ * context menu, and it focuses what takes focus there. */
+static void note_press(struct server *server, struct node *node, uint32_t code,
+                       const struct hit *hit) {
+    struct input *in = input_of(server);
+    double x, y, now = now_seconds();
+    struct output *output = input_pointer_output(server, &x, &y);
+    struct click_press *last = &in->last_press;
+    bool again = last->code == code && last->output == output &&
+                 now - in->last_press_time < MULTI_CLICK_TIME &&
+                 hypot(x - last->x, y - last->y) < MULTI_CLICK_SLOP;
+    *last = (struct click_press){
+        .code = code, .output = output, .x = x, .y = y, .count = again ? last->count + 1 : 1};
+    in->last_press_time = now;
+    for (int i = 0; i < in->click_count; i++) {
+        if (in->clicks[i].code != code) continue;
+        node_unref(in->clicks[i].node);
+        in->clicks[i] = in->clicks[--in->click_count];
+        break;
+    }
+    if (in->click_count < (int)ARRAY_LENGTH(in->clicks)) {
+        struct click_press *press = &in->clicks[in->click_count++];
+        *press = *last;
+        node_ref(node);
+        press->node = node;
+    }
+    set_focus(server, focus_target(node), false);
+    if (code == BTN_LEFT) {
+        set_ref(&in->press_node, node);
+        refresh_states(server);
+    }
+    if (code == BTN_RIGHT) emit_pointer(server, node, EVENT_CONTEXTMENU, (int)code, hit);
+}
+
+/* Button CODE let go: a press on a node becomes a click on what it began and ended over. */
+static void note_release(struct server *server, uint32_t code, bool manipulated) {
+    struct input *in = input_of(server);
+    if (code == BTN_LEFT && in->press_node) {
+        set_ref(&in->press_node, NULL);
+        refresh_states(server);
+    }
+    struct click_press press = {0};
+    for (int i = 0; i < in->click_count; i++) {
+        if (in->clicks[i].code != code) continue;
+        press = in->clicks[i];
+        in->clicks[i] = in->clicks[--in->click_count];
+        break;
+    }
+    if (!press.node) return;
+    double x, y;
+    struct output *output = input_pointer_output(server, &x, &y);
+    /* A press that dragged something along is no click. */
+    bool still = output == press.output && hypot(x - press.x, y - press.y) < MULTI_CLICK_SLOP;
+    struct hit *hit = press.node->state == NODE_LIVE && (still || !manipulated)
+                          ? pick(server, node_input_target)
+                          : NULL;
+    /* As in the DOM, the click goes to the nearest node holding both ends. */
+    struct node *target = hit ? hit->node : NULL;
+    while (target && !within(press.node, target)) target = target->parent;
+    if (target && target->parent) {
+        struct hit copy;
+        struct hit *target_hit = node_hit(server, target);
+        if (target_hit) copy_hit(&copy, target_hit);
+        enum event_name name = code == BTN_LEFT ? EVENT_CLICK : EVENT_AUXCLICK;
+        for (int i = 0; i < (code == BTN_LEFT && press.count == 2 ? 2 : 1); i++) {
+            struct event event;
+            if (!event_begin(server, &event, target, i ? EVENT_DBLCLICK : name)) continue;
+            json_key(&event.writer, "button");
+            json_int(&event.writer, code);
+            json_key(&event.writer, "count");
+            json_int(&event.writer, press.count);
+            pointer_payload(server, &event.writer, target_hit ? &copy : NULL);
+            event_end(server, &event);
+        }
+        if (target_hit) clear_hit(&copy);
+    }
+    node_unref(press.node);
+}
+
 /* Whether a pointer button pressed on WINDOW is still held. */
 static bool input_window_pressed(struct server *server, struct window *window) {
     struct input *in = input_of(server);
@@ -491,6 +952,25 @@ static void pointer_moved(struct server *server) {
     struct input *in = input_of(server);
     if (in->manipulation && in->manipulation->node && in->manipulation->node->state != NODE_LIVE)
         manipulation_lost(server, false);
+    struct node *dragged = scroll_dragged();
+    if (dragged) {
+        /* A thumb dragged moves its container's content along. */
+        struct hit *owner = node_hit(server, dragged);
+        double x, y, local_x, local_y;
+        if (owner && input_pointer_output(server, &x, &y)) {
+            hit_local(owner, x, y, &local_x, &local_y);
+            scroll_drag_update(server, local_x, local_y);
+        }
+    }
+    if (in->edit_drag && edit_dragging(in->edit_drag)) {
+        /* Selecting by dragging, wherever the pointer goes. */
+        struct hit *owner = node_hit(server, in->edit_drag);
+        double x, y, local_x, local_y;
+        if (owner && input_pointer_output(server, &x, &y)) {
+            hit_local(owner, x, y, &local_x, &local_y);
+            edit_drag(server, in->edit_drag, local_x, local_y);
+        }
+    }
     if (in->manipulation) {
         manipulation_update(server);
     } else if (in->capture) {
@@ -508,6 +988,7 @@ static void pointer_moved(struct server *server) {
             if (hit) emit_pointer(server, hit->node, EVENT_POINTERMOVE, -1, hit);
         }
     }
+    pick_states(server);
     input_update_cursor(server);
     sync_constraint(server);
 }
@@ -516,6 +997,8 @@ void input_repick(struct server *server, struct output *output) {
     struct input *in = input_of(server);
     double x, y;
     if (input_pointer_output(server, &x, &y) != output) return;
+    /* What moved under the pointer is hovered now, even while a press is held. */
+    pick_states(server);
     if (in->capture || in->manipulation || in->button_count) return;
     struct hit *hit = pick(server, node_input_target);
     bool client = hit && (hit->window || hit->page);
@@ -572,10 +1055,52 @@ void input_node_dead(struct server *server, struct node *node) {
     struct input *in = input_of(server);
     if (!in) return;
     if (in->entered == node) set_ref(&in->entered, NULL);
+    scroll_node_dead(server, node);
+    if (in->state_hit == node) set_ref(&in->state_hit, NULL);
+    if (in->press_node == node) set_ref(&in->press_node, NULL);
+    if (in->key_pressed == node) set_ref(&in->key_pressed, NULL);
+    if (in->edit_drag == node) set_ref(&in->edit_drag, NULL);
+    for (size_t i = 0; i < in->stated.length; i++) {
+        if (*(struct node **)vec_at(&in->stated, i) != node) continue;
+        vec_remove(&in->stated, i);
+        node_unref(node);
+        break;
+    }
+    for (int i = 0; i < in->click_count;) {
+        if (in->clicks[i].node == node) {
+            node_unref(node);
+            in->clicks[i] = in->clicks[--in->click_count];
+        } else {
+            i++;
+        }
+    }
+    if (in->focused == node) {
+        set_ref(&in->focused, NULL);
+        in->repeating_focus = false;
+        keyboard_sync_focus(server);
+    }
+}
+
+void input_after_commit(struct server *server) {
+    struct input *in = input_of(server);
+    if (!in) return;
+    /* A node removed, hidden or no longer taking focus loses it at once, though it may
+     * still show leaving. */
+    if (in->focused && !focusable(in->focused)) set_focus(server, NULL, false);
+    else refresh_states(server);
 }
 
 void input_release_director(struct server *server) {
     struct input *in = input_of(server);
+    set_ref(&in->focused, NULL);
+    set_ref(&in->key_pressed, NULL);
+    set_ref(&in->press_node, NULL);
+    in->repeating_focus = false;
+    for (int i = 0; i < in->click_count; i++) node_unref(in->clicks[i].node);
+    in->click_count = 0;
+    /* The nodes it held show it no more, and a thumb it dragged stops with its press. */
+    refresh_states(server);
+    scroll_drag_end(server);
     if (in->capture) {
         set_ref(&in->capture, NULL);
         for (int i = 0; i < in->button_count;) {
@@ -589,6 +1114,7 @@ void input_release_director(struct server *server) {
     /* What the director held goes back to clients. */
     server->seat_state.input_watched = false;
     input_grab_keyboard(server, false);
+    keyboard_sync_focus(server);
 }
 
 /* Bindings. */
@@ -724,12 +1250,14 @@ static void press_scene(struct server *server, uint32_t code) {
     }
     struct node *node = hit->node;
     struct manipulation *manipulation = NULL;
+    /* A scroll thumb pressed drags its container's content. */
+    struct node *thumb = code == BTN_LEFT ? scroll_thumb_of(node) : NULL;
     if (node->kind == KIND_BACKGROUND) {
         double x, y;
         struct output *output = input_pointer_output(server, &x, &y);
         if (node_bool(node, PROP_PAN) && output)
             manipulation = manipulation_begin_pan(server, output);
-    } else {
+    } else if (!thumb) {
         struct node *target = move_target(node);
         if (target) manipulation = manipulation_begin_move(server, target);
     }
@@ -738,6 +1266,27 @@ static void press_scene(struct server *server, uint32_t code) {
     set_hovered(server, NULL);
     start_pointer_target(server, code, node, manipulation);
     emit_pointer(server, node, EVENT_POINTERDOWN, (int)code, &copy);
+    struct hit *owner = thumb ? node_hit(server, thumb->parent) : NULL;
+    double x, y, local_x, local_y;
+    if (owner && input_pointer_output(server, &x, &y)) {
+        hit_local(owner, x, y, &local_x, &local_y);
+        scroll_drag_begin(server, thumb, local_x, local_y);
+    }
+    bool focused_before = in->focused == node;
+    note_press(server, node, code, &copy);
+    /* A primary press in a field places its caret at once and selects as it drags; a
+     * middle one pastes the primary selection there. */
+    if (node->editor && (code == BTN_LEFT || code == BTN_MIDDLE) &&
+        input_pointer_output(server, &x, &y)) {
+        hit_local(&copy, x, y, &local_x, &local_y);
+        if (code == BTN_LEFT) {
+            edit_press(server, node, local_x, local_y, in->last_press.count,
+                       server->seat_state.modifiers & MOD_SHIFT, !focused_before);
+            set_ref(&in->edit_drag, node);
+        } else {
+            edit_paste_primary(server, node, local_x, local_y);
+        }
+    }
     clear_hit(&copy);
 }
 
@@ -778,6 +1327,12 @@ static void release(struct server *server, uint32_t code) {
             break;
         }
     }
+    /* A thumb dragged stops as the button holding it goes, wherever its release goes. */
+    if (code == BTN_LEFT && scroll_dragged()) scroll_drag_end(server);
+    if (code == BTN_LEFT && in->edit_drag) {
+        edit_release(server, in->edit_drag);
+        set_ref(&in->edit_drag, NULL);
+    }
     if (found && target.kind == BUTTON_MANIPULATION) {
         if (!in->button_count && in->manipulation) {
             struct node *source = in->manipulation->source;
@@ -789,9 +1344,11 @@ static void release(struct server *server, uint32_t code) {
                 node_unref(source);
             }
         }
+        note_release(server, code, true);
     } else if (found && target.kind == BUTTON_CAPTURE) {
         emit_capture(server, EVENT_POINTERUP, (int)code);
         if (!in->button_count) set_ref(&in->capture, NULL);
+        note_release(server, code, false);
     } else if (found && target.kind == BUTTON_CLIENT) {
         bool live = target.hit.page || (target.hit.window && window_presentable(target.hit.window));
         if (live) deliver_button(server, current_grab(server, &target.hit), code, false, true);
@@ -877,6 +1434,8 @@ static int repeat_fired(void *data) {
     if (in->repeating) emit_simple(server, in->repeating, EVENT_PRESS);
     else if (in->repeating_grab)
         send_key(server, in->repeat_keycode, &in->repeat_names, true, true);
+    else if (in->repeating_focus && in->focused)
+        key_for_node(server, in->focused, in->repeat_keycode, &in->repeat_names, true, true);
     else return 0;
     wl_event_source_timer_update(in->repeat_timer, REPEAT_INTERVAL);
     return 0;
@@ -885,6 +1444,7 @@ static int repeat_fired(void *data) {
 static void stop_repeat(struct input *in) {
     set_ref(&in->repeating, NULL);
     in->repeating_grab = false;
+    in->repeating_focus = false;
     if (in->repeat_timer) wl_event_source_timer_update(in->repeat_timer, 0);
 }
 
@@ -912,10 +1472,15 @@ static bool take_key(struct server *server, uint32_t keycode, const xkb_keysym_t
     }
     if (!pressed) {
         if (!held) return false;
-        struct node *node = held->shortcut;
+        struct node *node = held->shortcut, *focused = held->node;
         bool grabbed = held->grabbed;
         vec_remove(&in->pressed, held_index);
         if (in->repeat_keycode == keycode) stop_repeat(in);
+        if (focused) {
+            if (link_connected(server)) key_for_node(server, focused, keycode, names, false, false);
+            node_unref(focused);
+            return true;
+        }
         if (grabbed) {
             if (link_connected(server)) send_key(server, keycode, names, false, false);
             return true;
@@ -927,6 +1492,11 @@ static bool take_key(struct server *server, uint32_t keycode, const xkb_keysym_t
     }
     if (held) {
         /* A key the backend repeats itself. */
+        if (held->node) {
+            if (link_connected(server))
+                key_for_node(server, held->node, keycode, names, true, true);
+            return true;
+        }
         if (held->grabbed) {
             if (link_connected(server)) send_key(server, keycode, names, true, true);
             return true;
@@ -940,6 +1510,19 @@ static bool take_key(struct server *server, uint32_t keycode, const xkb_keysym_t
         connected ? match_shortcut(in, keycode, syms, count, server->seat_state.modifiers) : NULL;
     struct pressed_key *key = vec_push(&in->pressed);
     key->keycode = keycode;
+    if (!shortcut && connected && in->focused) {
+        /* Keys no shortcut takes go to the node with focus, and bubble from it. */
+        node_ref(in->focused);
+        key->node = in->focused;
+        key_for_node(server, in->focused, keycode, names, true, false);
+        if (names->repeats && in->focused) {
+            stop_repeat(in);
+            in->repeating_focus = true;
+            in->repeat_names = *names;
+            start_repeat(server, keycode);
+        }
+        return true;
+    }
     if (!shortcut) {
         if (!connected || !server->seat_state.keyboard_grabbed) return false;
         key->grabbed = true;
@@ -1028,13 +1611,20 @@ static void handle_key(struct wl_listener *listener, void *data) {
             : 0;
     bool pressed = event->state == WL_KEYBOARD_KEY_STATE_PRESSED;
     struct key_names names = {0};
-    if (count > 0) xkb_keysym_get_name(syms[0], names.name, sizeof names.name);
+    if (count > 0) {
+        xkb_keysym_get_name(syms[0], names.name, sizeof names.name);
+        names.sym = syms[0];
+    }
     struct xkb_state *xkb = keyboard->wlr_keyboard->xkb_state;
     if (xkb) {
         xkb_state_key_get_utf8(xkb, event->keycode + 8, names.text, sizeof names.text);
         names.repeats = xkb_keymap_key_repeats(xkb_state_get_keymap(xkb), event->keycode + 8);
     }
     if (pressed) notify_watcher(server, "key", names.name, -1);
+    if (pressed) input_of(server)->keyboard_last = true;
+    /* A key that changed nothing yet gives way to the next. */
+    if (pressed && server->latency && !(server->latency_change > 0))
+        server->latency_key = now_seconds();
     if (take_key(server, event->keycode, syms, count, &names, pressed)) return;
     /* While the director holds the keyboard, keys pressed before reach no one. */
     if (server->seat_state.keyboard_grabbed) return;
@@ -1083,7 +1673,9 @@ static void handle_keyboard_destroy(struct wl_listener *listener, void *data) {
 void keyboard_sync_focus(struct server *server) {
     struct input *in = input_of(server);
     struct seat_state *state = &server->seat_state;
-    struct web_page *page = state->keyboard_grabbed ? NULL : state->focused_page;
+    /* The director holds the keyboard while it grabs it or a node has focus. */
+    bool director = state->keyboard_grabbed || in->focused;
+    struct web_page *page = director ? NULL : state->focused_page;
     if (page != in->keyboard_page) {
         if (in->keyboard_page) web_page_focus(in->keyboard_page, false);
         in->keyboard_page = page;
@@ -1091,8 +1683,7 @@ void keyboard_sync_focus(struct server *server) {
     }
     struct window *window = state->focused;
     struct wlr_surface *surface =
-        !page && !state->keyboard_grabbed && window && window_presentable(window) ? window->surface
-                                                                                  : NULL;
+        !page && !director && window && window_presentable(window) ? window->surface : NULL;
     if (surface == server->seat->keyboard_state.focused_surface) return;
     if (!surface) {
         wlr_seat_keyboard_notify_clear_focus(server->seat);
@@ -1110,7 +1701,8 @@ void keyboard_sync_focus(struct server *server) {
     for (size_t i = 0; i < keyboard->num_keycodes; i++) {
         bool taken = false;
         VEC_FOR(&in->pressed, struct pressed_key, key) {
-            if (key->keycode == keyboard->keycodes[i] && (key->shortcut || key->grabbed))
+            if (key->keycode == keyboard->keycodes[i] &&
+                (key->shortcut || key->grabbed || key->node))
                 taken = true;
         }
         if (!taken) keycodes[count++] = keyboard->keycodes[i];
@@ -1119,7 +1711,12 @@ void keyboard_sync_focus(struct server *server) {
 }
 
 void focus_page(struct server *server, struct web_page *page) {
-    if (page == server->seat_state.focused_page) return;
+    /* A page focused takes focus from a node. */
+    if (page) input_blur_node(server);
+    if (page == server->seat_state.focused_page) {
+        keyboard_sync_focus(server);
+        return;
+    }
     server->seat_state.focused_page = page;
     keyboard_sync_focus(server);
 }
@@ -1464,6 +2061,7 @@ static void handle_button(struct wl_listener *listener, void *data) {
     struct wlr_pointer_button_event *event = data;
     bool pressed = event->state == WL_POINTER_BUTTON_STATE_PRESSED;
     if (pressed) notify_watcher(server, "button", NULL, event->button);
+    if (pressed) input_of(server)->keyboard_last = false;
     if (drag_active(server)) {
         wlr_seat_pointer_notify_button(server->seat, event->time_msec, event->button, event->state);
         struct input *in = input_of(server);
@@ -1514,8 +2112,8 @@ static void axis_action(struct server *server, int action, struct wlr_pointer_ax
 }
 
 static bool wheel_target(const struct node *node) {
-    return node_receives(node, EVENT_WHEEL) ||
-           (node->kind == KIND_BACKGROUND && node_bool(node, PROP_PAN));
+    return node_receives(node, EVENT_WHEEL) || (node->editor && node_bool(node, PROP_MULTILINE)) ||
+           (node->kind == KIND_BACKGROUND && node_bool(node, PROP_PAN)) || scroll_inside(node);
 }
 
 static void handle_axis(struct wl_listener *listener, void *data) {
@@ -1523,6 +2121,9 @@ static void handle_axis(struct wl_listener *listener, void *data) {
     struct input *in = input_of(server);
     struct wlr_pointer_axis_event *event = data;
     if (event->delta) notify_watcher(server, "wheel", NULL, -1);
+    /* Fingers lifting end the scrolling they drove, wherever the pointer is now. */
+    if (!event->delta && event->source == WL_POINTER_AXIS_SOURCE_FINGER)
+        scroll_axis(server, NULL, event);
     struct node *binding = find_binding(server, KIND_WHEEL_BINDING, NULL, NULL);
     struct event message;
     if (binding) {
@@ -1565,7 +2166,14 @@ static void handle_axis(struct wl_listener *listener, void *data) {
         sync_constraint(server);
         return;
     }
-    if (hit->node->kind == KIND_BACKGROUND && node_bool(hit->node, PROP_PAN))
+    /* A text area scrolls its own lines first; scroll containers around the node take the
+     * wheel natively; then it may pan. */
+    bool horizontal = event->orientation == WL_POINTER_AXIS_HORIZONTAL_SCROLL;
+    bool scrolled = hit->node->editor && event->delta &&
+                    edit_wheel(server, hit->node, horizontal ? event->delta : 0,
+                               horizontal ? 0 : event->delta);
+    if (!scrolled) scrolled = scroll_axis(server, hit->node, event);
+    if (!scrolled && hit->node->kind == KIND_BACKGROUND && node_bool(hit->node, PROP_PAN))
         axis_action(server, ACTION_PAN, event);
     if (event_begin(server, &message, hit->node, EVENT_WHEEL)) {
         axis_fields(&message.writer, event);
@@ -2002,6 +2610,7 @@ void input_init(struct server *server) {
     in->server = server;
     vec_init(&in->shortcuts, sizeof(struct shortcut));
     vec_init(&in->pressed, sizeof(struct pressed_key));
+    vec_init(&in->stated, sizeof(struct node *));
     server->input = in;
 
     server->seat = wlr_seat_create(server->wl_display, "seat0");
@@ -2102,6 +2711,17 @@ void input_finish(struct server *server) {
     set_ref(&in->entered, NULL);
     set_ref(&in->capture, NULL);
     set_ref(&in->gesture, NULL);
+    set_ref(&in->state_hit, NULL);
+    set_ref(&in->press_node, NULL);
+    set_ref(&in->key_pressed, NULL);
+    set_ref(&in->focused, NULL);
+    set_ref(&in->edit_drag, NULL);
+    if (in->compose) xkb_compose_state_unref(in->compose);
+    if (in->compose_table) xkb_compose_table_unref(in->compose_table);
+    VEC_FOR(&in->stated, struct node *, slot) node_unref(*slot);
+    vec_finish(&in->stated);
+    for (int i = 0; i < in->click_count; i++) node_unref(in->clicks[i].node);
+    scroll_finish(server);
     stop_repeat(in);
     if (in->repeat_timer) wl_event_source_remove(in->repeat_timer);
     if (in->wake_timer) wl_event_source_remove(in->wake_timer);
@@ -2109,8 +2729,10 @@ void input_finish(struct server *server) {
     if (in->gesture_manipulation) manipulation_free(in->gesture_manipulation);
     VEC_FOR(&in->shortcuts, struct shortcut, shortcut) node_unref(shortcut->node);
     vec_finish(&in->shortcuts);
-    VEC_FOR(&in->pressed, struct pressed_key, key)
+    VEC_FOR(&in->pressed, struct pressed_key, key) {
         if (key->shortcut) node_unref(key->shortcut);
+        if (key->node) node_unref(key->node);
+    }
     vec_finish(&in->pressed);
     free(in);
     server->input = NULL;

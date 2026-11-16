@@ -1,0 +1,9 @@
+# shot-at: 3400
+# page: 3
+# A right click in the filled field: its Cut / Copy / Paste menu.
+extent 1280 800
+move 300 300
+glide 960 $K_FIELD2_Y 200
+click right
+sleep 500
+sleep 3000

@@ -52,10 +52,12 @@ renders it with GLES and routes input.
 | `render.c`, `gl.c` | GLES programs: textures, blur, and the shaders' paint, filter and effect programs; batched paints, the glyph atlas's pages, output buffers as framebuffers; render targets. |
 | `renderthread.c` | The render thread: its context, the job queue, fences between the two contexts. |
 | `content.c` | Text and image nodes on top of `media.c`; what is uploaded where frames draw: rasters by slot, glyphs on the atlas. |
-| `media.c` | Pango text layout (laid out once per style, shared by measuring, layout and drawing), glyph lists and glyph rasters, text rasters, image decoding, the worker. |
+| `media.c` | Pango text layout (laid out once per style, shared by measuring, layout and drawing), editing geometry (carets, hits, lines, selections, word and cluster steps), glyph lists and glyph rasters, text rasters, image decoding, the worker. |
 | `webnode.c`, `web.c` | Web nodes: pages on the CEF helper (`web/`), their frames and input. |
-| `input.c` | Keyboards, pointer, gestures; shortcuts, bindings, picking, events, cursors, drags. |
+| `input.c` | Keyboards, pointer, gestures; shortcuts, bindings, picking, events, cursors, drags; controls' UI states, clicks and keyboard focus. |
+| `edit.c` | Editable text nodes: their buffer, caret, selection, undo, keys, pointer selection, clipboard, caret blinking, and the value the director declares. |
 | `manip.c` | Native moves, resizes, pans and zooms. |
+| `scroll.c` | Scroll containers: offsets, wheel glides, finger tracking, momentum and stretch, chaining, thumbs. |
 | `camera.c` | Per-output cameras. |
 | `clipboard.c` | Selections: clipboard text to and from the director. |
 | `capture.c` | Screenshots for the director. |
@@ -100,6 +102,29 @@ renders it with GLES and routes input.
   world first, so effects clean up.
 
 ## Decisions
+
+### Text fields are edited in the compositor
+
+The kit's first text field lived in the director: every key went to React, which
+sent the text back with a caret glyph inside a second, see-through copy of the
+text, a selection drawn as a Pango background span, and pointer positions found
+by measuring every prefix of the text through asynchronous requests. Typing
+waited for a round trip (with a 200 ms-busy director, 1.2 s for a burst of
+keys), the caret was a glyph that did not blink, and a click landed late.
+
+What stands: an editable text node (`edit.c`) keeps the text, caret, selection
+and undo history in the compositor, as hover, focus and scrolling are kept
+there. A key edits on the main thread, where the node's Pango layout is made
+(content.c lays out what the editor holds, synchronously, as for any text), so
+the same turn of the event loop knows the new caret, selection and scroll
+offset, and the next frame draws the text with its glyphs rasterized inline
+(an editable text never leaves a new glyph to a later frame), the selection
+under it and the caret over it as solid fills batched with the glyphs. Nothing
+waits for the worker. The caret's blink is a timer armed for its next change,
+only while a field has focus, that damages only the caret's rectangle, and that
+stops after ten seconds without input. The director hears `input` events with a
+revision and declares the value back with it; a declared value that echoes a
+report is ignored, so a slow director never takes back newer typing.
 
 ### Pages that draw the canvas lie on it and move with their frames
 

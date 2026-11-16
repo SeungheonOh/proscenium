@@ -1,0 +1,506 @@
+<!doctype html>
+<!--
+  The gallery in a browser: the same sections, sizes, colours, radii, shadows and fonts as
+  examples/gallery.tsx and sdk/src/ui/theme.ts, in plain DOM and CSS, for comparing how the
+  compositor renders them with how a browser does. ?theme=dark shows the dark theme.
+  Mirror the kit's tokens here, do not restyle: a change to theme.ts or a section belongs here too.
+  Assumptions: a shadow's `blur` is CSS's blur radius; a gradient `angle: 0` runs left to right and 90 top to bottom.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=1280">
+<title>Gallery reference</title>
+<style>
+:root {
+  --ink: #17171a; --soft: #17171acc; --muted: #17171a99; --faint: #17171a4d; --inverse: #ffffff; --on-accent: #ffffff;
+  --accent: #2f6fed; --accent-light: #5b8cff; --accent-hover: #2a64d8; --accent-press: #2559c2;
+  --accent-soft: #2f6fed1a; --accent-soft-hover: #2f6fed29; --accent-soft-press: #2f6fed38; --accent-tint: #2f6fed24; --accent-line: #2f6fed59;
+  --danger: #dc3d37; --hover: #0000000d; --press: #00000017; --line: #00000014; --border: #00000021; --border-hover: #00000033;
+  --field: #ffffff; --field-hover: #f8f8f9; --track: #17171a17; --control: #17171a24; --control-hover: #17171a33;
+  --knob: #ffffff; --raised: #ffffff; --glass: #ffffffd9; --card: #ffffffe6; --card-line: #00000014;
+  --popover: #ffffff; --popover-line: #00000017; --selection: #2f6fed40; --ring: #2f6fed66;
+  --shadow-control: 0 1px 2px #0000000d;
+  --shadow-pill: 0 1px 2px #0000000f, 0 4px 10px -2px #00000024;
+  --shadow-card: 0 1px 3px #0000000d, 0 4px 12px -2px #0000001a;
+  --shadow-float: 0 1px 3px #00000014, 0 12px 24px -4px #00000029;
+  --shadow-modal: 0 2px 4px #0000001a, 0 24px 48px -8px #00000038;
+  --shadow-knob: 0 0 0 .5px #0000000f, 0 1px 3px #00000033;
+  --glass-from: #ffffffee; --glass-to: #00000017;
+  --page: #ecebe6; --panel: #f7f6f3;
+  --font: "Noto Sans", sans-serif;
+}
+:root[data-theme="dark"] {
+  --ink: #f2f2f5; --soft: #f2f2f5cc; --muted: #f2f2f599; --faint: #f2f2f552; --inverse: #17171a;
+  --accent: #4a82ff; --accent-light: #7da5ff; --accent-hover: #5b8eff; --accent-press: #3f74ea;
+  --accent-soft: #4a82ff29; --accent-soft-hover: #4a82ff3d; --accent-soft-press: #4a82ff4d; --accent-tint: #4a82ff33; --accent-line: #4a82ff80;
+  --danger: #ff5a54; --hover: #ffffff12; --press: #ffffff1f; --line: #ffffff17; --border: #ffffff1f; --border-hover: #ffffff33;
+  --field: #ffffff0d; --field-hover: #ffffff17; --track: #ffffff1f; --control: #ffffff2e; --control-hover: #ffffff3d;
+  --knob: #f5f5f7; --raised: #4a4a52; --glass: #26262bd9; --card: #26262bf2; --card-line: #ffffff17;
+  --popover: #2b2b30; --popover-line: #ffffff1c; --selection: #4a82ff59; --ring: #4a82ff80;
+  --shadow-control: 0 1px 2px #00000033;
+  --shadow-pill: 0 1px 2px #00000040, 0 4px 10px -2px #00000066;
+  --shadow-card: 0 1px 3px #00000033, 0 4px 12px -2px #00000059;
+  --shadow-float: 0 1px 3px #00000040, 0 12px 24px -4px #00000073;
+  --shadow-modal: 0 2px 4px #0000004d, 0 24px 48px -8px #00000099;
+  --shadow-knob: 0 0 0 .5px #00000026, 0 1px 3px #00000066;
+  --glass-from: #ffffff38; --glass-to: #ffffff0d;
+  --page: #121214; --panel: #1c1c20;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { width: 1280px; height: 800px; overflow: hidden; }
+body { background: var(--page); font-family: var(--font); color: var(--ink); position: relative; }
+div, span { display: flex; flex-direction: row; }
+.col { flex-direction: column; }
+.row { align-items: center; }
+.abs { position: absolute; }
+.nowrap { white-space: nowrap; }
+
+/* text styles of the kit: body 13/500, strong 13/650, caption 12/650, title 15/650 */
+.body { font: 400 13px/18px var(--font); color: var(--soft); white-space: nowrap; }
+.label { font: 500 13px/18px var(--font); color: var(--ink); white-space: nowrap; }
+.strong { font: 600 13px/18px var(--font); color: var(--ink); white-space: nowrap; }
+.caption { font: 600 12px/16px var(--font); color: var(--ink); white-space: nowrap; }
+.title { font: 600 15px/20px var(--font); letter-spacing: -.15px; color: var(--ink); white-space: nowrap; }
+.t-ink { color: var(--ink); } .t-soft { color: var(--soft); } .t-muted { color: var(--muted); } .t-faint { color: var(--faint); }
+.t-inverse { color: var(--inverse); } .t-on-accent { color: var(--on-accent); } .t-accent { color: var(--accent); } .t-danger { color: var(--danger); }
+.note { font: 500 10px/normal var(--font); color: var(--muted); white-space: nowrap; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; display: block; }
+
+/* the page */
+#grid { position: absolute; left: 12px; top: 12px; width: 1256px; height: 776px; gap: 12px; align-items: flex-start; }
+.column { flex: 1 1 0; height: 776px; flex-direction: column; gap: 12px; min-width: 0; }
+.section { flex: 1 1 0; min-height: 0; flex-direction: column; gap: 8px; padding: 12px; overflow: hidden;
+  background: var(--panel); border-radius: 12px; border: 1px solid var(--line); }
+.section > h2 { font: 650 10px/16px var(--font); text-transform: uppercase; color: var(--ink); white-space: nowrap; display: block; }
+
+/* kit: Button */
+.btn { height: 28px; padding: 0 11px; gap: 6px; border-radius: 6px; border: 1px solid transparent; align-items: center; justify-content: center; }
+.btn.small { height: 24px; padding: 0 7px; gap: 5px; border-radius: 6px; }
+.btn.tinted { background: var(--accent-soft); } .btn.filled { background: var(--accent); box-shadow: inset 0 1px #ffffff26, var(--shadow-control); }
+.btn.selected { border-color: var(--accent-line); background: var(--accent-tint) !important; box-shadow: none !important; }
+.btn.disabled { opacity: .45; }
+.btn .strong.t-accent, .btn .strong.t-on-accent { }
+.ibtn { width: 32px; height: 32px; border-radius: 6px; border: 1px solid transparent; align-items: center; justify-content: center; }
+.ibtn.selected { background: var(--accent-tint); border-color: var(--accent-line); } .ibtn.disabled { opacity: .45; }
+.ico { display: block; background: currentColor; -webkit-mask: var(--src) center / contain no-repeat; mask: var(--src) center / contain no-repeat; }
+
+/* kit: Checkbox, Switch, Slider, SegmentedControl, ProgressBar, TextField */
+.check { gap: 8px; align-items: center; }
+.check.disabled { opacity: .45; }
+.box { width: 16px; height: 16px; border-radius: 4px; align-items: center; justify-content: center; position: relative;
+  background: var(--field); border: 1px solid var(--border); box-shadow: var(--shadow-control); }
+.box.on { background: var(--accent); border: 1px solid var(--accent); box-shadow: none; }
+.box .arm { position: absolute; height: 2px; border-radius: 1px; background: #fff; opacity: 0; }
+.box.on .arm { opacity: 1; }
+.switch { width: 32px; height: 18px; border-radius: 9px; padding: 2px; align-items: center; background: var(--control); justify-content: flex-start; }
+.switch.on { background: var(--accent); justify-content: flex-end; } .switch.disabled { opacity: .45; }
+.switch i { width: 14px; height: 14px; border-radius: 7px; background: var(--knob); box-shadow: var(--shadow-knob); display: block; }
+.slider { position: relative; width: 160px; height: 20px; }
+.slider .rail { position: absolute; left: 0; top: 8px; width: 160px; height: 4px; border-radius: 2px; background: var(--track); }
+.slider .fill { position: absolute; left: 0; top: 8px; height: 4px; border-radius: 2px; background: var(--accent); }
+.slider .thumb { position: absolute; top: 2px; width: 16px; height: 16px; border-radius: 8px; background: var(--knob); box-shadow: var(--shadow-knob); }
+.segments { padding: 2px; border-radius: 8px; background: var(--hover); align-self: stretch; position: relative; }
+.segments .seg { height: 24px; padding: 0 12px; border-radius: 6px; align-items: center; justify-content: center; position: relative; }
+.segments .seg .label { color: var(--muted); }
+.segments .seg.on { background: var(--raised); box-shadow: 0 1px 2px #00000014, 0 0 0 .5px #0000000d; }
+.segments .seg.on .label { color: var(--ink); }
+.progress { height: 6px; border-radius: 3px; background: var(--track); overflow: hidden; align-self: stretch; }
+.progress i { display: block; height: 6px; border-radius: 3px; background: var(--accent); }
+.field { width: 220px; height: 28px; padding: 5px 8px; border-radius: 6px; background: var(--field); border: 1px solid var(--border); box-shadow: var(--shadow-control); }
+.field .body { color: var(--faint); }
+
+/* kit: Badge, Pill, Surface, Divider */
+.badge-dot { width: 8px; height: 8px; border-radius: 4px; }
+.badge { height: 18px; min-width: 18px; padding: 0 5px; border-radius: 9px; align-items: center; justify-content: center; font: 650 11px/16px var(--font); }
+.bg-accent { background: var(--accent); color: var(--on-accent); } .bg-ink { background: var(--ink); color: var(--inverse); }
+.bg-danger { background: var(--danger); color: var(--on-accent); } .bg-muted { background: var(--faint); color: var(--ink); }
+.pill { align-items: center; padding: 0 14px; gap: 7px; height: 28px; border-radius: 14px; }
+.pill.s24 { height: 24px; border-radius: 12px; padding: 0 12px; gap: 6px; }
+.s-card { background: var(--card); border: 1px solid var(--card-line); box-shadow: var(--shadow-card); }
+.s-ink { background: var(--ink); box-shadow: var(--shadow-pill); }
+.s-accent { background: var(--accent); box-shadow: var(--shadow-pill); }
+.s-glass { position: relative; background: var(--glass); backdrop-filter: blur(22px); box-shadow: var(--shadow-float); border: 1px solid transparent; }
+.s-glass::after { content: ""; position: absolute; inset: -1px; border-radius: inherit; border: 1px solid transparent; pointer-events: none;
+  background: linear-gradient(180deg, var(--glass-from), var(--glass-to)) border-box;
+  -webkit-mask: linear-gradient(#000 0 0) padding-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+.tile { width: 78px; height: 46px; border-radius: 12px; align-items: center; justify-content: center; }
+.hr { height: 1px; align-self: stretch; background: var(--line); margin: 4px 0; }
+.vr { width: 1px; background: var(--line); margin: 0 4px; align-self: stretch; }
+
+/* scroll */
+.scroll { flex: 1 1 0; min-height: 0; border-radius: 8px; background: var(--card); border: 1px solid var(--card-line); overflow: hidden; flex-direction: column; }
+.scroll .item { height: 30px; padding: 0 10px; gap: 8px; align-items: center; flex: none; }
+.scroll .rule { height: 1px; background: var(--line); flex: none; }
+
+.tray .note { color: #17171a99; }
+/* raw states */
+.sx-fill:hover { background: #3b5bdb !important; } .sx-fill:active { background: #2b46a6 !important; }
+.sx-all:hover { border-color: #2f6fed !important; box-shadow: 0 6px 14px #00000040 !important; transform: scale(1.05); }
+.sx-all:active { transform: scale(.95); box-shadow: 0 0 2px #00000014 !important; }
+.sx-group:hover { background: #2f6fed !important; border-color: #2f6fed !important; } .sx-group:active { background: #2457c4 !important; }
+.sx-group:hover span { color: #fff !important; }
+.sx-tab:focus-visible { border-color: #ffd43b !important; outline: none; } .sx-tab:hover { background: #2a2d34 !important; }
+.sx-focus:focus { border-color: #2f6fed !important; outline: none; }
+.sx-press:active { transform: scale(.9); opacity: .7; }
+.sx-lift:hover { box-shadow: 0 10px 18px -4px #00000055 !important; transform: translateY(-3px); }
+
+
+/* page 3: kit components at rest */
+.tabs { gap: 4px; border-bottom: 1px solid var(--line); position: relative; align-self: stretch; }
+.tabs .tab { height: 36px; padding: 0 10px; border-radius: 6px; align-items: center; position: relative; }
+.tabs .tab .label { color: var(--muted); } .tabs .tab.on .label { color: var(--ink); }
+.tabs .tab.on::after { content: ""; position: absolute; left: 6px; right: 6px; bottom: -1px; height: 2px; border-radius: 1px; background: var(--accent); }
+.lrow { min-height: 32px; padding: 4px 8px; gap: 10px; border-radius: 6px; align-items: center; align-self: stretch; }
+.lrow.on { background: var(--accent-soft); } .lrow.off { opacity: .45; }
+.lrow .texts { flex: 1 1 0; flex-direction: column; min-width: 0; }
+.small { font: 400 12px/16px var(--font); color: var(--muted); white-space: nowrap; }
+.sel { height: 28px; padding: 0 6px 0 10px; gap: 6px; border-radius: 6px; background: var(--field); border: 1px solid var(--border); box-shadow: var(--shadow-control); align-items: center; flex: none; }
+.sel.s24 { height: 24px; padding: 0 4px 0 8px; } .sel.s32 { height: 32px; } .sel.off { opacity: .45; }
+.sel .body { flex: 1 1 0; color: var(--ink); } .sel .body.ph { color: var(--faint); }
+.ibtn.outl { background: var(--field); border-color: var(--border); box-shadow: var(--shadow-control); }
+.btn.outline { background: var(--field); border-color: var(--border); box-shadow: var(--shadow-control); }
+.tf { width: 300px; padding: 5px 8px; border-radius: 6px; background: var(--field); border: 1px solid var(--border); box-shadow: var(--shadow-control); flex-direction: column; }
+.tf .body { color: var(--ink); } .tf.empty .body { color: var(--faint); } .tf.off { opacity: .45; }
+.tf.half { width: 146px; } .tf.clip { overflow: hidden; white-space: nowrap; }
+.tf.row { flex-direction: row; align-items: center; gap: 4px; } .tfmark { color: var(--muted); font-size: 13px; width: 14px; }
+.tf.focus { border-color: var(--accent); box-shadow: var(--shadow-control), 0 0 0 3px var(--ring); }
+.ctxcard { width: 360px; height: 70px; border-radius: 12px; background: var(--hover); border: 1px dashed var(--border); align-items: center; justify-content: center; }
+
+/* toast */
+#toast { position: absolute; left: 0; width: 1280px; top: 700px; justify-content: center; }
+#toast .pill { height: 48px; border-radius: 24px; padding: 0 20px; gap: 14px; }
+#toast .dot { width: 10px; height: 10px; border-radius: 5px; background: var(--accent); }
+</style>
+</head>
+<body>
+<div id="grid"></div>
+<div class="abs" style="left:430px;top:700px" id="toast-busy"></div>
+<div id="toast"><div class="pill s-glass"><div class="dot"></div><span class="strong">Magnet</span><span class="body t-muted">On · Firm</span></div></div>
+<script>
+const theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
+document.documentElement.dataset.theme = theme;
+const only = new URLSearchParams(location.search).get("section");
+
+const onLight = { bg: "#ffffff", ink: "#17171a" }, onDark = { bg: "#17171a", ink: "#f2f2f5" };
+
+/** el("div.cls", { style }, ...children) */
+function el(spec, attrs, ...kids) {
+  const [tag, ...classes] = spec.split(".");
+  const node = document.createElement(tag || "div");
+  if (classes.length) node.className = classes.join(" ");
+  if (attrs) for (const [k, v] of Object.entries(attrs)) { if (k === "style") node.style.cssText = v; else node.setAttribute(k, v); }
+  for (const kid of kids.flat()) if (kid != null) node.append(kid);
+  return node;
+}
+const text = (cls, s, style) => el("span." + cls, style ? { style } : null, s);
+const note = (s) => text("note", s);
+const section = (title, grow, ...kids) => { const s = el("div.section", { style: `flex-grow:${grow}` }, el("h2", null, title.toUpperCase()), ...kids); return s; };
+const col = (style, ...kids) => el("div.col", { style }, ...kids);
+const row = (style, ...kids) => el("div.row", { style }, ...kids);
+const icon = (name, size, tone) => el("span.ico", { style: `--src:url(../icons/${name}.svg);width:${size}px;height:${size}px;color:var(--${tone})` });
+
+function button(label, o = {}) {
+  const variant = o.variant || "plain", tone = { plain: "ink", tinted: "accent", filled: "on-accent" }[variant];
+  const b = el("div.btn." + variant + (o.small ? ".small" : "") + (o.selected ? ".selected" : "") + (o.disabled ? ".disabled" : ""));
+  if (o.icon) b.append(icon(o.icon, o.small ? 14 : 16, tone));
+  if (label) b.append(text("label t-" + tone, label));
+  return b;
+}
+const ibutton = (name, o = {}) => {
+  const size = o.size || 32;
+  return el("div.ibtn" + (o.outline ? ".outl" : "") + (o.selected ? ".selected" : "") + (o.disabled ? ".disabled" : ""), { style: `width:${size}px;height:${size}px` }, icon(name, o.iconSize || 18, "ink"));
+};
+
+/** Sample text at each size and weight. */
+function typeGrid(sizes, bg, ink) {
+  const g = col(`gap:2px;padding:8px;border-radius:8px;background:${bg};border:1px solid #00000018`);
+  for (const size of sizes) {
+    const r = row("");
+    r.append(el("div", { style: "width:20px" }, text("", String(size), `font:500 10px/normal var(--font);color:${ink};opacity:.5`)));
+    for (const w of [400, 500, 650, 700]) r.append(el("div", { style: "width:84px" }, text("nowrap", "Agxy 01", `font:${w} ${size}px/normal var(--font);color:${ink}`)));
+    g.append(r);
+  }
+  return g;
+}
+
+function busy(width, height) {
+  const b = el("div", { style: `position:relative;width:${width}px;height:${height}px;overflow:hidden;border-radius:8px;flex:none` });
+  const tile = 14, hsl = (h, s, l) => `hsl(${h} ${s * 100}% ${l * 100}%)`;
+  for (let r = 0; r < Math.ceil(height / tile); r++) for (let c = 0; c < Math.ceil(width / tile); c++) {
+    b.append(el("div.abs", { style: `left:${c * tile}px;top:${r * tile}px;width:${tile}px;height:${tile}px;background:${hsl((c * 23 + r * 41) % 360, .75, .35 + ((c * 7 + r * 13) % 5) * .1)}` }));
+  }
+  b.append(el("div.abs", { style: `left:0;top:${height * .4}px;width:${width}px;height:4px;background:#fff` }));
+  b.append(el("div.abs", { style: `left:0;top:${height * .7}px;width:${width}px;height:2px;background:#000` }));
+  b.append(el("div.abs", { style: `left:${width * .55}px;top:0;width:3px;height:${height}px;background:#fff` }));
+  b.append(el("span.abs.nowrap", { style: "left:8px;top:6px;font:700 11px/normal var(--font);color:#fff" }, "busy background 0123456789"));
+  return b;
+}
+
+const sections = {};
+
+sections.type = [0, () => section("Text: sizes x weights, dark on light", 210,
+  row("padding-left:28px", ...[400, 500, 650, 700].map((w) => el("div", { style: "width:84px" }, note(String(w))))),
+  typeGrid([10, 12, 13, 14, 16, 20], onLight.bg, onLight.ink))];
+
+sections["type-dark"] = [0, () => section("Text: light on dark", 132, typeGrid([12, 14, 18], onDark.bg, onDark.ink))];
+
+sections.prose = [0, () => {
+  const p = "The quick brown fox jumps over the lazy dog. Sphinx of black quartz, judge my vow.";
+  const para = (c) => el("div", { style: `flex:1 1 0;padding:8px;border-radius:8px;background:${c.bg}` }, text("", p, `font:400 13px/18px var(--font);color:${c.ink};display:block`));
+  const ink = onLight.ink, t = (s, f) => text("nowrap", s, `font:${f} var(--font);color:${ink}`);
+  return section("Text: paragraph, digits, scripts", 282,
+    row("gap:8px;align-items:stretch", para(onLight), para(onDark)),
+    row("gap:8px;align-items:flex-start",
+      col("flex:1 1 0;gap:2px", note("digits, 20 px / 650"), t("12:34:56", "650 20px/normal"), t("00:11 23:59", "650 20px/normal")),
+      col("flex:1 1 0;gap:2px", note("digits, 12 px / 500"), t("1,234,567.89  0O 1lI", "500 12px/normal"), t("-+=x/% 5S 8B 2Z", "500 12px/normal"))),
+    col("gap:2px", note("mixed scripts and italics, 13 px"),
+      t("Grüße, Ελληνικά, Кириллица, ñandú, ĳ", "500 13px/normal"),
+      t("日本語のテキスト  한국어  हिन्दी  עברית  ภาษาไทย", "500 13px/normal"),
+      el("span.nowrap", { style: `font:italic 500 13px/normal var(--font);color:${ink};display:block` }, "Italic text, and ", el("b", { style: "font-weight:700" }, "bold"), " within it")));
+}];
+
+sections.buttons = [1, () => section("Buttons", 210,
+  row("gap:8px", button("Plain"), button("Tinted", { variant: "tinted" }), button("Filled", { variant: "filled" }), button("Selected", { selected: true }), button("Disabled", { variant: "filled", disabled: true })),
+  row("gap:8px", button("Small", { small: true }), button("Tinted", { small: true, variant: "tinted" }), button("Filled", { small: true, variant: "filled" }),
+    button("Selected", { small: true, variant: "tinted", selected: true }), button("Disabled", { small: true, disabled: true })),
+  row("gap:8px", button("With icon", { icon: "music", variant: "tinted" }), button("Filled", { icon: "volume", variant: "filled" }), button("", { icon: "clipboard" })),
+  row("gap:6px", ibutton("brightness"), ibutton("music", { selected: true }), ibutton("volume"), ibutton("clipboard", { disabled: true }),
+    ibutton("brightness", { size: 28, iconSize: 16 }), el("div", { style: "flex:1" }), note("hover and press me")))];
+
+function checkbox(on, label, disabled) {
+  const box = el("div.box" + (on ? ".on" : ""));
+  box.insertAdjacentHTML("beforeend", `<svg width="12" height="12" viewBox="0 0 24 24" style="opacity:${on ? 1 : 0}"><polyline points="4.5,12.5 9.5,17.5 19.5,6.5" fill="none" stroke="#fff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`);
+  return row("gap:8px", el("div.check" + (disabled ? ".disabled" : ""), null, box, text("body", label)));
+}
+const sw = (on, disabled) => el("div.switch" + (on ? ".on" : "") + (disabled ? ".disabled" : ""), null, el("i"));
+sections.inputs = [1, () => {
+  const level = 0.4, travel = 160 - 16;
+  const slider = el("div.slider", null, el("div.rail"), el("div.fill", { style: `width:${Math.max(4, 8 + level * travel)}px` }), el("div.thumb", { style: `left:${level * travel}px` }));
+  const seg = (label, on) => el("div.seg" + (on ? ".on" : ""), null, text("label", label));
+  return section("Inputs", 216,
+    row("gap:16px", checkbox(true, "Checked"), checkbox(false, "Unchecked"), checkbox(true, "Disabled", true)),
+    row("gap:16px", sw(true), sw(false), sw(true, true), slider),
+    el("div.segments", null, seg("Day", true), seg("Night"), seg("Auto")),
+    col("gap:8px", el("div.progress", null, el("i", { style: "width:60%" })), el("div.progress", null, el("i", { style: "width:100%" }))),
+    el("div.field", null, text("body", "Type here")));
+}];
+
+sections.kit = [1, () => {
+  const badge = (tone, n) => n === undefined ? el("div.badge-dot.bg-" + tone) : el("div.badge.bg-" + tone, null, String(n));
+  const pill = (cls, label, tone, small) => el("div.pill.s-" + cls + (small ? ".s24" : ""), null, text("strong t-" + tone, label));
+  return section("Labels, badges, pills, icons, dividers", 214,
+    row("gap:14px", text("title", "Title"), text("strong", "Strong"), text("body", "Body"), text("caption", "Caption")),
+    row("gap:10px", ...["ink", "soft", "muted", "faint", "accent", "danger"].map((t) => text("strong t-" + t, t))),
+    row("gap:8px", badge("accent"), badge("danger"), badge("ink", 3), badge("accent", 12), badge("danger", "99+"), badge("muted", "new"), el("div", { style: "width:1px" }),
+      icon("music", 16, "ink"), icon("volume", 20, "accent"), icon("music", 24, "danger"), icon("volume", 32, "muted")),
+    row("gap:8px", pill("card", "Card pill", "ink"), pill("ink", "Ink", "inverse", true), pill("accent", "Accent", "on-accent", true)),
+    row("gap:8px;align-self:stretch", note("divider"), el("div.vr", { style: "height:14px;align-self:center;flex:none" }), note("vertical"), el("div.vr", { style: "height:14px;align-self:center;flex:none" }), note("between")),
+    el("div.hr", { style: "margin:4px 0" }));
+}];
+
+sections.scroll = [0, () => {
+  const items = [];
+  for (let n = 1; n <= 24; n++) {
+    items.push(row("", el("div.item", { style: "flex:1" }, el("div.badge-dot." + (n % 3 === 0 ? "bg-danger" : "bg-accent")), text("strong", "Row " + n), el("div", { style: "flex:1" }),
+      text("body t-muted", String(n).padStart(2, "0") + ":" + String((n * 7) % 60).padStart(2, "0")))));
+    items.push(el("div.rule"));
+  }
+  return section("ScrollView (wheel over it)", 100, el("div.scroll", null, ...items));
+}];
+
+sections.hairlines = [2, () => {
+  const edge = "border:1px solid #17171a;background:#fff";
+  const sq = (extra) => `position:absolute;${edge};${extra}`;
+  return section("Hairlines, shared edges, small radii", 180,
+    row("gap:14px", row("", ...[0, 1, 2, 3, 4, 5].map(() => el("div", { style: `width:26px;height:22px;${edge}` }))), note("adjacent, edges shared")),
+    row("gap:8px", ...[0, 2, 3, 4, 6, 9].map((r) => el("div", { style: `width:30px;height:22px;border-radius:${r}px;${edge}` })), note("radius 0 2 3 4 6 9")),
+    row("gap:8px", el("div", { style: "position:relative;width:150px;height:22px" },
+      el("div", { style: sq("left:0;top:0;width:22px;height:22px") }), el("div", { style: sq("left:30.5px;top:.5px;width:22px;height:22px") }),
+      el("div", { style: sq("left:61.25px;top:.25px;width:22px;height:22px") }), el("div", { style: sq("left:92px;top:0;width:22.5px;height:22.5px") })), note("offsets .0 .5 .25, size .5")),
+    row("gap:10px;align-self:stretch",
+      col("flex:1 1 0;gap:4px", el("div", { style: "height:1px;background:var(--line);margin:4px 0" }), el("div", { style: "height:1px;background:var(--ink)" }), el("div", { style: "height:2px;background:var(--line)" })),
+      row("height:34px;gap:6px;align-items:stretch", el("div", { style: "width:1px;background:var(--line);margin:0 4px" }), el("div", { style: "width:1px;background:var(--ink)" }), el("div", { style: "width:2px;background:var(--line)" })),
+      el("div", { style: "width:44px;height:30px;border-radius:6px;border:1px solid var(--line)" }),
+      el("div", { style: "width:44px;height:30px;border-radius:6px;border:2px solid var(--accent)" })));
+}];
+
+sections.surfaces = [2, () => {
+  const shadows = { pill: "var(--shadow-pill)", card: "var(--shadow-card)", float: "var(--shadow-float)", knob: "var(--shadow-knob)" };
+  return section("Surfaces: radii, shadows, variants", 200,
+    row("gap:8px", ...[0, 2, 4, 6, 9, 14, 22].map((r) => el("div", { style: `width:36px;height:36px;border-radius:${r}px;background:var(--accent);flex:none` })), note("radii")),
+    row("gap:12px;padding:6px 0", ...Object.entries(shadows).map(([n, s]) => el("div", { style: `width:62px;height:44px;border-radius:9px;background:var(--card);box-shadow:${s};align-items:center;justify-content:center` }, text("caption", n)))),
+    row("gap:10px", ...["glass", "card", "ink", "accent"].map((v) => el("div.tile.s-" + v, null, text("strong t-" + (v === "ink" ? "inverse" : v === "accent" ? "on-accent" : "ink"), v)))));
+}];
+
+sections.effects = [2, () => {
+  const w = 356;
+  const bar = (h, bg, extra = "") => el("div", { style: `width:${w}px;height:${h}px;border-radius:4px;background:${bg};${extra}` });
+  const glass = el("div.s-glass.col", { style: "position:absolute;left:20px;top:26px;width:196px;height:52px;padding:10px;gap:2px;border-radius:14px" }, text("strong", "Frosted glass"), text("body t-muted", "blur 22 over a busy picture", "font-size:13px"));
+  glass.querySelector(".body.t-muted").style.cssText = "font:500 13px/18px var(--font);color:var(--muted);white-space:nowrap";
+  const blur = el("div.abs", { style: "left:240px;top:30px;width:96px;height:48px;border-radius:24px;background:#ffffff55;backdrop-filter:blur(10px);border:1px solid #ffffff99;align-items:center;justify-content:center" }, text("", "blur 10", "font:650 11px/normal var(--font);color:#fff"));
+  const stage = el("div", { style: `position:relative;width:${w}px;height:104px;flex:none` }, busy(w, 104), glass, blur);
+  const r = (l, c) => el("div.abs", { style: `left:${l}px;top:${l ? 10 : 0}px;width:46px;height:40px;border-radius:6px;background:${c}` });
+  const clip = el("div", { style: "position:relative;width:112px;height:76px;border-radius:20px;overflow:hidden;background:#fff;border:1px solid var(--line);flex:none" },
+    el("div.abs", { style: "left:-14px;top:-14px;width:60px;height:60px;background:#e0443e" }), el("div.abs", { style: "left:70px;top:46px;width:70px;height:50px;background:#2f6fed" }),
+    el("span.abs.nowrap", { style: "left:6px;top:28px;font:650 11px/normal var(--font);color:#17171a" }, "clip r20 text runs past the edge"),
+    el("span.abs.nowrap", { style: "left:62px;top:56px;font:650 11px/normal var(--font);color:#fff" }, "past the corner"));
+  return section("Gradients, glass, clip, group opacity", 320,
+    col("gap:4px", bar(20, "linear-gradient(90deg,#2f6fed,#e0443e)"), bar(16, "linear-gradient(90deg,#303034,#3c3c42)"), bar(16, "linear-gradient(90deg,#f2f2f2,#fff)", "border:1px solid #00000010")),
+    stage,
+    row("gap:14px;align-items:flex-start", clip,
+      col("gap:4px;align-items:center", el("div", { style: "position:relative;width:74px;height:50px;opacity:.5" }, r(0, "#e0443e"), r(26, "#2f6fed")), note("groupOpacity .5")),
+      col("gap:4px;align-items:center", el("div", { style: "position:relative;width:74px;height:50px" }, r(0, "#e0443e80"), r(26, "#2f6fed80")), note("per child"))));
+}];
+
+/* ---- page 2: boxes, text, states, scrollers (?page=2) ---- */
+const pageParam = new URLSearchParams(location.search).get("page");
+const page = pageParam === "3" ? 3 : pageParam === "2" ? 2 : 1;
+const sections2 = {};
+const tray = ({ dark = false, gap = 8 }, ...kids) => el("div.col.tray", { style: `padding:10px;gap:${gap}px;border-radius:8px;align-self:stretch;background:${dark ? "#17171a" : "#e9eaee"}` }, ...kids);
+const box = (style, ...kids) => el("div", { style: `flex:none;align-items:center;justify-content:center;${style}` }, ...kids);
+const tag = (s, color = "#17171a") => text("nowrap", s, `font:650 10px/normal var(--font);color:${color}`);
+const A = "#2f6fed", D = "#e0443e", K = "#17171a";
+const stopsCss = (stops) => stops.map((s, i) => Array.isArray(s) ? `${s[0]} ${s[1] * 100}%` : s).join(",");
+const lin = (angle, stops) => `linear-gradient(${angle + 90}deg in oklab,${stopsCss(stops)})`;
+const lin2 = (angle, a, b) => `linear-gradient(${angle + 90}deg,${a},${b})`;
+const rad = (stops, c = [0.5, 0.5]) => `radial-gradient(circle farthest-corner at ${c[0] * 100}% ${c[1] * 100}% in oklab,${stopsCss(stops)})`;
+const sec2 = (id, column, title, grow, ...kids) => { sections2[id] = [column, () => section(title, grow, ...kids)]; };
+
+sec2("corners", 0, "Corners, per-side and dashed borders", 290,
+  tray({}, note("radius [tl, tr, br, bl]: tab, sheet, leaf, split pill, bubble"),
+    row("gap:8px;align-items:flex-end", box(`width:58px;height:32px;border-radius:12px 12px 0 0;background:${A}`, tag("tab", "#fff")),
+      box(`width:58px;height:32px;border-radius:0 0 12px 12px;background:${K}`, tag("sheet", "#fff")),
+      box(`width:58px;height:32px;border-radius:16px 2px 16px 2px;background:${D}`, tag("leaf", "#fff")),
+      row("", box(`width:34px;height:32px;border-radius:16px 0 0 16px;background:${A}`), box(`width:34px;height:32px;border-radius:0 16px 16px 0;background:${K}`)),
+      box(`width:58px;height:32px;border-radius:14px 14px 14px 2px;background:${A}`, tag("bubble", "#fff")))),
+  tray({}, note("border width [top, right, bottom, left]"),
+    row("gap:10px;align-items:flex-start", ...[
+      `border-width:0 0 2px 0;border-color:${K}`, `border-width:0 0 0 4px;border-color:${A}`, `border-width:1px 2px 3px 4px;border-color:${K}`,
+      `border-radius:12px;border-width:1px 1px 1px 4px;border-color:${A}`, `border-radius:12px 12px 0 0;border-width:2px 2px 0 2px;border-color:${K}`,
+    ].map((b) => el("div", { style: `flex:none;width:56px;height:36px;background:#fff;border-style:solid;${b}` })))),
+  tray({}, note("dashed: 1, 2 and 3 wide, radius 0 / 10 / pill, dash 6"),
+    row("gap:10px;align-items:flex-start", ...[
+      `border-width:1px;border-color:${K}`, `border-radius:10px;border-width:2px;border-color:${K}`, `border-radius:18px;border-width:2px;border-color:${A}`,
+      `border-radius:4px;border-width:3px;border-color:${D}`, `border-radius:8px;border-width:2px;border-color:${K}`,
+    ].map((b) => el("div", { style: `flex:none;width:56px;height:36px;border-style:dashed;${b}` })))));
+
+const shadowBox = (w, r, bg, sh, label, color) => box(`width:${w}px;height:50px;border-radius:${r}px;background:${bg};box-shadow:${sh}`, tag(label, color));
+sec2("shadows", 0, "Shadows: pairs, inset, negative spread", 260,
+  tray({ gap: 10 }, note("single, ambient + key pair, negative spread"),
+    row("gap:14px;padding-bottom:6px;margin-top:2px", shadowBox(78, 10, "#fff", "0 8px 16px #00000040", "single"),
+      shadowBox(78, 10, "#fff", "0 1px 3px #00000014, 0 8px 16px -4px #00000026", "pair"),
+      shadowBox(78, 10, "#fff", "0 14px 16px -8px #00000066", "spread -8"),
+      shadowBox(78, 25, A, "0 6px 14px #2f6fed99", "colored", "#fff"))),
+  tray({ gap: 10 }, note("inset: pressed well, input field, inner glow, bevel"),
+    row("gap:14px;margin-top:2px", shadowBox(78, 10, "#dcdde2", "inset 0 2px 6px #00000040", "well"),
+      shadowBox(78, 8, "#fff", "inset 0 0 0 1px #17171a33, inset 0 1px 3px #00000026", "field"),
+      shadowBox(78, 25, A, "inset 0 0 12px #ffffffaa", "glow", "#fff"),
+      shadowBox(78, 10, "#f4f5f8", "inset 0 1px 0 #ffffffcc, inset 0 -1px 0 #00000026, 0 2px 4px #00000033", "bevel"))));
+
+const four = ["#ff0040", "#ffd000", "#00c080", "#2040ff"];
+const grad = (w, h, r, bg) => el("div", { style: `flex:none;width:${w}px;height:${h}px;border-radius:${r};background:${bg}` });
+sec2("gradients", 1, "Gradients: four stops, radial, low contrast", 400,
+  tray({}, note("four stops, angle 0; the same at 45 on a pill; at 90 with positions"),
+    grad(362, 22, "6px", lin(0, four)),
+    row("gap:10px", grad(118, 32, "16px", lin(45, four)), grad(118, 32, "8px", lin(90, ["#ffffff", ["#2f6fed", 0.25], ["#17171a", 0.8]])), grad(110, 32, "16px 4px 16px 4px", lin(90, ["#ff9a3c", "#e0443e", "#6a1b9a"]))),
+    note("radial: centred, off centre, with a falloff to transparent"),
+    row("gap:10px", grad(64, 64, "32px", rad(["#ffffff", "#2f6fed", "#10204a"])), grad(64, 64, "12px", rad(["#fff3b0", "#ff7a3c", "#7a1030"], [0.3, 0.3])),
+      el("div", { style: "flex:none;width:162px;height:64px;border-radius:12px;background:#17171a;position:relative" },
+        el("div.abs", { style: `inset:0;border-radius:12px;background:${rad(["#ffffffcc", "#2f6fed55", "#2f6fed00"], [0.5, 0.4])}` })))),
+  tray({ dark: true }, el("span", { class: "note", style: "color:#f2f2f599" }, "low contrast greys, 362 px wide: no banding"),
+    grad(362, 30, "8px", lin2(0, "#303034", "#3c3c42")), grad(362, 36, "8px", lin(90, ["#1d1d20", "#2a2a30"])), grad(362, 22, "8px", lin2(0, "#f2f2f2", "#ffffff"))));
+
+const figures = ["1,111.11", "8,888.88", "1,234.56", "0.00"];
+const deco = (d) => `font:500 14px/normal var(--font);color:${K};text-decoration-line:${d}`;
+sec2("text-specimens", 1, "Text: figures, spacing, decoration", 354,
+  tray({ gap: 6 }, note("proportional (pnum) against tabularNumbers, right aligned"),
+    row("gap:24px;align-items:flex-start", ...[false, true].map((tab) => col("gap:2px;width:110px", ...figures.map((n) =>
+      el("span.nowrap", { style: `display:block;width:110px;text-align:right;font:600 15px/normal var(--font);color:${K};font-variant-numeric:${tab ? "tabular-nums" : "proportional-nums"}` }, n)))),
+      col("gap:2px;justify-content:center", note("left: proportional"), note("right: tabular")))),
+  tray({ gap: 4 }, note("letterSpacing -1, 0, 2 (caps 12 / 650 at 2)"),
+    ...[-1, 0, 2].map((l) => el("span.nowrap", { style: `display:block;font:500 14px/normal var(--font);color:${K};letter-spacing:${l}px` }, "Spacing and rhythm 2468")),
+    el("span.nowrap", { style: `display:block;font:650 12px/normal var(--font);color:${K};letter-spacing:2px` }, "TRACKED CAPITALS")),
+  tray({ gap: 4 }, note("decoration"), row("gap:18px", el("span.nowrap", { style: deco("underline") }, "underline"), el("span.nowrap", { style: deco("line-through") }, "line-through"), el("span.nowrap", { style: deco("underline line-through") }, "both"))));
+
+const sbox = (cls, style, label, color, extra) => el("div." + cls, { style: `flex:none;width:78px;height:52px;border-radius:10px;align-items:center;justify-content:center;transition:all .12s;${style}`, ...(extra || {}) }, tag(label, color));
+sec2("states", 2, "Raw states (hover, press, Tab)", 250,
+  tray({}, note("fill; fill+border+shadow+scale; stateGroup; tab ring"),
+    row("gap:10px;padding:4px 0", sbox("sx-fill", "background:#2a2d34", "fill", "#fff"), sbox("sx-all", "background:#fff;border:1px solid #17171a26;box-shadow:0 1px 3px #00000014", "all four", K),
+      sbox("sx-group", "background:#fff;border:1px solid #17171a26", "group", K), sbox("sx-tab", "background:#17171a;border:2px solid transparent", "tab", "#fff", { tabindex: "0" })),
+    note("click focus ring; press dip; hover lift"),
+    row("gap:10px;padding:4px 0", sbox("sx-focus", "background:#fff;border:2px solid #17171a26", "focus", K, { tabindex: "0" }), sbox("sx-press", "background:#e0443e", "press", "#fff"),
+      sbox("sx-lift", "background:#fff;box-shadow:0 0 0 #00000000", "lift", K))));
+
+const hsl2 = (i, l) => `hsl(${i * 22} 70% ${l * 100}%)`;
+sec2("scroller", 2, "Nested scrollers (wheel over them)", 330,
+  tray({}, note('scroll="y" in a r22 card: rounded clip of scrolled rows, overlay thumb'),
+    el("div.col", { style: "flex:none;width:362px;height:128px;border-radius:22px;background:#fff;border:1px solid #17171a26;overflow:auto" },
+      ...Array.from({ length: 16 }, (_, i) => el("div.row", { style: `flex:none;height:32px;padding:0 18px;background:${hsl2(i, 0.88)}` }, text("nowrap", `Row ${i + 1} on a tinted band`, `font:650 12px/normal var(--font);color:${K}`))))),
+  tray({}, note('scroll="x" in a pill: wheel with shift'),
+    el("div.row", { style: "flex:none;width:362px;height:64px;border-radius:32px;background:#fff;border:1px solid #17171a26;overflow:auto;gap:8px;padding:0 16px" },
+      ...Array.from({ length: 16 }, (_, i) => el("div", { style: `flex:none;width:44px;height:36px;border-radius:18px 6px 18px 6px;background:${hsl2(i, 0.55)}` })))));
+
+
+const chev = (size = 12) => { const sw = size === 12 ? 3 : 3.5; const d = document.createElement("span"); d.style.cssText = `display:flex;align-self:center;flex:none;width:${size}px;height:${size}px`; d.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 24 24"><polyline points="6,9.5 12,15.5 18,9.5" fill="none" stroke="var(--muted)" stroke-width="${size === 12 ? 3 : 1.75 * 24 / 14}" stroke-linecap="round" stroke-linejoin="round"/></svg>`; return d; };
+const mbtn = (label, variant) => { const b = button(label, { variant }); b.append(chev(12)); return b; };
+const selectEl = (label, cls = "", ph = false) => el("div.sel" + (cls ? "." + cls : ""), { style: "width:96px" }, text("body" + (ph ? " ph" : ""), label, "overflow:hidden"), chev(14));
+sec2("kit-nav", 0, "Kit: Tabs and List", 500, "", "");
+sec2("kit-floating", 1, "Kit: menus, select, tooltip, dialog", 500, "", "");
+sec2("kit-fields", 2, "Kit: TextField and keyboard focus", 500, "", "");
+const tabsEl = (names, on) => el("div.tabs", null, ...names.map((n) => el("div.tab" + (n === on ? ".on" : ""), null, text("label", n))));
+const lrow = (label, o = {}) => el("div.lrow" + (o.on ? ".on" : "") + (o.off ? ".off" : ""), null,
+  ...(o.icon ? [icon(o.icon, 16, o.on ? "accent" : "soft")] : []),
+  el("div.texts", null, text("body", label, `color:var(--ink);display:block`), ...(o.desc ? [text("small", o.desc)] : [])),
+  ...(o.detail ? [text("small", o.detail)] : []));
+const names = ["General", "Sound", "Display", "Keys"];
+sections2["kit-nav"] = [0, () => section("Kit: Tabs and List", 500,
+  note("Tabs, underline"), tabsEl(names, "General"), note("Tabs, segmented"),
+  el("div.segments", null, ...names.map((n) => el("div.seg" + (n === "Sound" ? ".on" : ""), null, text("label", n)))),
+  el("div.hr"), note("List: selected row, description, detail, icons, a disabled row"),
+  col("align-self:stretch;gap:1px", lrow("Music", { icon: "music", desc: "Albums and playlists", detail: "128", on: true }), lrow("Volume", { icon: "volume", detail: "Ctrl+V" }),
+    lrow("Brightness", { icon: "brightness", desc: "Display" }), lrow("Clipboard history", { icon: "clipboard", detail: "12" }), lrow("Disabled row", { off: true })),
+  el("div", { style: "flex:1" }), text("small", "Tab reaches the chosen tab; arrows move through the List."))];
+sections2["kit-floating"] = [1, () => section("Kit: menus, select, tooltip, dialog", 500,
+  note("MenuButton (opens a menu with submenus), Select closed, Select empty"),
+  row("gap:8px", mbtn("File", "outline"), mbtn("Actions", "tinted"), selectEl("Borealis"), selectEl("Choose...", "", true)),
+  note("Select, sizes"), row("gap:8px", selectEl("Aurora", "s24"), selectEl("Cirrus", "s32"), selectEl("Aurora", "off")),
+  note("ContextMenu: right click the card"), el("div.ctxcard", null, text("label", "Right click me")),
+  note("Tooltip (rest the pointer on an icon), Dialog (open it)"),
+  row("gap:8px", ibutton("clipboard", { outline: true }), ibutton("music"), button("Open dialog", { variant: "filled" })))];
+sections2["kit-fields"] = [2, () => {
+  const tf = (v, cls = "") => el("div.tf" + (cls ? "." + cls : ""), null, ...String(v).split("\n").map((l) => text("body", l, "display:block;min-height:18px")));
+  const slider = el("div.slider", { style: "width:200px" }, el("div.rail", { style: "width:200px" }), el("div.fill", { style: `width:${8 + 0.5 * 184}px` }), el("div.thumb", { style: `left:${0.5 * 184}px` }));
+  const seg = (label, on) => el("div.seg" + (on ? ".on" : ""), null, text("label", label));
+  return section("Kit: TextField and keyboard focus", 500,
+    note("TextField: empty, filled, focused (autoFocus), disabled"),
+    col("gap:8px", tf("Search...", "empty"), tf("Hello, world"), tf("The quick brown fox jumps over the lazy dog", "focus"), tf("Disabled field", "off")),
+    note("TextField, multiline (grows to 4 lines)"),
+    tf("First line\nSecond line, which is long enough to wrap onto a third"),
+    note("Password, read-only, a long line, mixed scripts, icons"),
+    col("gap:8px", row("gap:8px", tf("\u2022".repeat(7), "half"), tf("Read-only text", "half")),
+      tf("A long line scrolls sideways in its field, keeping the caret in view as it moves to the end", "clip"),
+      tf("Cafe\u0301 👋🏽 你好世界 שלום مرحبا"),
+      el("div.tf.row", null, el("span.tfmark", null, "\u2315"), text("body", "fields", "flex:1"), el("span.tfmark", null, "\u00d7"))),
+    note("Controls for Tab focus rings (a row, in tree order)"),
+    col("gap:10px", row("gap:14px", button("Button", { variant: "outline" }), checkbox(false, "Checkbox"), sw(false)), slider,
+      el("div.segments", null, seg("Day", true), seg("Night"), seg("Auto"))),
+    el("div", { style: "flex:1" }), text("small", "Arrow keys move the slider and segments."));
+}];
+
+const grid = document.getElementById("grid");
+const columns = [0, 1, 2].map((i) => { const c = el("div.column"); if (i === 1 && page === 1) c.style.height = "680px"; return c; });
+const all = { ...sections, ...sections2 };
+const pageSections = Object.fromEntries(Object.entries(sections2).filter(([id]) => (id.startsWith("kit-") ? 3 : 2) === page));
+if (page !== 1) document.getElementById("toast").remove(), document.getElementById("toast-busy").remove();
+if (only && all[only]) {
+  grid.style.cssText = "transform:scale(2);transform-origin:0 0;width:622px;height:340px";
+  grid.append(el("div.column", null, all[only][1]()));
+} else {
+  for (const [column, make] of Object.values(page === 1 ? sections : pageSections)) columns[column].append(make());
+  columns.forEach((c) => grid.append(c));
+}
+if (page === 1) document.getElementById("toast-busy").append(busy(420, 48));
+</script>
+</body>
+</html>

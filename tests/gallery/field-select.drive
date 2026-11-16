@@ -1,0 +1,11 @@
+# shot-at: 3400
+# page: 3
+# A drag from the multiline field's first line to its wrapped third: the selection runs
+# across the lines, line-box high, including the line break.
+extent 1280 800
+move $K_LINES_X $K_LINES_Y
+down left
+glide $K_LINES_TO_X $K_LINES_TO_Y 300
+up left
+move 300 300
+sleep 3000

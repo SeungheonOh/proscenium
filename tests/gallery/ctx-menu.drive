@@ -1,0 +1,10 @@
+# shot-at: 3400
+# page: 3
+# A right click on the ContextMenu card: the menu opens at the pointer.
+extent 1280 800
+move 300 300
+glide $K_CTX_X $K_CTX_Y 200
+sleep 100
+click right
+sleep 500
+sleep 3000

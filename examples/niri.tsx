@@ -31,6 +31,7 @@ import { NiriProvider, useNiri } from "./niri/NiriProvider.js";
 import { RecentWindows } from "./niri/RecentWindows.js";
 import { ScreenshotUI } from "./niri/ScreenshotUI.js";
 import { Waybar } from "./niri/Waybar.js";
+import { OverlayHost } from "proscenium/ui";
 
 /** Outputs whose shown workspace is a still fullscreen window, which covers the bar. */
 function useFullscreenOutputs(): ReadonlySet<string> {
@@ -67,7 +68,9 @@ function Desktop() {
 export default function Niri() {
   return (
     <NiriProvider>
-      <Desktop />
+      <OverlayHost>
+        <Desktop />
+      </OverlayHost>
     </NiriProvider>
   );
 }

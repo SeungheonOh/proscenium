@@ -1,0 +1,17 @@
+# shot-at: 3400
+# page: 3
+# Click at the end of the filled field and type; then shift+Left three times to select.
+extent 1280 800
+move 300 300
+glide 1150 $K_FIELD2_Y 200
+click left
+sleep 200
+key End
+type  again
+sleep 100
+chord shift+Left
+chord shift+Left
+chord shift+Left
+move 300 300
+sleep 300
+sleep 3000

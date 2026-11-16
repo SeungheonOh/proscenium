@@ -505,6 +505,14 @@ static void commit_frame(struct output *output, struct output_frame *pending) {
     display_frame_feedback(frame);
     bool committed = wlr_output_commit_state(wlr_output, &state);
     display_frame_done(frame, committed);
+    if (committed && frame == server->latency_frame) {
+        double now = now_seconds();
+        wlr_log(WLR_INFO, "latency: key to change %.2f ms, to frame %.2f ms",
+                (server->latency_change - server->latency_key) * 1e3,
+                (now - server->latency_key) * 1e3);
+        server->latency_key = server->latency_change = 0;
+        server->latency_frame = NULL;
+    }
     double build_ms, draw_ms;
     display_frame_times(frame, &build_ms, &draw_ms);
     if (committed) {
@@ -598,6 +606,10 @@ static void render_frame(struct output *output) {
         return;
     }
     output->sampled_at = time;
+    /* The first frame begun after a timed change shows it. */
+    if (server->latency_change > 0 && !server->latency_frame &&
+        started / 1e9 >= server->latency_change)
+        server->latency_frame = frame;
     output->frames[output->frame_count++] = (struct output_frame){frame, buffer, started, false};
     if (again) output_request_frame(output);
     display_draw(frame, frame_finished, output);
@@ -724,6 +736,7 @@ static void handle_new_output(struct wl_listener *listener, void *data) {
     wlr_output_state_set_enabled(&state, true);
     struct wlr_output_mode *mode = wlr_output_preferred_mode(wlr_output);
     if (mode) wlr_output_state_set_mode(&state, mode);
+    if (server->output_scale > 0) wlr_output_state_set_scale(&state, (float)server->output_scale);
     wlr_output_commit_state(wlr_output, &state);
     wlr_output_state_finish(&state);
 

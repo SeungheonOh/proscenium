@@ -23,6 +23,7 @@ import { Cube } from "./cube/Cube.js";
 import { CubeProvider, useCube } from "./cube/CubeProvider.js";
 import { FacePills } from "./cube/FacePills.js";
 import { Keybindings } from "./cube/Keybindings.js";
+import { OverlayHost } from "proscenium/ui";
 
 function CubeLauncher() {
   const { output } = useCube();
@@ -33,10 +34,12 @@ export default function CubeWorld() {
   return (
     <ScreenEffects>
       <CubeProvider>
-        <Cube />
-        <Desktop barStart={FacePills} />
-        <CubeLauncher />
-        <Keybindings />
+        <OverlayHost>
+          <Cube />
+          <Desktop barStart={FacePills} />
+          <CubeLauncher />
+          <Keybindings />
+        </OverlayHost>
       </CubeProvider>
     </ScreenEffects>
   );

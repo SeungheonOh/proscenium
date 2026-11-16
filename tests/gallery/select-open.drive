@@ -1,0 +1,9 @@
+# shot-at: 3400
+# page: 3
+# The Select opened by a click: options, the chosen one ticked.
+extent 1280 800
+move 300 300
+glide $K_SELECT_X $K_FILE_Y 200
+click left
+sleep 600
+sleep 3000

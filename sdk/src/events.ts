@@ -70,6 +70,63 @@ export interface StageRequestEvent extends Partial<StagePointerEvent> {
   edges?: number;
 }
 
+/** Where the pointer was, in every space, for events that may come from keys instead. */
+type PointerPosition = Omit<StagePointerEvent, keyof StageBubblingEvent | "button" | "modifiers"
+  | "window" | "relatedTarget">;
+
+/**
+ * A press and release of one button over the same node, as the DOM's `click` (the
+ * primary button), `auxclick` (the others) and `dblclick` (the second primary click in
+ * quick succession). It goes to the nearest node holding where the press began and where
+ * it ended, and bubbles; letting go elsewhere sends none. Enter, or Space as it is let
+ * go, clicks a focused node too, with `count` 0 and no pointer position.
+ */
+export interface StageClickEvent extends StageBubblingEvent, Partial<PointerPosition> {
+  /** Linux input button code (272 left, 273 right, 274 middle). */
+  button: number;
+  /** Presses in quick succession, as the DOM's `detail`: 1, 2 for a double click, 3, …; 0 from keys. */
+  count: number;
+  modifiers: Modifier[];
+}
+
+/**
+ * The secondary button went down over a node, or Menu or Shift+F10 was pressed on a
+ * focused one: open a context menu at the pointer (`screenX`/`screenY`, or `x`/`y`).
+ * Bubbles. From the keyboard, `keyboard` is set, and `x`/`y` and `localX`/`localY` are
+ * the node's bottom left.
+ */
+export interface StageContextMenuEvent extends StageBubblingEvent, Partial<PointerPosition> {
+  keyboard?: boolean;
+  modifiers: Modifier[];
+}
+
+/** A node took or lost keyboard focus (`focus`, `blur`); these do not bubble. */
+export interface StageFocusEvent {
+  /** On focus: it came by keyboard, so `focusVisible` shows. */
+  visible?: boolean;
+}
+
+/**
+ * A key pressed (`keydown`, repeating while held) or released (`keyup`) while a node has
+ * keyboard focus; it goes to that node and bubbles. Shortcuts take their keys first.
+ */
+export interface StageKeyboardEvent extends StageBubblingEvent {
+  /** Its keysym's name with the modifiers applied, e.g. "Return", "a", "A", "Tab". */
+  key: string;
+  /** What it types, e.g. "a"; empty for keys that type nothing. */
+  text: string;
+  /** Evdev key code, the same whatever the layout. */
+  code: number;
+  repeat: boolean;
+  modifiers: Modifier[];
+}
+
+/** Where a scroll container's offset is headed; coalesced, and does not bubble. */
+export interface StageScrollEvent {
+  scrollX: number;
+  scrollY: number;
+}
+
 /** Input `useInput` heard, on its way to its target as ever. */
 export interface StageInputEvent {
   kind: "key" | "button" | "wheel" | "gesture";
@@ -105,6 +162,31 @@ export interface StageResizeEvent extends StageDragEvent {
   height: number;
 }
 
+/** Where an editable text's selection lies, in UTF-16 code units, as a string indexes. */
+export interface StageSelection {
+  selectionStart: number;
+  selectionEnd: number;
+  /** "backward" when the caret is at its start, as the DOM's `selectionDirection`. */
+  selectionDirection: "forward" | "backward";
+}
+
+/** An editable text's text changed (`input`), with the revision to declare back. */
+export interface StageTextInputEvent extends StageSelection {
+  text: string;
+  revision: number;
+  /** It answers a value the director declared: that value, and what was typed since after it. */
+  replaced?: boolean;
+}
+
+/** Return in an editable text: the text as it stood then. */
+export interface StageSubmitEvent {
+  text: string;
+  revision: number;
+}
+
+/** An editable text's caret or selection moved. */
+export type StageSelectEvent = StageSelection;
+
 /** Size a text node measured at, or an image's natural size once decoded. */
 export interface StageMeasureEvent {
   width: number;
@@ -118,7 +200,9 @@ export interface StageErrorEvent {
 }
 
 export type StageEvent = StagePointerEvent | StageWheelEvent | StageGestureEvent | StageRequestEvent
-  | StageDragEvent | StageResizeEvent | StageMeasureEvent | StageErrorEvent;
+  | StageDragEvent | StageResizeEvent | StageMeasureEvent | StageErrorEvent | StageClickEvent
+  | StageContextMenuEvent | StageFocusEvent | StageKeyboardEvent | StageScrollEvent | StageTextInputEvent
+  | StageSubmitEvent;
 
 /** Convert a wire event's kebab-case fields into a handler argument. */
 export function toStageEvent(message: WireEvent): StageEvent {

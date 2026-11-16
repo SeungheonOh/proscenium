@@ -1,0 +1,8 @@
+# shot-at: 3400
+# page: 3
+# The pointer resting on an icon button for 900 ms: its tooltip.
+extent 1280 800
+move 300 300
+glide $K_TIP1_X $K_TIP_Y 200
+sleep 1100
+sleep 3000

@@ -29,7 +29,7 @@ void web_node_presented(struct node *node, struct output *output, double scale, 
 /* Draw NODE's page over its WIDTH x HEIGHT box through TRANSFORM, through FILTER unless it
  * is NULL. */
 void web_node_draw(struct server *server, struct node *node, struct mat3 transform, double width,
-                   double height, double radius, double opacity,
+                   double height, const double radii[4], double opacity,
                    const struct render_shading *filter, struct render_report *report);
 /* Give every web node its page after a commit: pages of nodes that left go to new nodes
  * with the same source; the rest close. */

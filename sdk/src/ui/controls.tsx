@@ -1,20 +1,27 @@
 import { memo, useRef, useState, type ReactNode } from "react";
 import { Box, Group, Rect } from "../components.js";
 import { instant } from "../motion.js";
-import { rotate } from "../transform.js";
 import type { Color } from "../color.js";
-import type { StagePointerEvent } from "../events.js";
+import type { StageClickEvent, StageElement, StageKeyboardEvent, StagePointerEvent } from "../events.js";
 import type { LayoutBox } from "../layout.js";
-import type { BoxProps, ImageProps, PointerHandlers, RectProps, Style, TextProps } from "../props.js";
+import type { BoxProps, ImageProps, PointerHandlers, RectProps, Shadow, States, Style, TextProps } from "../props.js";
+import { currentSession } from "../session.js";
+import { Glyph } from "./glyphs.js";
+import { cache, controlTransition, groupStates, ringed } from "./parts.js";
 import { Pressable, type PressState } from "./Pressable.js";
-import { resolveStyle, StyleSheet, variants, type StateStyle } from "./styles.js";
-import { makeStyles } from "./theme.js";
+import { resolveStyle, StyleSheet, type StateStyle } from "./styles.js";
+import { makeStyles, type Theme } from "./theme.js";
 import { Icon, Label, type Tone } from "./views.js";
 
-// Every control takes `style` for its root and a style for each of its parts. Any of
-// them may be a function of the control's state, as Pressable's is. Looks by state
-// are styles made once per theme, so a hover only swaps one made style for another
-// and the compositor fades between them.
+// Every control takes `style` for its root and a style for each of its parts. Its looks
+// by state (under the pointer, held down, focused from the keyboard) are `states` the
+// compositor resolves in the frame the pointer or key arrives, made once per theme, so
+// hovering and pressing render nothing. Every control is reached by Tab, shows the
+// theme's focus ring when focus came by keyboard, and answers the keys its native
+// counterpart does.
+//
+// A style that is a function of the control's state still works, as Pressable's does:
+// the control then follows its state in React as well, rendering as it changes.
 
 /** A pressable control's state, as its style functions see it. */
 export interface ControlState extends PressState {
@@ -22,66 +29,98 @@ export interface ControlState extends PressState {
   disabled: boolean;
 }
 
-type Look = "rest" | "hover" | "press";
-
-function look({ hovered, pressed }: PressState): Look {
-  return pressed ? "press" : hovered ? "hover" : "rest";
-}
-
 /** Image props a style may set. */
 type ImageStyle = Omit<ImageProps, "src" | "ref" | "style" | `on${string}`>;
 
-export type ButtonVariant = "plain" | "tinted" | "filled";
+const isFunction = (value: unknown): value is (...args: never[]) => unknown => typeof value === "function";
 
-const buttonTones: Record<ButtonVariant, Tone> = { plain: "ink", tinted: "accent", filled: "onAccent" };
+/** Whether any of STYLES is a function of state, so the control must follow its state in React. */
+function tracks(...styles: unknown[]): boolean {
+  return styles.some(isFunction);
+}
 
-const useButton = makeStyles(({ colors, radii, motion }) => variants({
-  base: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    border: { width: 1, color: colors.accentClear },
-    transition: motion.pop,
-  },
-  variants: {
-    variant: { plain: {}, tinted: {}, filled: {} } satisfies Record<ButtonVariant, BoxProps>,
-    size: {
-      small: { height: 26, paddingX: 8, gap: 4, radius: radii.sm },
-      medium: { height: 32, paddingX: 12, gap: 6, radius: radii.md },
-    },
-    look: { rest: {}, hover: {}, press: {} } satisfies Record<Look, BoxProps>,
-    selected: { true: {}, false: {} },
-    disabled: { true: { opacity: 0.4 }, false: {} },
-  },
-  defaults: { variant: "plain", size: "medium", look: "rest", selected: false, disabled: false },
-  compound: [
-    { when: { variant: "plain", look: "rest" }, style: { fill: colors.clear } },
-    { when: { variant: "plain", look: "hover" }, style: { fill: colors.hover } },
-    { when: { variant: "plain", look: "press" }, style: { fill: colors.press } },
-    { when: { variant: "tinted", look: "rest" }, style: { fill: colors.accentSoft } },
-    { when: { variant: "tinted", look: "hover" }, style: { fill: colors.accentSoftHover } },
-    { when: { variant: "tinted", look: "press" }, style: { fill: colors.accentSoftPress } },
-    { when: { variant: "filled", look: "rest" }, style: { fill: colors.accent } },
-    { when: { variant: "filled", look: "hover" }, style: { fill: colors.accentHover } },
-    { when: { variant: "filled", look: "press" }, style: { fill: colors.accentPress } },
-    // A picked tool keeps its tint whatever the pointer does.
-    { when: { variant: "plain", selected: true }, style: { fill: colors.accentTint } },
-    { when: { selected: true }, style: { border: { width: 1, color: colors.accentLine } } },
-  ],
-}));
+/** Focus by keyboard, shown: for a control moving focus itself, as arrow keys do in a group. */
+function focusVisible(node: StageElement | null | undefined): void {
+  if (node) currentSession().focusNode(node, { visible: true });
+}
+
+export type ButtonVariant = "plain" | "tinted" | "filled" | "outline" | "danger";
+export type ButtonSize = "small" | "medium" | "large";
+
+const buttonTones: Record<ButtonVariant, Tone> = {
+  plain: "ink", tinted: "accent", filled: "onAccent", outline: "ink", danger: "onAccent",
+};
+
+/** A button's look at rest and its states, by variant and whether it is selected. */
+function buttonLook(theme: Theme, variant: ButtonVariant, selected: boolean): { rest: BoxProps; states: States } {
+  const { colors, shadows } = theme;
+  // Filled buttons catch the light along their top edge, a hairline inside.
+  const highlight: Shadow = { inset: true, y: 1, blur: 0, color: "#ffffff26" };
+  const own: Record<ButtonVariant, { fill: Color; hover: Color; press: Color; border: Color; shadow: Shadow[] }> = {
+    plain: { fill: colors.clear, hover: colors.hover, press: colors.press, border: colors.accentClear, shadow: [] },
+    tinted: { fill: colors.accentSoft, hover: colors.accentSoftHover, press: colors.accentSoftPress,
+              border: colors.accentClear, shadow: [] },
+    filled: { fill: colors.accent, hover: colors.accentHover, press: colors.accentPress, border: colors.accentClear,
+              shadow: [highlight, ...shadows.control] },
+    outline: { fill: colors.field, hover: colors.fieldHover, press: colors.fieldPress, border: colors.border,
+               shadow: shadows.control },
+    danger: { fill: colors.danger, hover: colors.dangerHover, press: colors.dangerHover, border: colors.accentClear,
+              shadow: [highlight, ...shadows.control] },
+  };
+  let look = own[variant];
+  // A picked tool keeps its tint whatever the pointer does.
+  if (selected && (variant === "plain" || variant === "tinted" || variant === "outline")) {
+    look = { fill: colors.accentTint, hover: colors.accentSoftHover, press: colors.accentSoftPress,
+             border: colors.accentLine, shadow: [] };
+  }
+  const ring = ringed(theme, look.shadow);
+  return {
+    rest: { fill: look.fill, border: { width: 1, color: look.border }, shadow: ring.rest },
+    states: { hover: { fill: look.hover }, pressed: { fill: look.press }, focusVisible: { shadow: ring.focus } },
+  };
+}
+
+const useButton = makeStyles((theme) => {
+  const { radii, controls } = theme;
+  const transition = controlTransition(theme);
+  return {
+    looks: cache((key) => {
+      const [variant, selected] = key.split(":") as [ButtonVariant, string];
+      return buttonLook(theme, variant, selected === "true");
+    }),
+    sizes: StyleSheet.create({
+      small: { height: controls.small, paddingX: 8, gap: 5, radius: radii.sm },
+      medium: { height: controls.medium, paddingX: 12, gap: 6, radius: radii.sm },
+      large: { height: controls.large, paddingX: 14, gap: 8, radius: radii.sm },
+    }) satisfies Record<ButtonSize, BoxProps>,
+    ...StyleSheet.create({
+      base: { flexDirection: "row", alignItems: "center", justifyContent: "center", transition },
+      disabled: { opacity: 0.45 },
+    }),
+  };
+});
 
 export interface ButtonProps extends Omit<BoxProps, "children" | "style" | keyof PointerHandlers> {
   /** Its words; leave out for an icon alone. */
   label?: string;
   /** An image path or an imported image, before the label, tinted as the label is. */
   icon?: string;
-  /** Plain (the default) shows only on hover; tinted is a soft accent; filled is the solid accent. */
+  /** Something after the label: a chevron, a count. */
+  trailing?: ReactNode;
+  /**
+   * Plain (the default) shows only under the pointer; tinted is a soft accent; filled is
+   * the solid accent; outline a surface with an edge; danger is filled in the danger color.
+   */
   variant?: ButtonVariant;
-  size?: "small" | "medium";
+  /** 24, 28 (the default) or 32 pixels high: the theme's `controls`. */
+  size?: ButtonSize;
   /** On, as a tool picked in a toolbar: tinted and ringed with the accent. */
   selected?: boolean;
   disabled?: boolean;
-  onPress?: () => void;
+  /** Takes keyboard focus, shown, as it appears; see Pressable. */
+  autoFocus?: boolean;
+  /** Pressed: a click, or Enter or Space (the event's `count` is then 0). */
+  onPress?: (event: StageClickEvent) => void;
   style?: StateStyle<BoxProps, ControlState>;
   labelStyle?: StateStyle<TextProps, ControlState>;
   iconStyle?: StateStyle<ImageStyle, ControlState>;
@@ -89,81 +128,89 @@ export interface ButtonProps extends Omit<BoxProps, "children" | "style" | keyof
 
 /**
  * A button with a label, an icon or both: `<Button label="Save" variant="filled" onPress={save} />`.
- * Restyle it in any state: `style={({ hovered }) => hovered && styles.glow}`.
+ * Enter and Space press it when it has keyboard focus.
  */
-export const Button = memo(function Button({ label, icon, variant = "plain", size, selected = false, disabled = false,
-                                             onPress, style, labelStyle, iconStyle, ...props }: ButtonProps) {
-  const button = useButton();
+export const Button = memo(function Button({ label, icon, trailing, variant = "plain", size = "medium", selected = false,
+                                             disabled = false, onPress, style, labelStyle, iconStyle,
+                                             ...props }: ButtonProps) {
+  const styles = useButton();
+  const look = styles.looks(`${variant}:${selected}`);
   const iconSize = size === "small" ? 14 : 16;
+  const tone = buttonTones[variant];
+  const base = [styles.base, styles.sizes[size], look.rest, disabled && styles.disabled];
+  const content = (state: ControlState) => (
+    <>
+      {icon && <Icon src={icon} size={iconSize} tone={tone} style={resolveStyle(iconStyle, state)} />}
+      {label !== undefined && <Label variant="label" tone={tone} style={resolveStyle(labelStyle, state)}>{label}</Label>}
+      {trailing}
+    </>
+  );
+  if (tracks(style, labelStyle, iconStyle)) {
+    return (
+      <Pressable {...props} disabled={disabled} onPress={onPress} states={look.states}
+                 style={(press) => [base, resolveStyle(style, { ...press, selected, disabled })]}>
+        {(press) => content({ ...press, selected, disabled })}
+      </Pressable>
+    );
+  }
+  const state: ControlState = { hovered: false, pressed: false, focused: false, selected, disabled };
   return (
-    <Pressable {...props} disabled={disabled} onPress={onPress}
-               style={(press) => [button({ variant, size, look: look(press), selected, disabled }),
-                                  resolveStyle(style, { ...press, selected, disabled })]}>
-      {(press) => {
-        const state = { ...press, selected, disabled };
-        return (
-          <>
-            {icon && <Icon src={icon} size={iconSize} tone={buttonTones[variant]} style={resolveStyle(iconStyle, state)} />}
-            {label !== undefined && (
-              <Label variant="strong" tone={buttonTones[variant]} style={resolveStyle(labelStyle, state)}>{label}</Label>
-            )}
-          </>
-        );
-      }}
+    <Pressable {...props} disabled={disabled} onPress={onPress} states={look.states}
+               style={[base, style as Style<BoxProps>]}>
+      {content(state)}
     </Pressable>
   );
 });
-
-const useIconButton = makeStyles(({ colors, radii, motion }) => variants({
-  base: {
-    alignItems: "center",
-    justifyContent: "center",
-    radius: radii.md,
-    border: { width: 1, color: colors.accentClear },
-    transition: motion.pop,
-  },
-  variants: {
-    look: {
-      rest: { fill: colors.clear },
-      hover: { fill: colors.hover },
-      press: { fill: colors.press },
-    } satisfies Record<Look, BoxProps>,
-    selected: { true: { fill: colors.accentTint, border: { width: 1, color: colors.accentLine } }, false: {} },
-    disabled: { true: { opacity: 0.4 }, false: {} },
-  },
-  defaults: { look: "rest", selected: false, disabled: false },
-}));
 
 export interface IconButtonProps extends Omit<BoxProps, "children" | "style" | keyof PointerHandlers> {
   /** An image path or an imported image; or give children to draw something else. */
   icon?: string;
   children?: ReactNode;
-  /** Its side, in pixels; defaults to 36. */
+  /** Its side, in pixels; defaults to 32. */
   size?: number;
-  /** The icon's side; defaults to 20. */
+  /** The icon's side; defaults to 18. */
   iconSize?: number;
-  /** The icon's color, the theme's ink by default; null keeps the image's own colors. */
+  /** The icon's color, the variant's own by default; null keeps the image's own colors. */
   iconTint?: Color | null;
+  /** As a Button's; plain by default. */
+  variant?: ButtonVariant;
   /** On, as a tool picked in a toolbar. */
   selected?: boolean;
   disabled?: boolean;
-  onPress?: () => void;
+  /** Takes keyboard focus, shown, as it appears; see Pressable. */
+  autoFocus?: boolean;
+  onPress?: (event: StageClickEvent) => void;
   style?: StateStyle<BoxProps, ControlState>;
   iconStyle?: StateStyle<ImageStyle, ControlState>;
 }
 
+const useIconButton = makeStyles((theme) => StyleSheet.create({
+  base: { alignItems: "center", justifyContent: "center", radius: theme.radii.sm, transition: controlTransition(theme) },
+  disabled: { opacity: 0.45 },
+}));
+
 /** A square button holding an icon, as in a toolbar: `<IconButton icon={pen} selected={tool === "pen"} onPress={…} />`. */
-export const IconButton = memo(function IconButton({ icon, children, size = 36, iconSize = 20, iconTint, selected = false,
-                                                     disabled = false, onPress, style, iconStyle,
+export const IconButton = memo(function IconButton({ icon, children, size = 32, iconSize = 18, iconTint, variant = "plain",
+                                                     selected = false, disabled = false, onPress, style, iconStyle,
                                                      ...props }: IconButtonProps) {
-  const iconButton = useIconButton();
+  const styles = useIconButton();
+  const look = useButton().looks(`${variant}:${selected}`);
+  const base = [styles.base, look.rest, disabled && styles.disabled];
+  const content = (state: ControlState) => (icon
+    ? <Icon src={icon} size={iconSize} tone={buttonTones[variant]} tint={iconTint} style={resolveStyle(iconStyle, state)} />
+    : children);
+  if (tracks(style, iconStyle)) {
+    return (
+      <Pressable {...props} width={size} height={size} disabled={disabled} onPress={onPress} states={look.states}
+                 style={(press) => [base, resolveStyle(style, { ...press, selected, disabled })]}>
+        {(press) => content({ ...press, selected, disabled })}
+      </Pressable>
+    );
+  }
   return (
-    <Pressable {...props} width={size} height={size} disabled={disabled} onPress={onPress}
-               style={(press) => [iconButton({ look: look(press), selected, disabled }),
-                                  resolveStyle(style, { ...press, selected, disabled })]}>
-      {(press) => (icon
-        ? <Icon src={icon} size={iconSize} tint={iconTint} style={resolveStyle(iconStyle, { ...press, selected, disabled })} />
-        : children)}
+    <Pressable {...props} width={size} height={size} disabled={disabled} onPress={onPress} states={look.states}
+               style={[base, style as Style<BoxProps>]}>
+      {content({ hovered: false, pressed: false, focused: false, selected, disabled })}
     </Pressable>
   );
 });
@@ -174,21 +221,25 @@ export interface SwitchState extends PressState {
   disabled: boolean;
 }
 
-const useSwitch = makeStyles(({ colors, shadows, motion }) => ({
-  track: variants({
-    base: { width: 36, height: 20, radius: 10, paddingX: 2, alignItems: "center", transition: motion.pop },
-    variants: {
-      value: { true: { justifyContent: "flex-end", fill: colors.accent }, false: { justifyContent: "flex-start", fill: colors.control } },
-      hovered: { true: {}, false: {} },
-      disabled: { true: { opacity: 0.4 }, false: {} },
-    },
-    defaults: { value: false, hovered: false, disabled: false },
-    compound: [{ when: { value: false, hovered: true }, style: { fill: colors.controlHover } }],
-  }),
-  knob: StyleSheet.create({
-    knob: { width: 16, height: 16, radius: 8, fill: colors.knob, shadow: shadows.knob, transition: motion.glide },
-  }).knob,
-}));
+const switchWidth = 32, switchHeight = 18, knobSide = 14;
+
+const useSwitch = makeStyles((theme) => {
+  const { colors, shadows, motion } = theme;
+  const ring = ringed(theme);
+  return {
+    ...StyleSheet.create({
+      track: { width: switchWidth, height: switchHeight, radius: switchHeight / 2, paddingX: 2, alignItems: "center",
+               shadow: ring.rest, transition: controlTransition(theme) },
+      on: { justifyContent: "flex-end", fill: colors.accent },
+      off: { justifyContent: "flex-start", fill: colors.control },
+      disabled: { opacity: 0.45 },
+      knob: { width: knobSide, height: knobSide, radius: knobSide / 2, fill: colors.knob, shadow: shadows.knob,
+              transition: { default: motion.fade, x: motion.glide } },
+    }),
+    onStates: { hover: { fill: colors.accentHover }, focusVisible: { shadow: ring.focus } } satisfies States,
+    offStates: { hover: { fill: colors.controlHover }, focusVisible: { shadow: ring.focus } } satisfies States,
+  };
+});
 
 export interface SwitchProps {
   value: boolean;
@@ -199,30 +250,48 @@ export interface SwitchProps {
   knobStyle?: StateStyle<RectProps, SwitchState>;
 }
 
-/** An on/off switch; the knob slides across as the compositor animates its new place. */
+/** An on/off switch; the knob slides across as the compositor animates its new place. Space toggles it. */
 export const Switch = memo(function Switch({ value, onValueChange, disabled = false, style, knobStyle }: SwitchProps) {
   const styles = useSwitch();
+  const base = [styles.track, value ? styles.on : styles.off, disabled && styles.disabled];
+  const states = value ? styles.onStates : styles.offStates;
+  const toggle = () => onValueChange?.(!value);
+  if (tracks(style, knobStyle)) {
+    return (
+      <Pressable disabled={disabled} onPress={toggle} states={states}
+                 style={(press) => [base, resolveStyle(style, { ...press, value, disabled })]}>
+        {(press) => <Rect style={[styles.knob, resolveStyle(knobStyle, { ...press, value, disabled })]} />}
+      </Pressable>
+    );
+  }
   return (
-    <Pressable disabled={disabled} onPress={() => onValueChange?.(!value)}
-               style={(press) => [styles.track({ value, hovered: press.hovered, disabled }),
-                                  resolveStyle(style, { ...press, value, disabled })]}>
-      {(press) => <Rect style={[styles.knob, resolveStyle(knobStyle, { ...press, value, disabled })]} />}
+    <Pressable disabled={disabled} onPress={toggle} states={states} style={[base, style as Style<BoxProps>]}>
+      <Rect style={[styles.knob, knobStyle as Style<RectProps>]} />
     </Pressable>
   );
 });
 
-// As tall as a medium button (28 and the track's 2 either side); the chosen card's corners
-// follow the track's, 2 pixels in.
-const useSegments = makeStyles(({ colors, radii, shadows, motion }) => ({
-  ...StyleSheet.create({
-    segments: { flexDirection: "row", padding: 2, radius: radii.md, fill: colors.hover },
-    disabled: { opacity: 0.4 },
-    segment: { height: 28, paddingX: 12, radius: radii.md - 2, alignItems: "center", justifyContent: "center" },
-    indicator: { position: "absolute", radius: radii.md - 2, fill: colors.raised, shadow: { ...shadows.knob, color: "#0000001f", blur: 4 },
-                 transition: motion.glide },
-  }),
-  motion,
-}));
+// As tall as a medium control: segments 4 short of it inside the track's 2 either side,
+// the chosen card's corners following the track's, 2 pixels in.
+const useSegments = makeStyles((theme) => {
+  const { colors, radii, controls, motion, shadows } = theme;
+  const ring = ringed(theme);
+  return {
+    ...StyleSheet.create({
+      segments: { flexDirection: "row", padding: 2, radius: radii.md, fill: colors.well },
+      disabled: { opacity: 0.45 },
+      segment: { height: controls.medium - 4, paddingX: 12, radius: radii.md - 2, alignItems: "center",
+                 justifyContent: "center", shadow: ring.rest, transition: controlTransition(theme) },
+      // Raised off the well: a hairline edge and a shadow close under it.
+      indicator: { position: "absolute", radius: radii.md - 2, fill: colors.raised,
+                   border: { width: 1, color: colors.line }, shadow: shadows.control, transition: motion.glide },
+    }),
+    segmentStates: { focusVisible: { shadow: ring.focus } } satisfies States,
+    // Unchosen labels brighten as the pointer comes over their segment.
+    labelStates: groupStates({ hover: { color: colors.ink } }),
+    labelMotion: motion.fade,
+  };
+});
 
 export interface SegmentedControlProps<T extends string | number> {
   options: readonly { value: T; label: string }[];
@@ -237,32 +306,59 @@ export interface SegmentedControlProps<T extends string | number> {
   indicatorStyle?: Style<RectProps>;
 }
 
-/** One of a few choices, side by side; a light card glides under the chosen one. */
+/**
+ * One of a few choices, side by side; a light card glides under the chosen one. Tab
+ * reaches the chosen segment, and the arrow keys, Home and End choose another, as a
+ * group of radio buttons does.
+ */
 function SegmentedControlOf<T extends string | number>({ options, value, onChange, disabled = false, style, segmentStyle,
                                                          labelStyle, indicatorStyle }: SegmentedControlProps<T>) {
   const styles = useSegments();
   // Where each segment was laid out, so the card can sit under the chosen one.
   const [boxes, setBoxes] = useState<Record<string, LayoutBox>>({});
+  const nodes = useRef(new Map<string, StageElement>());
   const chosen = boxes[String(value)];
+  const index = options.findIndex((option) => option.value === value);
+  const onKeyDown = disabled ? undefined : (event: StageKeyboardEvent) => {
+    const last = options.length - 1;
+    const next = { Left: index - 1, Up: index - 1, Right: index + 1, Down: index + 1, Home: 0, End: last }[event.key];
+    if (next === undefined || options.length === 0) return;
+    const option = options[Math.min(Math.max(next, 0), last)]!;
+    if (option.value !== value) onChange?.(option.value);
+    focusVisible(nodes.current.get(String(option.value)));
+  };
   return (
-    <Box style={[styles.segments, disabled && styles.disabled, style]}>
+    <Box style={[styles.segments, disabled && styles.disabled, style]} onKeyDown={onKeyDown}>
       {chosen && <Rect style={[styles.indicator, indicatorStyle]} {...chosen} />}
-      {options.map((option) => {
+      {options.map((option, at) => {
         const selected = option.value === value;
+        const state = (press: PressState): ControlState => ({ ...press, selected, disabled });
+        const resting = state({ hovered: false, pressed: false, focused: false });
+        const tracked = tracks(segmentStyle, labelStyle);
+        // Tab reaches the chosen segment, or the first while none is.
+        const reached = selected || (index < 0 && at === 0);
+        const label = (control: ControlState) => (
+          <Label variant="label" tone={selected ? "ink" : "muted"} transition={styles.labelMotion}
+                 states={selected ? undefined : styles.labelStates} style={resolveStyle(labelStyle, control)}>
+            {option.label}
+          </Label>
+        );
         return (
           <Pressable
             key={option.value}
-            style={(press) => [styles.segment, resolveStyle(segmentStyle, { ...press, selected, disabled })]}
+            ref={(node: StageElement | null) => {
+              if (node) nodes.current.set(String(option.value), node);
+              else nodes.current.delete(String(option.value));
+            }}
+            states={styles.segmentStates}
+            tabIndex={reached ? 0 : -1}
+            style={tracked ? (press) => [styles.segment, resolveStyle(segmentStyle, state(press))]
+                           : [styles.segment, segmentStyle as Style<BoxProps>]}
             disabled={disabled}
             onPress={() => onChange?.(option.value)}
             onLayout={(box) => setBoxes((all) => (sameBox(all[String(option.value)], box) ? all : { ...all, [option.value]: box }))}
           >
-            {(press) => (
-              <Label variant="strong" tone={selected ? "ink" : press.hovered ? "soft" : "muted"} transition={styles.motion.pop}
-                     style={resolveStyle(labelStyle, { ...press, selected, disabled })}>
-                {option.label}
-              </Label>
-            )}
+            {tracked ? (press: PressState) => label(state(press)) : label(resting)}
           </Pressable>
         );
       })}
@@ -280,24 +376,38 @@ export const SegmentedControl = memo(SegmentedControlOf) as typeof SegmentedCont
 export interface SliderState {
   /** Held down, whether or not it has moved yet. */
   dragging: boolean;
+  /** Always false: the pointer over it shows through `states`, without rendering. */
   hovered: boolean;
   disabled: boolean;
 }
 
-const useSlider = makeStyles(({ colors, shadows, motion }) => ({
-  ...StyleSheet.create({
-    track: { height: 20, justifyContent: "center" },
-    disabled: { opacity: 0.4 },
-    rail: { position: "absolute", x: 0, y: 7, height: 6, radius: 3, fill: colors.track },
-    fill: { position: "absolute", x: 0, y: 7, height: 6, radius: 3, fill: { from: colors.accentLight, to: colors.accent, angle: 0 } },
-    hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
-    thumb: { position: "absolute", y: 2, width: 16, height: 16, radius: 8, fill: colors.knob,
-             shadow: { ...shadows.knob, blur: 4 }, transition: motion.pop },
-    // Under the pointer or held, the thumb lifts: a deeper shadow.
-    lifted: { shadow: { ...shadows.knob, blur: 7, y: 2 } },
-  }),
-  motion,
-}));
+const thumb = 16, railHeight = 4, sliderHeight = 20;
+
+const useSlider = makeStyles((theme) => {
+  const { colors, shadows, motion } = theme;
+  const ring = ringed(theme, shadows.knob);
+  const halo = (color: Color, spread: number): Shadow[] => [...shadows.knob, { color, blur: 0, spread }];
+  return {
+    ...StyleSheet.create({
+      track: { height: sliderHeight, justifyContent: "center", cursor: "pointer" },
+      disabled: { opacity: 0.45 },
+      rail: { position: "absolute", x: 0, y: (sliderHeight - railHeight) / 2, height: railHeight, radius: railHeight / 2,
+              fill: colors.track },
+      fill: { position: "absolute", x: 0, y: (sliderHeight - railHeight) / 2, height: railHeight, radius: railHeight / 2,
+              fill: colors.accent },
+      hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
+      thumb: { position: "absolute", y: (sliderHeight - thumb) / 2, width: thumb, height: thumb, radius: thumb / 2,
+               fill: colors.knob, shadow: ring.rest },
+    }),
+    // Under the pointer a soft halo grows round the thumb, held a firmer one; focus shows the ring.
+    thumbStates: groupStates({
+      hover: { shadow: halo(colors.accentSoft, 4) },
+      focusVisible: { shadow: ring.focus },
+      pressed: { shadow: halo(colors.accentSoftHover, 5) },
+    }),
+    motion,
+  };
+});
 
 export interface SliderProps {
   /** Where it is, from `min` to `max`. */
@@ -318,11 +428,31 @@ export interface SliderProps {
   thumbStyle?: StateStyle<RectProps, SliderState>;
 }
 
-const thumb = 16;
+/** VALUE moved by KEY (an arrow, Page Up or Down, Home or End), or undefined for keys that move nothing. */
+export function sliderKey(key: string, value: number, min: number, max: number, step?: number, coarse = false): number | undefined {
+  const unit = step ?? (max - min) / 100;
+  const big = Math.max(unit, step ? Math.round((max - min) / 10 / step) * step : (max - min) / 10);
+  const by = coarse ? big : unit;
+  let next: number;
+  switch (key) {
+    case "Left": case "Down": case "KP_Left": case "KP_Down": next = value - by; break;
+    case "Right": case "Up": case "KP_Right": case "KP_Up": next = value + by; break;
+    case "Page_Down": case "Next": next = value - big; break;
+    case "Page_Up": case "Prior": next = value + big; break;
+    case "Home": next = min; break;
+    case "End": next = max; break;
+    default: return undefined;
+  }
+  if (step) next = min + Math.round((next - min) / step) * step;
+  // Whole steps can still carry float error; trim it.
+  next = Number(next.toPrecision(12));
+  return Math.min(Math.max(next, min), max);
+}
 
 /**
- * A value along a track, dragged or clicked to. It renders only while dragged,
- * once per move the compositor reports, and only if the value changes.
+ * A value along a track, dragged or clicked to, or moved with the arrow keys (Shift for
+ * bigger steps), Page Up and Down, Home and End. It renders only while dragged, once per
+ * move the compositor reports, and only if the value changes; hovering renders nothing.
  */
 export const Slider = memo(function Slider({ value, onValueChange, min = 0, max = 1, step, width = 160, disabled = false,
                                              style, railStyle, fillStyle, thumbStyle }: SliderProps) {
@@ -330,10 +460,9 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
   const [dragging, setDragging] = useState(false);
   // Moved since it was pressed: from then on the thumb follows the pointer at once.
   const [moved, setMoved] = useState(false);
-  const [hovered, setHovered] = useState(false);
   const last = useRef(value);
   last.current = value;
-  const state: SliderState = { dragging, hovered: hovered && !disabled, disabled };
+  const state: SliderState = { dragging, hovered: false, disabled };
   const fraction = Math.min(Math.max((value - min) / (max - min || 1), 0), 1);
   const travel = width - thumb;
   // A held press reports where the pointer is on the hit area even off it, so the
@@ -345,20 +474,23 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
   };
   // While dragged the thumb follows the pointer at once; a click, and anything else, glides.
   const follow = dragging && moved ? undefined : styles.motion.glide;
-  const thumbMotion = { default: styles.motion.pop, x: follow ?? instant };
+  const thumbMotion = { default: styles.motion.fade, x: follow ?? instant };
   return (
-    <Box style={[styles.track, disabled && styles.disabled, resolveStyle(style, state)]} width={width}>
+    <Box style={[styles.track, disabled && styles.disabled, resolveStyle(style, state)]} width={width}
+         stateGroup tabIndex={disabled ? undefined : 0} cursor={disabled ? undefined : "pointer"}
+         onKeyDown={disabled ? undefined : (event) => {
+           const next = sliderKey(event.key, last.current, min, max, step, event.modifiers.includes("shift"));
+           if (next !== undefined && next !== last.current) onValueChange?.(next);
+         }}>
       <Rect style={[styles.rail, resolveStyle(railStyle, state)]} width={width} />
-      <Rect style={[styles.fill, resolveStyle(fillStyle, state)]} width={Math.max(6, thumb / 2 + fraction * travel)}
+      <Rect style={[styles.fill, resolveStyle(fillStyle, state)]} width={Math.max(railHeight, thumb / 2 + fraction * travel)}
             transition={follow} />
-      <Rect style={[styles.thumb, (dragging || state.hovered) && styles.lifted, resolveStyle(thumbStyle, state)]}
+      <Rect style={[styles.thumb, resolveStyle(thumbStyle, state)]} states={disabled ? undefined : styles.thumbStates}
             x={fraction * travel} transition={thumbMotion} />
       <Group
         style={styles.hit}
-        cursor={disabled ? undefined : "pointer"}
-        onPointerEnter={() => setHovered(true)}
-        onPointerLeave={() => setHovered(false)}
         onPointerDown={disabled ? undefined : (event) => {
+          if ((event.button ?? 272) !== 272) return;
           setDragging(true);
           setMoved(false);
           pick(event);
@@ -367,7 +499,7 @@ export const Slider = memo(function Slider({ value, onValueChange, min = 0, max 
           if (!moved) setMoved(true);
           pick(event);
         } : undefined}
-        onPointerUp={() => setDragging(false)}
+        onPointerUp={dragging ? () => setDragging(false) : undefined}
       />
     </Box>
   );
@@ -379,26 +511,29 @@ export interface CheckboxState extends PressState {
   disabled: boolean;
 }
 
-const useCheckbox = makeStyles(({ colors, motion }) => ({
-  ...StyleSheet.create({
-    row: { flexDirection: "row", alignItems: "center", gap: 8 },
-    disabled: { opacity: 0.4 },
-    // The tick's two strokes, drawn rather than typed: a "✓" comes from whichever font has
-    // one, with metrics of its own, and never sits in the middle of the box.
-    arm: { position: "absolute", height: 2, radius: 1, fill: colors.onAccent },
-    tick: { position: "absolute", x: 0, y: 0, width: 18, height: 18, transition: motion.pop },
-  }),
-  box: variants({
-    base: { width: 18, height: 18, radius: 5, alignItems: "center", justifyContent: "center", transition: motion.pop },
-    variants: {
-      value: { true: { fill: colors.accent, border: { width: 1, color: colors.accent } },
-               false: { fill: colors.clear, border: { width: 1.5, color: colors.control } } },
-      hovered: { true: {}, false: {} },
-    },
-    defaults: { value: false, hovered: false },
-    compound: [{ when: { value: false, hovered: true }, style: { border: { width: 1.5, color: colors.controlHover } } }],
-  }),
-}));
+const checkSide = 16;
+
+const useCheckbox = makeStyles((theme) => {
+  const { colors, radii, shadows } = theme;
+  const transition = controlTransition(theme);
+  const empty = ringed(theme, shadows.control);
+  const ticked = ringed(theme);
+  return {
+    ...StyleSheet.create({
+      row: { flexDirection: "row", alignItems: "center", gap: 8 },
+      disabled: { opacity: 0.45 },
+      box: { width: checkSide, height: checkSide, radius: radii.xs, alignItems: "center", justifyContent: "center",
+             transition },
+      on: { fill: colors.accent, border: { width: 1, color: colors.accent }, shadow: ticked.rest },
+      off: { fill: colors.field, border: { width: 1, color: colors.border }, shadow: empty.rest },
+      tick: { transition },
+    }),
+    onStates: groupStates({ hover: { fill: colors.accentHover, border: { color: colors.accentHover } },
+                            focusVisible: { shadow: ticked.focus } }),
+    offStates: groupStates({ hover: { border: { color: colors.borderHover } }, focusVisible: { shadow: empty.focus } }),
+    colors,
+  };
+});
 
 export interface CheckboxProps {
   value: boolean;
@@ -411,41 +546,38 @@ export interface CheckboxProps {
   labelStyle?: StateStyle<TextProps, CheckboxState>;
 }
 
-/** A box ticked on and off, with an optional label: `<Checkbox value={done} onValueChange={setDone} label="Done" />`. */
+/**
+ * A box ticked on and off, with an optional label: `<Checkbox value={done} onValueChange={setDone} label="Done" />`.
+ * Space toggles it when it has keyboard focus, which rings the box.
+ */
 export const Checkbox = memo(function Checkbox({ value, onValueChange, label, disabled = false, style, boxStyle,
                                                  labelStyle }: CheckboxProps) {
   const styles = useCheckbox();
+  const toggle = () => onValueChange?.(!value);
+  const content = (state: CheckboxState) => (
+    <>
+      <Box style={[styles.box, value ? styles.on : styles.off, resolveStyle(boxStyle, state)]}
+           states={disabled ? undefined : value ? styles.onStates : styles.offStates}>
+        <Glyph shape="check" size={12} stroke={1.75} color={styles.colors.onAccent} style={styles.tick}
+               opacity={value ? 1 : 0} />
+      </Box>
+      {label !== undefined && <Label style={resolveStyle(labelStyle, state)}>{label}</Label>}
+    </>
+  );
+  if (tracks(style, boxStyle, labelStyle)) {
+    return (
+      <Pressable disabled={disabled} onPress={toggle}
+                 style={(press) => [styles.row, disabled && styles.disabled, resolveStyle(style, { ...press, value, disabled })]}>
+        {(press) => content({ ...press, value, disabled })}
+      </Pressable>
+    );
+  }
   return (
-    <Pressable disabled={disabled} onPress={() => onValueChange?.(!value)}
-               style={(press) => [styles.row, disabled && styles.disabled, resolveStyle(style, { ...press, value, disabled })]}>
-      {(press) => {
-        const state = { ...press, value, disabled };
-        return (
-          <>
-            <Box style={[styles.box({ value, hovered: press.hovered }), resolveStyle(boxStyle, state)]}>
-              <Tick shown={value} />
-            </Box>
-            {label !== undefined && <Label style={resolveStyle(labelStyle, state)}>{label}</Label>}
-          </>
-        );
-      }}
+    <Pressable disabled={disabled} onPress={toggle} style={[styles.row, disabled && styles.disabled, style as Style<BoxProps>]}>
+      {content({ hovered: false, pressed: false, focused: false, value, disabled })}
     </Pressable>
   );
 });
-
-/** A tick drawn in an 18-pixel box, centred on it. */
-function Tick({ shown }: { shown: boolean }) {
-  const styles = useCheckbox();
-  return (
-    <Group style={styles.tick} opacity={shown ? 1 : 0}>
-      <Rect style={styles.arm} x={3.9} y={10.1} width={4.8} transform={tickShort} />
-      <Rect style={styles.arm} x={5.4} y={7.9} width={9.4} transform={tickLong} />
-    </Group>
-  );
-}
-
-const tickShort = rotate(45);
-const tickLong = rotate(-47);
 
 export interface ProgressBarProps {
   /** How far along, from 0 to 1; null for work of unknown length, which sweeps. */
@@ -489,3 +621,4 @@ export const ProgressBar = memo(function ProgressBar({ value, width, color, styl
     </Box>
   );
 });
+

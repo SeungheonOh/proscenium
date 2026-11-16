@@ -1,0 +1,9 @@
+# shot-at: 3200
+# page: 2
+# Two fingers over the horizontal scroller: the content scrolled sideways, the thumb showing.
+extent 1280 800
+move 300 300
+glide $NEST_X_X $NEST_X_Y 300
+sleep 200
+fingers 160 0 200
+sleep 400

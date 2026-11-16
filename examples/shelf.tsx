@@ -24,6 +24,7 @@ import { Books } from "./shelf/Books.js";
 import { Keybindings } from "./shelf/Keybindings.js";
 import { ShelfLabel } from "./shelf/ShelfLabel.js";
 import { ShelfProvider, useShelf } from "./shelf/ShelfProvider.js";
+import { OverlayHost } from "proscenium/ui";
 
 function ShelfLauncher() {
   const { output } = useShelf();
@@ -34,12 +35,14 @@ export default function ShelfWorld() {
   return (
     <ScreenEffects>
       <ShelfProvider>
-        {/* A dark, warm study wall. */}
-        <Background fill="#1e1611" />
-        <Books />
-        <Desktop barStart={ShelfLabel} />
-        <ShelfLauncher />
-        <Keybindings />
+        <OverlayHost>
+          {/* A dark, warm study wall. */}
+          <Background fill="#1e1611" />
+          <Books />
+          <Desktop barStart={ShelfLabel} />
+          <ShelfLauncher />
+          <Keybindings />
+        </OverlayHost>
       </ShelfProvider>
     </ScreenEffects>
   );

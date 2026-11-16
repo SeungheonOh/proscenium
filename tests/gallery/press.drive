@@ -1,0 +1,9 @@
+# shot-at: 3000
+# A button held down: its pressed fill.
+extent 1280 800
+move 300 300
+glide $PRESS_X $PRESS_Y 300
+sleep 200
+down left
+sleep 800
+up left

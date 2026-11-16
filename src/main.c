@@ -62,6 +62,8 @@ struct options {
     const char *socket;
     bool headless;
     int width, height;
+    /* Every output's scale; 0 leaves the backend's. */
+    double scale;
     double run_for;
     bool xwayland;
     /* Screen sharing: 1 on, 0 off, -1 unless headless. */
@@ -77,7 +79,7 @@ static pid_t director_pid, setup_pid;
 
 static void usage(void) {
     printf("Usage: proscenium [--script WORLD.tsx] [--socket PATH]\n"
-           "                  [--headless [--size WxH] [--outputs N]] [--no-xwayland]\n"
+           "                  [--headless [--size WxH] [--outputs N]] [--scale S] [--no-xwayland]\n"
            "                  [--screen-sharing | --no-screen-sharing] [--damage-debug]\n"
            "                  [--run-for SECONDS] [--once] [--dev] [--remote [ADDRESS:]PORT]\n");
 }
@@ -94,6 +96,7 @@ static bool parse_options(int argc, char **argv, struct options *options) {
         {"script", required_argument, NULL, 's'},   {"socket", required_argument, NULL, 'S'},
         {"headless", no_argument, NULL, 'H'},       {"size", required_argument, NULL, 'z'},
         {"outputs", required_argument, NULL, 'O'},  {"run-for", required_argument, NULL, 'r'},
+        {"scale", required_argument, NULL, 'c'},
         {"no-xwayland", no_argument, NULL, 'X'},    {"no-screen-sharing", no_argument, NULL, 'P'},
         {"screen-sharing", no_argument, NULL, 'p'}, {"damage-debug", no_argument, NULL, 'd'},
         {"once", no_argument, NULL, 'o'},           {"dev", no_argument, NULL, 'D'},
@@ -110,6 +113,10 @@ static bool parse_options(int argc, char **argv, struct options *options) {
             if (sscanf(optarg, "%dx%d", &options->width, &options->height) != 2) return false;
             break;
         case 'O': options->outputs = CLAMP(atoi(optarg), 1, 8); break;
+        case 'c':
+            options->scale = atof(optarg);
+            if (!(options->scale >= 0.25 && options->scale <= 8)) return false;
+            break;
         case 'r': options->run_for = atof(optarg); break;
         case 'X': options->xwayland = false; break;
         case 'P': options->screen_sharing = false; break;
@@ -316,7 +323,9 @@ static bool server_start(struct server *server, const struct options *options) {
     wl_list_init(&server->xsurfaces);
     wl_list_init(&server->pages);
     server->damage_debug = options->damage_debug;
+    server->output_scale = options->scale;
     server->check = getenv("PROSCENIUM_CHECK") && *getenv("PROSCENIUM_CHECK") == '1';
+    server->latency = getenv("PROSCENIUM_LATENCY") && *getenv("PROSCENIUM_LATENCY") == '1';
     server->screen_sharing = options->screen_sharing;
     snprintf(server->instance, sizeof server->instance, "%lx-%x", (long)time(NULL),
              (unsigned)(now_nanoseconds() ^ getpid()) & 0xffffff);

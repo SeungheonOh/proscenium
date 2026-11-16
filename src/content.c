@@ -23,6 +23,7 @@
 #include <math.h>
 
 #include "display.h"
+#include "edit.h"
 #include "link.h"
 #include "stage.h"
 
@@ -77,8 +78,21 @@ static void image_cache_destroy(void *data) {
 
 /* Text. */
 
-static void text_style(const struct node *node, struct media_text_style *style) {
+/* The lines a `decoration` choice draws. */
+static int text_decoration(int choice) {
+    switch (choice) {
+    case DECORATION_UNDERLINE: return MEDIA_UNDERLINE;
+    case DECORATION_LINE_THROUGH: return MEDIA_LINE_THROUGH;
+    case DECORATION_BOTH: return MEDIA_UNDERLINE | MEDIA_LINE_THROUGH;
+    default: return 0;
+    }
+}
+
+/* NODE's text style, and the revision of what it lays out into REVISION. */
+static void text_style(const struct node *node, struct media_text_style *style,
+                       uint64_t *revision) {
     *style = MEDIA_TEXT_STYLE_DEFAULT;
+    if (revision) *revision = node->revision;
     style->text = node_string(node, PROP_TEXT);
     style->markup = node_bool(node, PROP_MARKUP);
     style->font = node_string(node, PROP_FONT);
@@ -92,6 +106,20 @@ static void text_style(const struct node *node, struct media_text_style *style) 
         node_given(node, PROP_LINE_HEIGHT) ? node->props[PROP_LINE_HEIGHT].number : 0;
     style->max_lines =
         node_given(node, PROP_MAX_LINES) ? (int)MIN(node->props[PROP_MAX_LINES].id, 10000) : 0;
+    style->letter_spacing = node_prop(node, PROP_LETTER_SPACING)->number;
+    style->features = node_string(node, PROP_FONT_FEATURES);
+    style->decoration = text_decoration(node_choice(node, PROP_DECORATION));
+    /* An editable node lays out what its editor holds, plain, every line of it. */
+    const char *text;
+    double wrap;
+    uint64_t edited;
+    if (edit_layout_text(node, &text, &wrap, &edited)) {
+        style->text = text;
+        style->markup = false;
+        style->width = wrap;
+        style->max_lines = 0;
+        if (revision) *revision = edited;
+    }
 }
 
 const struct media_text_layout *content_text_layout(struct server *server, struct node *node) {
@@ -103,8 +131,9 @@ const struct media_text_layout *content_text_layout(struct server *server, struc
         node->cache_destroy = text_cache_destroy;
     }
     struct media_text_style style;
-    text_style(node, &style);
-    media_text_layout_update(server->media, &cache->layout, &style, node->revision);
+    uint64_t revision;
+    text_style(node, &style, &revision);
+    media_text_layout_update(server->media, &cache->layout, &style, revision);
     return &cache->layout;
 }
 
@@ -114,6 +143,12 @@ double content_text_color(const struct node *node, double color[4]) {
     } else {
         color[0] = color[1] = color[2] = 0;
         color[3] = 1;
+    }
+    /* A field's placeholder, as ::placeholder shows it. */
+    if (edit_placeholder_shown(node)) {
+        if (node_given(node, PROP_PLACEHOLDER_COLOR))
+            node_color(node, PROP_PLACEHOLDER_COLOR, color);
+        else color[3] *= 0.5;
     }
     return color[3];
 }
@@ -342,11 +377,13 @@ static const struct atlas_glyph *atlas_glyph(struct server *server, const struct
 static bool place_glyph(struct server *server, const struct media_glyph *glyph, double scale,
                         bool rasterize, struct vec *uploads, bool *possible,
                         struct content_glyph *out) {
-    /* Where cairo draws a glyph: its origin rounded to the nearest quarter device pixel,
-     * which picks one of four phases each way; a colored one at the nearest whole pixel. */
+    /* Where cairo draws a glyph: its origin rounded to the nearest quarter device pixel
+     * across, which picks one of four phases, and to the nearest whole one down, so its
+     * baseline and horizontal stems sit on pixels, as a raster's do; a colored one at the
+     * nearest whole pixel. */
     double device_x = glyph->x * scale, device_y = glyph->y * scale;
-    long quarter_x = lround(device_x * 4), quarter_y = lround(device_y * 4);
-    int phase_x = (int)(quarter_x & 3), phase_y = (int)(quarter_y & 3);
+    long quarter_x = lround(device_x * 4), quarter_y = 4 * lround(device_y);
+    int phase_x = (int)(quarter_x & 3), phase_y = 0;
     const struct atlas_glyph *entry =
         atlas_glyph(server, glyph, scale, phase_x, phase_y, rasterize, uploads, possible);
     if (!entry) return false;
@@ -383,10 +420,13 @@ bool content_text_prepare_glyphs(struct server *server, struct node *node, doubl
     if (!list) return true;
     size_t first = glyphs->length;
     bool sharp = true, whole = true, possible = true;
+    /* Text being typed draws every glyph it has, new ones too, in the frame after the key:
+     * a few glyphs at most, and never a frame without the text. */
+    bool always = node->editor != NULL;
     for (size_t i = 0; i < count && whole; i++) {
         struct content_glyph placed;
-        if (!place_glyph(server, &list[i], scale, server->text_spare > 0, uploads, &possible,
-                         &placed)) {
+        if (!place_glyph(server, &list[i], scale, always || server->text_spare > 0, uploads,
+                         &possible, &placed)) {
             /* Out of time: the glyph from the scale the text last drew whole at, resampled. */
             sharp = false;
             double before = cache->glyph_scale;
@@ -650,6 +690,7 @@ void content_image_fit(int fit, const struct media_image *image, double width, d
 }
 
 void content_node_size(struct server *server, struct node *node, double *width, double *height) {
+    if (edit_node_size(server, node, width, height)) return;
     if (node->kind == KIND_TEXT) {
         const struct media_text_layout *layout = content_text_layout(server, node);
         media_text_layout_size(layout, width, height);
@@ -670,6 +711,9 @@ void content_node_size(struct server *server, struct node *node, double *width, 
 
 void content_refresh_node(struct server *server, struct node *node) {
     if (node->kind == KIND_TEXT) {
+        /* An editor reports its own size, as its text changes between commits too. */
+        edit_sync(server, node);
+        if (node->editor) return;
         const struct media_text_layout *layout = content_text_layout(server, node);
         struct text_cache *cache = node->cache;
         if (layout && layout->serial != cache->reported) {
@@ -698,6 +742,7 @@ void content_refresh_node(struct server *server, struct node *node) {
 
 void content_node_dead(struct server *server, struct node *node) {
     if (node->kind != KIND_TEXT) return;
+    edit_node_dead(server, node);
     size_t index = 0;
     int64_t slot;
     void *value;
@@ -742,12 +787,27 @@ void content_release_stale(struct server *server) {
 
 bool content_measure_text(struct server *server, const struct json_value *props, double *width,
                           double *height, struct protocol_error *error) {
-    enum { TEXT, MARKUP, FONT, SIZE, WEIGHT, ITALIC, ALIGN, WIDTH, LINE_HEIGHT, MAX_LINES, COUNT };
+    enum {
+        TEXT,
+        MARKUP,
+        FONT,
+        SIZE,
+        WEIGHT,
+        ITALIC,
+        ALIGN,
+        WIDTH,
+        LINE_HEIGHT,
+        MAX_LINES,
+        LETTER_SPACING,
+        FEATURES,
+        COUNT
+    };
     static const enum prop_key keys[COUNT] = {
         [TEXT] = PROP_TEXT,          [MARKUP] = PROP_MARKUP,      [FONT] = PROP_FONT,
         [SIZE] = PROP_FONT_SIZE,     [WEIGHT] = PROP_FONT_WEIGHT, [ITALIC] = PROP_ITALIC,
         [ALIGN] = PROP_ALIGN,        [WIDTH] = PROP_WIDTH,        [LINE_HEIGHT] = PROP_LINE_HEIGHT,
-        [MAX_LINES] = PROP_MAX_LINES};
+        [MAX_LINES] = PROP_MAX_LINES, [LETTER_SPACING] = PROP_LETTER_SPACING,
+        [FEATURES] = PROP_FONT_FEATURES};
     struct prop_value v[COUNT] = {0};
     bool ok = true;
     for (int k = 0; ok && k < COUNT; k++)
@@ -765,6 +825,8 @@ bool content_measure_text(struct server *server, const struct json_value *props,
         style.width = v[WIDTH].given ? v[WIDTH].number : 0;
         style.line_height = v[LINE_HEIGHT].given ? v[LINE_HEIGHT].number : 0;
         style.max_lines = v[MAX_LINES].given ? (int)MIN(v[MAX_LINES].id, 10000) : 0;
+        style.letter_spacing = v[LETTER_SPACING].given ? v[LETTER_SPACING].number : 0;
+        style.features = v[FEATURES].given ? v[FEATURES].string : NULL;
         struct media_text_metrics metrics;
         media_text_measure(server->media, &style, &metrics);
         *width = metrics.width;

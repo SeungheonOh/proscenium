@@ -1,0 +1,12 @@
+# shot-at: 3400
+# page: 3
+# Click the switch, Shift+Tab: the Checkbox's ring.
+extent 1280 800
+move 300 300
+glide $K_SWITCH_X $K_ROW_Y 200
+click left
+sleep 200
+chord shift+Tab
+move 300 300
+sleep 300
+sleep 3000

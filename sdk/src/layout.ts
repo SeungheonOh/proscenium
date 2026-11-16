@@ -15,6 +15,7 @@ import Yoga, {
   Gutter,
   Justify,
   MeasureMode,
+  Overflow,
   PositionType,
   Wrap,
   type Node,
@@ -170,6 +171,27 @@ export function applyLayoutStyle(node: Node, style: Style, container: boolean): 
   for (const [edge, value] of edges(style, "padding")) {
     node.setPadding(edge, length(value) as number | undefined);
   }
+  // A scroll container's children keep their size along the axes it scrolls, as in CSS.
+  node.setOverflow(style.scroll ? Overflow.Scroll : Overflow.Visible);
+}
+
+/**
+ * How far a laid-out Box's content reaches, from its top left to its children's far
+ * edges and its padding: what a scroll container scrolls over.
+ */
+export function contentExtent(node: Node): { width: number; height: number } {
+  let width = 0, height = 0;
+  for (let index = 0; index < node.getChildCount(); index++) {
+    const child = node.getChild(index);
+    if (child.getDisplay() === Display.None) continue;
+    const box = child.getComputedLayout();
+    width = Math.max(width, box.left + box.width + child.getComputedMargin(Edge.Right));
+    height = Math.max(height, box.top + box.height + child.getComputedMargin(Edge.Bottom));
+  }
+  return {
+    width: width + node.getComputedPadding(Edge.Right),
+    height: height + node.getComputedPadding(Edge.Bottom),
+  };
 }
 
 export function createLayoutNode(): Node {
@@ -183,6 +205,7 @@ export function calculateLayout(root: Node): void {
 /** Wire props a text's size depends on, besides its wrap width. */
 export const textKeys = [
   "text", "markup", "font", "fontSize", "fontWeight", "italic", "lineHeight", "maxLines",
+  "letterSpacing", "fontFeatures",
 ] as const;
 
 export interface MeasureRequest {

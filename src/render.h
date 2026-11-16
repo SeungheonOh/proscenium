@@ -71,6 +71,14 @@ void render_destroy(struct renderer *renderer);
  * viewport, blending, scissor (to the whole buffer) and the frame's spare time.
  */
 void render_begin_frame(struct renderer *renderer, int width, int height);
+/*
+ * While HOLD, programs still building stay building, even once the driver finished
+ * them: a redraw of a frame (PROSCENIUM_CHECK's) then draws what the frame drew. Builds
+ * are otherwise asked about once a frame, at their first use.
+ */
+void render_hold_builds(struct renderer *renderer, bool hold);
+/* Ask about builds again, at the next use of each, as a new frame does. */
+void render_poll_builds(struct renderer *renderer);
 /* Limit drawing to buffer pixels (X, Y, WIDTH, HEIGHT) of the bound target. */
 void render_set_scissor(struct renderer *renderer, int x, int y, int width, int height);
 /* Fill the scissor rectangle with a premultiplied color. */
@@ -108,12 +116,15 @@ struct render_shading {
     struct render_shader *shader;
     /* Its uniforms, flattened in declaration order. */
     const float *values;
-    /* The node's box and corner radius, the shading's clock, and the pointer, in local units. */
+    /* The node's box and corner radius (its largest corner), the shading's clock, and the
+     * pointer, in local units. */
     double size[2], radius, time, pointer[2];
     /* For a shader reading the output: local units to output-logical pixels and back, and
      * the output's size in them. */
     struct mat3 to_output, from_output;
     double output_size[2];
+    /* The node's corners: top-left, top-right, bottom-right, bottom-left. */
+    double radii[4];
 };
 
 /* Whether SHADER's program is built and ran, so what it draws can be relied on. */
@@ -140,9 +151,12 @@ struct render_texture_draw {
     struct box box;
     /* Texture coordinates of the box's top-left, top-right, bottom-left and bottom-right. */
     const double *uv;
-    /* Only MASK's corners are rounded, by RADIUS (0 for none): popups outside it are untouched. */
+    /* Only MASK's corners are rounded, by RADII (top-left, top-right, bottom-right,
+     * bottom-left; 0 for none): popups outside it are untouched. */
     struct box mask;
-    double radius, opacity;
+    double radii[4], opacity;
+    /* Text: its coverage is corrected as glyphs' is (see render.c). */
+    bool text;
 };
 
 /*
@@ -217,6 +231,11 @@ void render_atlas_clear(struct renderer *renderer);
 void render_draw_glyph(struct renderer *renderer, int page, int x, int y, int width, int height,
                        bool colored, struct mat3 transform, struct box box, const float color[4]);
 
+/* Fill the local BOX through TRANSFORM with premultiplied COLOR, batched with glyphs:
+ * a caret, a selection. */
+void render_draw_fill(struct renderer *renderer, struct mat3 transform, struct box box,
+                      const float color[4]);
+
 /* How far beyond what it blurs a backdrop blur of RADIUS output pixels samples; a blur of
  * under a pixel reads the backdrop as it is. */
 int render_blur_margin(double radius);
@@ -285,18 +304,22 @@ void render_begin_effect(struct renderer *renderer, const struct render_target *
 /* Return to the target, nesting and scissor render_begin_effect left. */
 void render_end_effect(struct renderer *renderer, const struct render_effect_scope *scope);
 
-/* What an effect covers: the local QUAD through TRANSFORM. */
+/* What an effect covers: the local QUAD through TRANSFORM. Without a shader, ROUNDED draws
+ * the content within QUAD's rounded corners RADII (top-left, top-right, bottom-right,
+ * bottom-left), as a rounded clip; else as it is. */
 struct render_effect_draw {
     struct mat3 transform;
     struct box quad;
     double opacity;
+    bool rounded;
+    double radii[4];
 };
 
 /*
  * Draw an effect's content through SHADING's effect shader within buffer AREA,
  * sampling CONTENT and BACKDROP (may be NULL), whose first pixel is buffer pixel
  * (ORIGIN_X, ORIGIN_Y). While the shader cannot run, as REPORT says, or with
- * SHADING NULL, the content is drawn as it is.
+ * SHADING NULL, the content is drawn as it is, or rounded as DRAW says.
  */
 void render_draw_effect(struct renderer *renderer, const struct render_shading *shading,
                         const struct render_effect_draw *draw, const struct render_target *content,

@@ -17,9 +17,11 @@
 #include <wlr/util/transform.h>
 
 #include "content.h"
+#include "edit.h"
 #include "input.h"
 #include "render.h"
 #include "renderthread.h"
+#include "scroll.h"
 #include "stage.h"
 #include "web.h"
 #include "webnode.h"
@@ -41,6 +43,8 @@ enum item_kind {
     ITEM_IMAGE,
     ITEM_WEB,
     ITEM_EFFECT,
+    /* A solid rectangle: an editable text's caret, or a piece of its selection. */
+    ITEM_FILL,
 };
 
 /*
@@ -49,7 +53,7 @@ enum item_kind {
  */
 struct item_shading {
     struct shader *shader;
-    double size[2], radius, time, pointer[2];
+    double size[2], radius, radii[4], time, pointer[2];
     /* For a shader reading the output: local units to output-logical pixels and back. */
     struct mat3 to_output, from_output;
     double output_size[2];
@@ -85,7 +89,7 @@ struct item {
         struct {
             struct mat3 transform;
             struct box box, mask;
-            double radius, opacity;
+            double radii[4], opacity;
             double uv[8];
             /* For a snapshot, whose surface is gone: its texture, and the buffer its window
              * holds for it. */
@@ -103,15 +107,24 @@ struct item {
         struct {
             struct mat3 transform;
             struct box box;
-            double uv[8], radius, opacity;
+            double uv[8], radii[4], opacity;
         } image;
         struct {
             struct mat3 transform;
-            double width, height, radius, opacity;
+            double width, height, radii[4], opacity;
         } web;
+        struct {
+            struct mat3 transform;
+            struct box box;
+            /* Premultiplied, its opacity in. */
+            float color[4];
+        } fill;
         struct {
             struct render_effect_draw draw;
             int end; /* items up to here may be its descendants */
+            /* A rounded clip draws passes inside SAFE, away from its corners, straight. */
+            int safe_count;
+            struct box safe[2];
         } effect;
     };
 };
@@ -169,6 +182,8 @@ struct display {
     double built_at;
     /* Text and web node id -> exact raster scale on the last rendered frame. */
     struct idmap raster_scales, next_raster_scales;
+    /* The camera the last build saw: one moving since leaves boxes unsnapped. */
+    struct mat3 camera;
     struct vec surfaces; /* struct surface_draw: scratch while emitting */
     struct vec gathered; /* pixman_box32_t: damage while diffing */
     /* PROSCENIUM_CHECK's full redraws, and frames found to differ from them. */
@@ -182,6 +197,8 @@ enum { SCENE_SET, SEAT_SET, SET_COUNT };
 struct item_draw {
     /* The frame draws it. */
     bool ready;
+    /* Only a check's full redraw draws it: no pass of the frame reaches it. */
+    bool check_only;
     /* A surface's texture; none when its name is 0. */
     struct render_surface surface;
     /* Text or an image drawn from a raster in SLOT (0 for none), text's at RASTER_SCALE. */
@@ -253,6 +270,9 @@ struct emit {
     struct box bounds; /* the buffer */
     struct clip_state clip;
     bool moving, animating, pointer_parent;
+    /* The geometry of the nodes being emitted moves: theirs, an ancestor's or the camera's.
+     * Only still boxes snap to whole pixels (snap_box). */
+    bool shifting;
     int owner;
     /* Inside an effect, what its content target holds: all a backdrop there can read. */
     bool in_effect;
@@ -388,16 +408,28 @@ static bool shading_values(const struct node *node, const struct shading *shadin
     return shader_open(shading->shader, values);
 }
 
-/* Record SHADING with VALUES, seeing a WIDTH x HEIGHT box of corner RADIUS through T, for
+/* The largest of RADII, which stands for them where one radius must. */
+static double largest_corner(const double radii[4]) {
+    return fmax(fmax(radii[0], radii[1]), fmax(radii[2], radii[3]));
+}
+
+/* NODE's corners, none below zero: top-left, top-right, bottom-right, bottom-left. */
+static void node_radii(const struct node *node, double radii[4]) {
+    node_corners(node, PROP_RADIUS, radii);
+    for (int i = 0; i < 4; i++) radii[i] = fmax(0, radii[i]);
+}
+
+/* Record SHADING with VALUES, seeing a WIDTH x HEIGHT box of corners RADII through T, for
  * items to draw. */
 static void record_shading(struct emit *e, const struct shading *shading, const float *values,
-                           struct mat3 t, double width, double height, double radius,
+                           struct mat3 t, double width, double height, const double radii[4],
                            struct item_shading *out) {
     struct shader *shader = shading->shader;
     out->shader = shader;
     out->size[0] = width;
     out->size[1] = height;
-    out->radius = radius;
+    out->radius = largest_corner(radii);
+    memcpy(out->radii, radii, sizeof out->radii);
     out->time = shader->time ? shading_time(shading, e->server->advanced_at) : 0;
     out->pointer[0] = out->pointer[1] = 0;
     if (shader->pointer) local_pointer(e, t, out->pointer);
@@ -431,23 +463,25 @@ static void shading_signature(struct emit *e, struct item *item, const struct sh
 }
 
 /*
- * Paint SHADING of NODE with VALUES, its WIDTH x HEIGHT box of corner RADIUS
+ * Paint SHADING of NODE with VALUES, its WIDTH x HEIGHT box of corners RADII
  * placed by T: its quad follows the shader's extent, a hole or the local box
  * COVER (when given) that later paints hide leaves a ring, and an opaque region
  * hides what lies beneath. A background's paints cover the plane.
  */
 static void emit_paint(struct emit *e, struct node *node, const struct shading *shading,
                        const float *values, const struct box *cover, struct mat3 t, double width,
-                       double height, double radius, double opacity) {
+                       double height, const double radii[4], double opacity) {
     struct shader *shader = shading->shader;
     bool plane = node->kind == KIND_BACKGROUND;
+    static const double square[4] = {0, 0, 0, 0};
     if (shading->whole_output && !plane) {
         /* Over the whole output, positions are output-logical pixels. */
         t = e->screen;
         width = e->output->width;
         height = e->output->height;
-        radius = 0;
+        radii = square;
     }
+    double radius = largest_corner(radii);
     struct box box = {0, 0, width, height};
     double pixel = plane ? mat3_plane_pixel(t, e->bounds.width, e->bounds.height)
                          : mat3_pixel_size(t, width / 2, height / 2),
@@ -490,7 +524,7 @@ static void emit_paint(struct emit *e, struct node *node, const struct shading *
         item->read_area =
             (struct box){draw->area.x, draw->area.y, draw->area.width, draw->area.height};
     }
-    record_shading(e, shading, values, t, width, height, radius, &item->shading);
+    record_shading(e, shading, values, t, width, height, radii, &item->shading);
     item->signature = signature_of(e, draw, sizeof *draw);
     shading_signature(e, item, shading);
     set_node(item, node);
@@ -541,7 +575,8 @@ static bool paint_cover(const struct shading *shading, const float *values, doub
  * drawn, and damaged, as a ring.
  */
 static void emit_paints(struct emit *e, struct node *node, struct mat3 t, double width,
-                        double height, double radius, double opacity, bool over) {
+                        double height, const double radii[4], double opacity, bool over) {
+    double radius = largest_corner(radii);
     if (!node->shading_count) return;
     float values[SHADINGS_HELD][SHADER_COMPONENTS_MAX];
     bool shown[SHADINGS_HELD], hidden[SHADINGS_HELD];
@@ -570,13 +605,13 @@ static void emit_paints(struct emit *e, struct node *node, struct mat3 t, double
     for (int i = 0; i < node->shading_count; i++) {
         if (shown[i])
             emit_paint(e, node, &node->shadings[i], values[i], hidden[i] ? &covers[i] : NULL, t,
-                       width, height, radius, opacity);
+                       width, height, radii, opacity);
     }
 }
 
-/* NODE's filter, seeing its WIDTH x HEIGHT box of corner RADIUS through T, into OUT. */
+/* NODE's filter, seeing its WIDTH x HEIGHT box of corners RADII through T, into OUT. */
 static void node_filter(struct emit *e, struct node *node, struct mat3 t, double width,
-                        double height, double radius, struct filter *out) {
+                        double height, const double radii[4], struct filter *out) {
     memset(out, 0, sizeof *out);
     out->keeps_opacity = true;
     const struct shading *shading = node_stage_shading(node, STAGE_FILTER);
@@ -584,7 +619,7 @@ static void node_filter(struct emit *e, struct node *node, struct mat3 t, double
     if (!shading || !shading_values(node, shading, values)) return;
     out->shading = shading;
     out->keeps_opacity = shader_region_holds(&shading->shader->opaque, values, false);
-    record_shading(e, shading, values, t, width, height, radius, &out->recorded);
+    record_shading(e, shading, values, t, width, height, radii, &out->recorded);
 }
 
 /* Draw content ITEM, its signature made, through FILTER. */
@@ -601,9 +636,17 @@ static bool pointer_handlers(const struct node *node) {
     return node->handlers & BUBBLING_EVENTS;
 }
 
+/* Whether NODE is a control the compositor serves itself: it shows states, takes focus,
+ * scrolls, or is a scroll thumb. */
+static bool control(const struct node *node) {
+    return node_has_states(node) || node->props[PROP_STATE_GROUP].given ||
+           node->props[PROP_TAB_INDEX].given || node->props[PROP_SCROLL_THUMB].given ||
+           (node->kind == KIND_GROUP && node_choice(node, PROP_SCROLL) != SCROLL_NONE);
+}
+
 /* Whether NODE's pointer handlers or cursor apply over it and its descendants. */
 static bool claims_pointer(const struct node *node) {
-    return pointer_handlers(node) || node->props[PROP_CURSOR].given;
+    return pointer_handlers(node) || node->props[PROP_CURSOR].given || control(node);
 }
 
 static bool node_takes_pointer(const struct node *node) {
@@ -660,8 +703,9 @@ static struct mat3 content_transform(struct wlr_box bounds, double width, double
  * frame from one fading out. */
 static struct item *emit_surface(struct emit *e, struct node *node, struct window *window,
                                  const struct surface_draw *draw, struct mat3 t,
-                                 struct mat3 content, double width, double height, double radius,
-                                 double opacity, const struct filter *filter, int part, int index) {
+                                 struct mat3 content, double width, double height,
+                                 const double radii[4], double opacity,
+                                 const struct filter *filter, int part, int index) {
     double local_x, local_y;
     mat3_apply(content, draw->x, draw->y, &local_x, &local_y);
     struct box box = {local_x, local_y, draw->width * content.a, draw->height * content.d};
@@ -671,7 +715,7 @@ static struct item *emit_surface(struct emit *e, struct node *node, struct windo
     item->surface.transform = t;
     item->surface.box = box;
     item->surface.mask = (struct box){0, 0, width, height};
-    item->surface.radius = radius;
+    memcpy(item->surface.radii, radii, sizeof item->surface.radii);
     item->surface.opacity = opacity;
     surface_uv(draw, item->surface.uv);
     item->signature = signature_of(e, &item->surface, sizeof item->surface);
@@ -699,7 +743,11 @@ static struct item *emit_surface(struct emit *e, struct node *node, struct windo
             /* Only within the box it is masked to, and not at the rounded corners. */
             item->opaque_valid =
                 box_intersect(local, item->surface.mask, &local) &&
-                opaque_rectangle(e, t, inset_box(local, (double[]){radius, radius, radius, radius}),
+                opaque_rectangle(e, t,
+                                 inset_box(local, (double[]){fmax(radii[0], radii[3]),
+                                                             fmax(radii[0], radii[1]),
+                                                             fmax(radii[1], radii[2]),
+                                                             fmax(radii[2], radii[3])}),
                                  &item->opaque);
         }
     }
@@ -709,9 +757,9 @@ static struct item *emit_surface(struct emit *e, struct node *node, struct windo
 /* A window's frame in NODE's box; a MIRROR draws it once more, taking no input. While
  * a resize crossfades, the frame from before it lies under the new one, which fades in. */
 static void emit_window(struct emit *e, struct node *node, struct mat3 t, double width,
-                        double height, double radius, double opacity, const struct filter *filter,
-                        const struct mat3 *inverse, const struct mat3 *parent_inverse,
-                        bool mirror) {
+                        double height, const double radii[4], double opacity,
+                        const struct filter *filter, const struct mat3 *inverse,
+                        const struct mat3 *parent_inverse, bool mirror) {
     struct window *window = window_for_node(e->server, node);
     if (!window) return;
     bool live = window_presentable(window);
@@ -726,7 +774,7 @@ static void emit_window(struct emit *e, struct node *node, struct mat3 t, double
     if (fade < 1) {
         struct mat3 before = content_transform(window->fade_bounds, width, height);
         VEC_FOR(&window->fade, struct surface_draw, draw)
-            emit_surface(e, node, window, draw, t, before, width, height, radius, opacity, filter,
+            emit_surface(e, node, window, draw, t, before, width, height, radii, opacity, filter,
                          16, index++);
     }
     struct mat3 content = content_transform(window_bounds(window), width, height);
@@ -736,7 +784,7 @@ static void emit_window(struct emit *e, struct node *node, struct mat3 t, double
     VEC_FOR(e->surfaces, struct surface_draw, draw) {
         box_union_wlr(&content_bounds,
                       &(struct wlr_box){draw->x, draw->y, draw->width, draw->height});
-        struct item *item = emit_surface(e, node, window, draw, t, content, width, height, radius,
+        struct item *item = emit_surface(e, node, window, draw, t, content, width, height, radii,
                                          opacity * fade, filter, 6, index++);
         if (item) shown++;
     }
@@ -787,6 +835,15 @@ static bool axis_factor(double value, double scale, double *out) {
  * where the text ends up, never its motion, keeps a moving text's pixels the same
  * in every frame: it steps whole pixels instead of shimmering between resamplings.
  */
+/* Whether T maps the node's axes onto the buffer's at SCALE, as pixel_aligned rounds. */
+static bool maps_axes(struct mat3 t, double scale) {
+    double a, b, c, d;
+    return t.g == 0 && t.h == 0 && t.i == 1 && axis_factor(t.a, scale, &a) &&
+           axis_factor(t.b, scale, &b) && axis_factor(t.c, scale, &c) &&
+           axis_factor(t.d, scale, &d) &&
+           ((a != 0 && d != 0 && b == 0 && c == 0) || (b != 0 && c != 0 && a == 0 && d == 0));
+}
+
 static struct mat3 pixel_aligned(struct mat3 t, double scale) {
     double a, b, c, d;
     if (t.g != 0 || t.h != 0 || t.i != 1 || !axis_factor(t.a, scale, &a) ||
@@ -799,9 +856,12 @@ static struct mat3 pixel_aligned(struct mat3 t, double scale) {
     return (struct mat3){a, b, c, d, floor(t.e + 0.5), floor(t.f + 0.5), 0, 0, 1};
 }
 
-static void emit_text(struct emit *e, struct node *node, struct mat3 t, double width, double height,
-                      double opacity, const struct filter *filter, const struct mat3 *inverse,
-                      const struct mat3 *parent_inverse) {
+static void clip_to(struct emit *e, struct box box);
+
+/* NODE's text drawn through T; return where it lands, pixel aligned, in PLACED. */
+static void emit_text_item(struct emit *e, struct node *node, struct mat3 t, double opacity,
+                           const struct filter *filter, struct mat3 *placed_out) {
+    *placed_out = t;
     const struct media_text_layout *layout = content_text_layout(e->server, node);
     if (!layout) return;
     double color[4];
@@ -814,8 +874,21 @@ static void emit_text(struct emit *e, struct node *node, struct mat3 t, double w
         struct media_text_box box = media_text_raster_box(metrics, scale);
         double exact;
         bool changing = scale_changing(e, node, scale, &exact);
-        double raster_scale = content_raster_scale(exact, changing, fmax(box.width, box.height));
+        /* Glyphs are small whatever the text's size: only a raster is kept within the
+         * longest texture, so a long line drawn as glyphs keeps its scale. Text through a
+         * filter stays a raster: filters are compiled into the programs drawing textures. */
+        double glyph_scale = content_raster_scale(exact, changing, 0);
+        bool glyphs = !filter->shading && content_text_glyphs(e->server, node, glyph_scale);
+        double extent = glyphs ? 0 : fmax(box.width, box.height);
+        double raster_scale = content_raster_scale(exact, changing, extent);
+        /* Still, and nothing above it moving, text keeping its axes is drawn at its very
+         * scale, which the thirty-second steps that keep a slow zoom from rastering every
+         * frame miss: text held scaled by 1.05 lands texel for pixel, as sharp as at 1. */
+        if (!changing && !e->moving && raster_scale == exact && scale != exact &&
+            maps_axes(t, scale))
+            raster_scale = content_raster_scale(scale, false, extent);
         struct mat3 placed = pixel_aligned(t, raster_scale);
+        *placed_out = placed;
         uint64_t slot = key_of(1, node->id, 7, e->output->index);
         struct item *item = emit_item(
             e, node->id, 7, 0,
@@ -829,21 +902,102 @@ static void emit_text(struct emit *e, struct node *node, struct mat3 t, double w
             item->text.opacity = opacity;
             memcpy(item->text.color, color, sizeof color);
             item->text.metrics = *metrics;
-            /* Text through a filter stays a raster: filters are compiled into the
-             * programs drawing textures. */
-            item->text.glyphs =
-                !filter->shading && content_text_glyphs(e->server, node, raster_scale);
+            item->text.glyphs = glyphs && content_text_glyphs(e->server, node, raster_scale);
             item->signature = signature_of(e, &item->text, sizeof item->text);
             set_node(item, node);
             filter_item(e, item, node, filter);
             if (!item->text.glyphs) content_touch_raster(e->server, slot);
         }
     }
+}
+
+/*
+ * BOX through T with each edge on a whole buffer pixel, when T keeps the axes, as BOX in
+ * local units again: edges that meet keep meeting, and a caret is whole pixels wide. With
+ * a MIN_WIDTH in pixels, the box is that wide at least, around its middle.
+ */
+static struct box snapped_box(struct mat3 t, struct box box, double min_width) {
+    if (t.b != 0 || t.c != 0 || t.g != 0 || t.h != 0 || t.i != 1 || t.a == 0 || t.d == 0)
+        return box;
+    double x0 = t.a * box.x + t.e, x1 = t.a * (box.x + box.width) + t.e;
+    double y0 = t.d * box.y + t.f, y1 = t.d * (box.y + box.height) + t.f;
+    if (x0 > x1) {
+        double swap = x0;
+        x0 = x1;
+        x1 = swap;
+    }
+    if (y0 > y1) {
+        double swap = y0;
+        y0 = y1;
+        y1 = swap;
+    }
+    if (min_width > 0) {
+        double middle = (x0 + x1) / 2, wide = fmax(min_width, round(x1 - x0));
+        x0 = round(middle - wide / 2);
+        x1 = x0 + wide;
+    } else {
+        x0 = round(x0);
+        x1 = round(x1);
+    }
+    y0 = round(y0);
+    y1 = round(y1);
+    double left = (x0 - t.e) / t.a, right = (x1 - t.e) / t.a;
+    double top = (y0 - t.f) / t.d, bottom = (y1 - t.f) / t.d;
+    return (struct box){fmin(left, right), fmin(top, bottom), fabs(right - left),
+                        fabs(bottom - top)};
+}
+
+/* A solid BOX in straight-alpha COLOR through T, as PART (and INDEX) of NODE. */
+static void emit_fill(struct emit *e, struct node *node, int part, int index, struct mat3 t,
+                      struct box box, const double color[4], double opacity) {
+    double alpha = color[3] * opacity;
+    if (!(alpha > 0) || !(box.width > 0) || !(box.height > 0)) return;
+    struct item *item = emit_item(e, node->id, part, index, mat3_box_bounds(t, box, 1), ITEM_FILL);
+    if (!item) return;
+    item->fill.transform = t;
+    item->fill.box = box;
+    for (int i = 0; i < 3; i++) item->fill.color[i] = (float)(color[i] * alpha);
+    item->fill.color[3] = (float)alpha;
+    item->signature = signature_of(e, &item->fill, sizeof item->fill);
+    set_node(item, node);
+}
+
+static void emit_text(struct emit *e, struct node *node, struct mat3 t, double width, double height,
+                      double opacity, const struct filter *filter, const struct mat3 *inverse,
+                      const struct mat3 *parent_inverse) {
+    struct edit_view view;
+    if (!edit_view(e->server, node, &view)) {
+        struct mat3 placed;
+        emit_text_item(e, node, t, opacity, filter, &placed);
+    } else {
+        /* A field: its text clipped to its box and scrolled in it, the selection under the
+         * text and the caret over it, all where the text lands. */
+        struct clip_state clip = e->clip;
+        clip_to(e, mat3_box_bounds(t, (struct box){0, 0, width, height}, 0));
+        struct mat3 content = mat3_multiply(t, mat3_translation(view.origin_x, view.origin_y));
+        double scale = mat3_scale_factor(content, 0, 0);
+        struct mat3 placed = pixel_aligned(content, fmax(0.0625, round(scale * 32) / 32));
+        for (int i = 0; i < view.selection_count; i++) {
+            const struct media_rect *r = &view.selection[i];
+            struct box box = snapped_box(placed, (struct box){r->x, r->y, r->width, r->height}, 0);
+            emit_fill(e, node, 16, i, placed, box, view.selection_color, opacity);
+        }
+        emit_text_item(e, node, content, opacity, filter, &placed);
+        if (view.caret_shown) {
+            /* A logical pixel wide, in whole device pixels: two at 1.5 and 2. */
+            double pixels = fmax(1, round(scale));
+            const struct media_rect *r = &view.caret;
+            struct box box = snapped_box(placed, (struct box){r->x, r->y, 0, r->height}, pixels);
+            emit_fill(e, node, 17, 0, placed, box, view.caret_color, opacity);
+        }
+        e->clip = clip;
+    }
     if (hit_target(e, node)) add_hit(e, node, inverse, parent_inverse, true, width, height, NULL);
 }
 
 static void emit_image(struct emit *e, struct node *node, struct mat3 t, double width,
-                       double height, double radius, double opacity, const struct filter *filter,
+                       double height, const double radii[4], double opacity,
+                       const struct filter *filter,
                        const struct mat3 *inverse, const struct mat3 *parent_inverse) {
     if (!(width > 0 && height > 0)) return;
     struct media_image *image = content_image(e->server, node);
@@ -856,7 +1010,8 @@ static void emit_image(struct emit *e, struct node *node, struct mat3 t, double 
             item->image.transform = t;
             item->image.box = quad;
             memcpy(item->image.uv, uv, sizeof uv);
-            item->image.radius = node_choice(node, PROP_FIT) == FIT_CONTAIN ? 0 : radius;
+            if (node_choice(node, PROP_FIT) != FIT_CONTAIN)
+                memcpy(item->image.radii, radii, sizeof item->image.radii);
             item->image.opacity = opacity;
             item->signature = signature_of(e, &item->image, sizeof item->image);
             item->signature = hash_bytes(item->signature, &image->serial, sizeof image->serial);
@@ -868,7 +1023,7 @@ static void emit_image(struct emit *e, struct node *node, struct mat3 t, double 
 }
 
 static void emit_web(struct emit *e, struct node *node, struct mat3 t, double width, double height,
-                     double radius, double opacity, const struct filter *filter,
+                     const double radii[4], double opacity, const struct filter *filter,
                      const struct mat3 *inverse, const struct mat3 *parent_inverse) {
     struct web_page *page = web_node_page(node);
     if (!page || !(width > 0 && height > 0)) return;
@@ -893,7 +1048,7 @@ static void emit_web(struct emit *e, struct node *node, struct mat3 t, double wi
             item->web.transform = t;
             item->web.width = width;
             item->web.height = height;
-            item->web.radius = radius;
+            memcpy(item->web.radii, radii, sizeof item->web.radii);
             item->web.opacity = opacity;
             item->signature = signature_of(e, &item->web, sizeof item->web);
             set_node(item, node);
@@ -918,10 +1073,11 @@ static void emit_content(struct emit *e, struct node *node, struct mat3 t, doubl
                          double height, double opacity, const struct mat3 *inverse,
                          const struct mat3 *parent_inverse) {
     const struct mat3 *pi = parent_inverse;
-    double radius = fmax(0, node_number(node, PROP_RADIUS, 0));
-    emit_paints(e, node, t, width, height, radius, opacity, false);
+    double radii[4];
+    node_radii(node, radii);
+    emit_paints(e, node, t, width, height, radii, opacity, false);
     struct filter filter;
-    node_filter(e, node, t, width, height, radius, &filter);
+    node_filter(e, node, t, width, height, radii, &filter);
     switch (node->kind) {
     case KIND_GROUP:
         /* A sized group taking the pointer catches it over its whole box, as a div does. */
@@ -933,23 +1089,25 @@ static void emit_content(struct emit *e, struct node *node, struct mat3 t, doubl
         break;
     case KIND_WINDOW:
     case KIND_MIRROR:
-        emit_window(e, node, t, width, height, radius, opacity, &filter, inverse, pi,
+        emit_window(e, node, t, width, height, radii, opacity, &filter, inverse, pi,
                     node->kind == KIND_MIRROR);
         break;
     case KIND_TEXT: emit_text(e, node, t, width, height, opacity, &filter, inverse, pi); break;
     case KIND_IMAGE:
-        emit_image(e, node, t, width, height, radius, opacity, &filter, inverse, pi);
+        emit_image(e, node, t, width, height, radii, opacity, &filter, inverse, pi);
         break;
     case KIND_WEB:
-        emit_web(e, node, t, width, height, radius, opacity, &filter, inverse, pi);
+        emit_web(e, node, t, width, height, radii, opacity, &filter, inverse, pi);
         break;
     default: break;
     }
-    emit_paints(e, node, t, width, height, radius, opacity, true);
+    emit_paints(e, node, t, width, height, radii, opacity, true);
 }
 
 static void emit_children(struct emit *e, struct node *node, const struct mat4 *base,
                           const struct mat3 *base_inverse, double opacity);
+static void emit_node(struct emit *e, struct node *node, const struct mat4 *base,
+                      const struct mat3 *base_inverse, double opacity);
 
 /* Clip what is emitted next to BOX, within the clip in force. */
 static void clip_to(struct emit *e, struct box box) {
@@ -963,18 +1121,168 @@ static void clip_to(struct emit *e, struct box box) {
     }
 }
 
+/* What an effect item draws into its content, saved as it begins and restored as it ends. */
+struct effect_scope {
+    int index, owner;
+    struct clip_state clip;
+    bool in_effect;
+    struct box effect_area;
+};
+
+/* Make item INDEX, an effect, own what is emitted next, inside its bounds. */
+static void begin_effect_scope(struct emit *e, int index, struct effect_scope *scope) {
+    *scope = (struct effect_scope){index, e->owner, e->clip, e->in_effect, e->effect_area};
+    struct item *item = vec_at(e->items, (size_t)index);
+    e->owner = index;
+    e->in_effect = true;
+    e->effect_area = item->bounds;
+    clip_to(e, item->bounds);
+}
+
+/* End SCOPE: its effect draws the items since it began. One drawing nothing goes, unless
+ * KEEP_EMPTY. */
+static void end_effect_scope(struct emit *e, const struct effect_scope *scope) {
+    e->owner = scope->owner;
+    e->clip = scope->clip;
+    e->in_effect = scope->in_effect;
+    e->effect_area = scope->effect_area;
+    struct item *item = vec_at(e->items, (size_t)scope->index);
+    item->effect.end = (int)e->items->length;
+    if (item->effect.end == scope->index + 1) {
+        if (item->node) node_unref(item->node);
+        e->items->length--;
+    }
+}
+
+/*
+ * An effect drawing NODE's children inside its rounded WIDTH x HEIGHT box of corners
+ * RADII through T, as CSS clips with overflow and border-radius; -1 when it shows none.
+ * Passes away from the corners draw the children straight, so only repaints near them
+ * cost an offscreen pass. Children reading their backdrop there read only what the clip
+ * holds.
+ */
+static int emit_rounded_clip(struct emit *e, struct node *node, struct mat3 t, double width,
+                             double height, const double radii[4]) {
+    if (!(width > 0 && height > 0)) return -1;
+    struct box box = {0, 0, width, height};
+    struct item *item = emit_item(e, node->id, 13, 0, mat3_box_bounds(t, box, 1), ITEM_EFFECT);
+    if (!item) return -1;
+    item->effect.draw = (struct render_effect_draw){
+        .transform = t, .quad = box, .opacity = 1, .rounded = true};
+    double half = fmin(width, height) / 2;
+    for (int i = 0; i < 4; i++) item->effect.draw.radii[i] = fmin(radii[i], half);
+    item->signature = signature_of(e, &item->effect.draw, sizeof item->effect.draw);
+    set_node(item, node);
+    if (mat3_is_upright(t)) {
+        const double *r = item->effect.draw.radii;
+        double top = fmax(r[0], r[1]), bottom = fmax(r[2], r[3]);
+        double left = fmax(r[0], r[3]), right = fmax(r[1], r[2]);
+        /* A pixel in from each corner, for its antialiased edge. */
+        struct box bands[2] = {
+            {0, top, width, height - top - bottom},
+            {left, 0, width - left - right, height},
+        };
+        for (int i = 0; i < 2; i++) {
+            if (box_empty(bands[i])) continue;
+            item->effect.safe[item->effect.safe_count++] = mat3_box_bounds(t, bands[i], -1);
+        }
+    }
+    return (int)(item - (struct item *)e->items->data);
+}
+
+/*
+ * Where NODE clips its children, inside its WIDTH x HEIGHT box through T: the box less its
+ * `clipInset` (the border, as CSS clips to the padding box), each side drawn a whole number
+ * of output pixels as a border is, into OUT, moved to its corner by T; and the inside's
+ * corners, each the box's less the wider of the sides meeting at it, into RADII.
+ */
+static struct box clip_area(const struct node *node, struct mat3 *t, double width, double height,
+                            double radii[4]) {
+    node_radii(node, radii);
+    double inset[4];
+    node_corners(node, PROP_CLIP_INSET, inset);
+    if (!inset[0] && !inset[1] && !inset[2] && !inset[3])
+        return (struct box){0, 0, width, height};
+    double pixel = mat3_pixel_size(*t, width / 2, height / 2);
+    for (int i = 0; i < 4; i++)
+        inset[i] = inset[i] > 0 ? fmax(1, floor(inset[i] / pixel + 0.01)) * pixel : 0;
+    double top = inset[0], right = inset[1], bottom = inset[2], left = inset[3];
+    double sides[4] = {fmax(top, left), fmax(top, right), fmax(bottom, right),
+                       fmax(bottom, left)};
+    for (int i = 0; i < 4; i++) radii[i] = fmax(0, radii[i] - sides[i]);
+    *t = mat3_multiply(*t, mat3_translation(left, top));
+    return (struct box){0, 0, fmax(0, width - left - right), fmax(0, height - top - bottom)};
+}
+
 /* Emit NODE's children, clipped to its WIDTH x HEIGHT box through T if it clips them. */
 static void emit_subtree(struct emit *e, struct node *node, struct mat3 t, double width,
                          double height, const struct mat4 *chain, const struct mat3 *local_inverse,
                          double opacity) {
     struct clip_state clip = e->clip;
     bool pointer_parent = e->pointer_parent;
-    if (node_bool(node, PROP_CLIP))
-        clip_to(e, mat3_box_bounds(t, (struct box){0, 0, width, height}, 0));
+    double scroll_x, scroll_y;
+    bool scrolled = scroll_offset(e->output, node, &scroll_x, &scroll_y);
+    struct effect_scope rounded = {.index = -1};
+    if (node_bool(node, PROP_CLIP) || scrolled) {
+        double radii[4];
+        struct mat3 inside = t;
+        struct box area = clip_area(node, &inside, width, height, radii);
+        clip_to(e, mat3_box_bounds(inside, area, 0));
+        int index = largest_corner(radii) > 0 && node->first_child
+                        ? emit_rounded_clip(e, node, inside, area.width, area.height, radii)
+                        : -1;
+        if (index >= 0) begin_effect_scope(e, index, &rounded);
+    }
     e->pointer_parent = pointer_parent || claims_pointer(node);
-    emit_children(e, node, chain, local_inverse, opacity);
+    if (scrolled) {
+        /* A scroll container's children move by its offset, but for its thumbs; their
+         * hits map the pointer into the content's space. */
+        struct mat4 shift = mat4_translation(-scroll_x, -scroll_y, 0);
+        struct mat4 content = mat4_multiply(chain, &shift);
+        struct mat3 content_inverse;
+        if (local_inverse)
+            content_inverse = mat3_multiply(mat3_translation(scroll_x, scroll_y), *local_inverse);
+        NODE_FOR_CHILDREN(node, child) {
+            bool thumb = child->props[PROP_SCROLL_THUMB].given;
+            emit_node(e, child, thumb ? chain : &content,
+                      thumb || !local_inverse ? local_inverse : &content_inverse, opacity);
+        }
+    } else {
+        emit_children(e, node, chain, local_inverse, opacity);
+    }
+    if (rounded.index >= 0) end_effect_scope(e, &rounded);
     e->clip = clip;
     e->pointer_parent = pointer_parent;
+}
+
+/*
+ * Draw NODE and its subtree, through T at WIDTH x HEIGHT, offscreen, then onto the frame
+ * at OPACITY as one layer, as CSS opacity does: over all they draw, wherever that is.
+ */
+static void emit_layer(struct emit *e, struct node *node, struct mat3 t, double width,
+                       double height, const struct mat4 *chain, double opacity,
+                       const struct mat3 *inverse, const struct mat3 *parent_inverse) {
+    /* Its bounds are what it holds, known once that is emitted. */
+    struct item *item = emit_item(e, node->id, 15, 0, e->bounds, ITEM_EFFECT);
+    if (!item) return;
+    set_node(item, node);
+    struct effect_scope scope;
+    begin_effect_scope(e, (int)(item - (struct item *)e->items->data), &scope);
+    emit_content(e, node, t, width, height, 1, inverse, parent_inverse);
+    emit_subtree(e, node, t, width, height, chain, inverse, 1);
+    item = vec_at(e->items, (size_t)scope.index);
+    struct box held = {0};
+    for (size_t i = (size_t)scope.index + 1; i < e->items->length; i++) {
+        const struct item *inner = vec_at(e->items, i);
+        held = box_empty(held) ? inner->bounds : box_union(held, inner->bounds);
+    }
+    /* Whole pixels, as the content is drawn and read. */
+    struct pixel_box pixels = box_pixels(held, (int)e->bounds.width, (int)e->bounds.height);
+    item->bounds = (struct box){pixels.x, pixels.y, pixels.width, pixels.height};
+    item->effect.draw = (struct render_effect_draw){
+        .transform = MAT3_IDENTITY, .quad = item->bounds, .opacity = opacity};
+    item->signature = signature_of(e, &item->effect.draw, sizeof item->effect.draw);
+    end_effect_scope(e, &scope);
 }
 
 /* Draw NODE and its subtree offscreen, then through SHADING, its effect, with VALUES. */
@@ -988,8 +1296,9 @@ static void emit_effect(struct emit *e, struct node *node, const struct shading 
     struct mat3 quad_transform = whole_output ? e->screen : t;
     double width = whole_output ? e->output->width : node_width,
            height = whole_output ? e->output->height : node_height,
-           radius = whole_output ? 0 : fmax(0, node_number(node, PROP_RADIUS, 0)), sides[4];
-    shader_bound(&shader->extent, values, radius,
+           radii[4] = {0, 0, 0, 0}, sides[4];
+    if (!whole_output) node_radii(node, radii);
+    shader_bound(&shader->extent, values, largest_corner(radii),
                  mat3_pixel_size(quad_transform, width / 2, height / 2), sides);
     struct box quad = {-sides[0], -sides[1], width + sides[0] + sides[2],
                        height + sides[1] + sides[3]};
@@ -1000,7 +1309,7 @@ static void emit_effect(struct emit *e, struct node *node, const struct shading 
     item->effect.draw.transform = quad_transform;
     item->effect.draw.quad = quad;
     item->effect.draw.opacity = opacity;
-    record_shading(e, shading, values, quad_transform, width, height, radius, &item->shading);
+    record_shading(e, shading, values, quad_transform, width, height, radii, &item->shading);
     item->signature = signature_of(e, &item->effect.draw, sizeof item->effect.draw);
     shading_signature(e, item, shading);
     set_node(item, node);
@@ -1029,6 +1338,44 @@ static void emit_effect(struct emit *e, struct node *node, const struct shading 
     e->effect_area = effect_area;
 }
 
+/* Whether NODE's own position, size or transform is moving. */
+static bool geometry_moving(const struct node *node) {
+    if (!node->active) return false;
+    static const enum prop_key keys[] = {PROP_X, PROP_Y, PROP_WIDTH, PROP_HEIGHT, PROP_TRANSFORM};
+    for (size_t i = 0; i < ARRAY_LENGTH(keys); i++) {
+        if (node_moving(node, keys[i])) return true;
+    }
+    VEC_FOR(&node->layers, struct layer, layer) {
+        for (size_t i = 0; i < ARRAY_LENGTH(keys); i++) {
+            if (!layer->done && layer->key == keys[i]) return true;
+        }
+    }
+    return false;
+}
+
+/*
+ * T and the WIDTH x HEIGHT box it draws, moved and resized by less than a pixel so that
+ * each edge lies on a whole buffer pixel, when T only scales and translates: boxes
+ * sharing an edge keep sharing it, and a hairline stays one pixel at any output scale.
+ * Each edge rounds alone, so it lands where it would for any other box. A box that
+ * would close up keeps its size along that axis.
+ */
+static void snap_box(struct mat3 *t, double *width, double *height) {
+    if (t->b != 0 || t->c != 0 || t->g != 0 || t->h != 0 || t->i != 1 || !(*width > 0) ||
+        !(*height > 0) || t->a == 0 || t->d == 0)
+        return;
+    double left = floor(t->e + 0.5), right = floor(t->e + t->a * *width + 0.5);
+    double top = floor(t->f + 0.5), bottom = floor(t->f + t->d * *height + 0.5);
+    if (right != left) {
+        t->e = left;
+        *width = (right - left) / t->a;
+    }
+    if (bottom != top) {
+        t->f = top;
+        *height = (bottom - top) / t->d;
+    }
+}
+
 static void emit_node(struct emit *e, struct node *node, const struct mat4 *base,
                       const struct mat3 *base_inverse, double opacity) {
     if (node->state == NODE_DEAD || !node_bool(node, PROP_VISIBLE)) return;
@@ -1050,9 +1397,13 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
         base = &identity;
         base_inverse = &MAT3_IDENTITY;
     }
-    double width, height;
+    double width, height, thumb_x, thumb_y, thumb_opacity = 1;
     node_size(e->server, node, &width, &height);
-    struct mat4 local = node_matrix(node, width, height);
+    /* A scroll thumb shows where its container's offset puts it. */
+    bool thumb = scroll_thumb_place(node, &thumb_x, &thumb_y, &width, &height, &thumb_opacity);
+    struct mat4 local = thumb ? node_local_matrix(node, width, height, thumb_x, thumb_y)
+                              : node_matrix(node, width, height);
+    opacity *= thumb_opacity;
     struct mat4 chain = mat4_multiply(base, &local);
     if (node->kind == KIND_WEB)
         web_node_hold(node, e->space, e->space_inverse, &chain, &width, &height);
@@ -1066,8 +1417,23 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     /* Output-logical points back to the node's plane, for its hits. */
     struct mat3 local_inverse;
     const struct mat3 *inverse = mat3_invert(plane, &local_inverse) ? &local_inverse : NULL;
-    bool moving = e->moving;
+    bool moving = e->moving, shifting = e->shifting;
     e->moving = moving || node->active;
+    /* A screen restarts from output pixels, which the camera does not move. */
+    if (node->kind == KIND_SCREEN) e->shifting = false;
+    e->shifting = e->shifting || geometry_moving(node);
+    switch (node->kind) {
+    case KIND_GROUP:
+    case KIND_IMAGE:
+    case KIND_WEB:
+    case KIND_WINDOW:
+    case KIND_MIRROR:
+        /* A box left unsnapped while it moves snaps in a frame after it stops. */
+        if (!e->shifting) snap_box(&t, &width, &height);
+        else if (mat3_is_upright(t)) e->display->refine = true;
+        break;
+    default: break;
+    }
     const struct shading *effect = node_stage_shading(node, STAGE_EFFECT);
     float values[SHADER_COMPONENTS_MAX];
     if (node->kind == KIND_SCREEN) e->space = e->space_inverse = &MAT4_IDENTITY;
@@ -1075,6 +1441,8 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     if (effect && shading_values(node, effect, values)) {
         emit_effect(e, node, effect, values, t, width, height, &chain, opacity, inverse,
                     base_inverse);
+    } else if (node_bool(node, PROP_GROUP_OPACITY) && node_number(node, PROP_OPACITY, 1) < 1) {
+        emit_layer(e, node, t, width, height, &chain, opacity, inverse, base_inverse);
     } else {
         emit_content(e, node, t, width, height, opacity, inverse, base_inverse);
         emit_subtree(e, node, t, width, height, &chain, inverse, opacity);
@@ -1082,6 +1450,7 @@ static void emit_node(struct emit *e, struct node *node, const struct mat4 *base
     e->space = space;
     e->space_inverse = space_inverse;
     e->moving = moving;
+    e->shifting = shifting;
 }
 
 static void emit_children(struct emit *e, struct node *node, const struct mat4 *base,
@@ -1250,6 +1619,10 @@ static void build(struct output *output, struct emit *e) {
     emit_init(e, output, display->scene, 0);
     struct mat3 camera = camera_transform(output), camera_inverse;
     if (!mat3_invert(camera, &camera_inverse)) camera_inverse = MAT3_IDENTITY;
+    /* Boxes under a camera moving since the last build, as under a pan, stay where they
+     * fall; the build after it stops snaps them. */
+    e->shifting = memcmp(&camera, &display->camera, sizeof camera) != 0;
+    display->camera = camera;
     struct mat4 camera_matrix = mat4_from_mat3(camera);
     e->tag = 1;
     struct mat4 camera_matrix_inverse = mat4_from_mat3(camera_inverse);
@@ -1260,6 +1633,7 @@ static void build(struct output *output, struct emit *e) {
         e->tag = 2;
         struct mat4 identity = MAT4_IDENTITY;
         e->space = e->space_inverse = &MAT4_IDENTITY;
+        e->shifting = false;
         emit_children(e, &server->fallback.root, &identity, &MAT3_IDENTITY, 1);
     }
     /* Hits are recorded bottom first; picking wants the topmost first. */
@@ -1820,6 +2194,7 @@ static const struct render_shading *shading_of(const struct display_frame *frame
                       : NULL,
         .size = {recorded->size[0], recorded->size[1]},
         .radius = recorded->radius,
+        .radii = {recorded->radii[0], recorded->radii[1], recorded->radii[2], recorded->radii[3]},
         .time = recorded->time,
         .pointer = {recorded->pointer[0], recorded->pointer[1]},
         .to_output = recorded->to_output,
@@ -1872,9 +2247,14 @@ static void draw_item(struct display_frame *frame, int set, int index) {
         break;
     case ITEM_SURFACE: {
         if (!draw->surface.texture.name) return;
+        const double *radii = item->surface.radii;
         struct render_texture_draw texture = {
-            item->surface.transform, item->surface.box,    item->surface.uv,
-            item->surface.mask,      item->surface.radius, item->surface.opacity,
+            .transform = item->surface.transform,
+            .box = item->surface.box,
+            .uv = item->surface.uv,
+            .mask = item->surface.mask,
+            .radii = {radii[0], radii[1], radii[2], radii[3]},
+            .opacity = item->surface.opacity,
         };
         if (render_draw_surface(renderer, &draw->surface, &texture, shading, item->key, &found))
             draw->presented = true;
@@ -1901,18 +2281,27 @@ static void draw_item(struct display_frame *frame, int set, int index) {
             media_text_raster_box(&item->text.metrics, draw->raster_scale);
         struct box box = {metrics.left, metrics.top, metrics.width, metrics.height};
         render_draw_raster(renderer, raster,
-                           &(struct render_texture_draw){item->text.transform, box, RENDER_FULL_UV,
-                                                         box, 0, item->text.opacity},
+                           &(struct render_texture_draw){.transform = item->text.transform,
+                                                         .box = box,
+                                                         .uv = RENDER_FULL_UV,
+                                                         .mask = box,
+                                                         .opacity = item->text.opacity,
+                                                         .text = true},
                            shading, &found);
         break;
     }
     case ITEM_IMAGE: {
         struct render_raster *raster = draw->slot ? render_slot_raster(renderer, draw->slot) : NULL;
         if (!raster) return;
+        const double *radii = item->image.radii;
         render_draw_raster(renderer, raster,
-                           &(struct render_texture_draw){item->image.transform, item->image.box,
-                                                         item->image.uv, item->image.box,
-                                                         item->image.radius, item->image.opacity},
+                           &(struct render_texture_draw){.transform = item->image.transform,
+                                                         .box = item->image.box,
+                                                         .uv = item->image.uv,
+                                                         .mask = item->image.box,
+                                                         .radii = {radii[0], radii[1], radii[2],
+                                                                   radii[3]},
+                                                         .opacity = item->image.opacity},
                            shading, &found);
         break;
     }
@@ -1920,15 +2309,19 @@ static void draw_item(struct display_frame *frame, int set, int index) {
         /* Pages draw from the main thread's state: only in a frame it waits for. */
         if (!frame->sync) return;
         web_node_draw(server, item->node, item->web.transform, item->web.width, item->web.height,
-                      item->web.radius, item->web.opacity, shading, &found);
+                      item->web.radii, item->web.opacity, shading, &found);
         break;
     case ITEM_EFFECT: return;
+    case ITEM_FILL:
+        render_draw_fill(renderer, item->fill.transform, item->fill.box, item->fill.color);
+        break;
     }
     if (shading) report(frame, set, index, &found);
 }
 
-/* Draw effect item INDEX within PASS, which lies inside the item's bounds. */
-static void draw_effect(struct display_frame *frame, int set, int index, struct rect pass) {
+/* Draw effect item INDEX within PASS, which lies inside the item's bounds, offscreen. */
+static void draw_effect_offscreen(struct display_frame *frame, int set, int index,
+                                  struct rect pass) {
     struct server *server = frame->output->server;
     struct item *item = vec_at(&frame->sets[set]->items, (size_t)index);
     struct pixel_box bounds = box_pixels(item->bounds, frame->width, frame->height);
@@ -1937,7 +2330,7 @@ static void draw_effect(struct display_frame *frame, int set, int index, struct 
     struct render_target *content =
         render_effect_target(renderer, bounds.width, bounds.height, RENDER_EFFECT_CONTENT);
     struct render_target *backdrop =
-        item->shading.shader->backdrop
+        item->shading.shader && item->shading.shader->backdrop
             ? render_effect_target(renderer, bounds.width, bounds.height, RENDER_EFFECT_BACKDROP)
             : NULL;
     if (!content) return;
@@ -1951,6 +2344,41 @@ static void draw_effect(struct display_frame *frame, int set, int index, struct 
     render_draw_effect(renderer, shading_of(frame, set, &item->shading, &shading),
                        &item->effect.draw, content, backdrop, area, bounds.x, bounds.y, &found);
     report(frame, set, index, &found);
+}
+
+/*
+ * Draw effect item INDEX within PASS, which lies inside the item's bounds. A rounded
+ * clip draws its children straight in the whole pixels of its bands away from its
+ * corners, and offscreen only in the rest: which way a pixel is drawn depends on where it
+ * lies, not on the pass, so a repair draws it as a full redraw does (drawn offscreen and
+ * then onto the frame, translucent children would round otherwise).
+ */
+static void draw_effect(struct display_frame *frame, int set, int index, struct rect pass) {
+    struct server *server = frame->output->server;
+    struct item *item = vec_at(&frame->sets[set]->items, (size_t)index);
+    struct rect parts[36] = {pass}, straight[36];
+    int count = 1, straight_count = 0;
+    for (int s = 0; s < item->effect.safe_count; s++) {
+        struct rect band, rest[36];
+        if (!covered(item->effect.safe[s], &band)) continue;
+        int rest_count = 0;
+        for (int k = 0; k < count; k++) {
+            struct rect inside = rect_intersect(parts[k], band);
+            if (inside.x0 < inside.x1 && inside.y0 < inside.y1) straight[straight_count++] = inside;
+            rest_count += rect_subtract(parts[k], band, rest + rest_count);
+        }
+        memcpy(parts, rest, rest_count * sizeof *rest);
+        count = rest_count;
+    }
+    for (int k = 0; k < straight_count; k++) {
+        set_scissor(server, straight[k]);
+        draw_items_range(frame, set, index + 1, item->effect.end, index, straight[k]);
+    }
+    for (int k = 0; k < count; k++) {
+        set_scissor(server, parts[k]);
+        draw_effect_offscreen(frame, set, index, parts[k]);
+    }
+    set_scissor(server, pass);
 }
 
 /*
@@ -2078,9 +2506,11 @@ static void prepare_frame(struct display_frame *frame, bool all) {
             struct item_draw *draw = vec_push(draws);
             *draw = (struct item_draw){0};
             /* What an effect holds draws when the effect does. */
-            draw->ready = item->owner >= 0
-                              ? ((struct item_draw *)vec_at(draws, (size_t)item->owner))->ready
-                              : all || meets_passes(frame, item->bounds);
+            const struct item_draw *owner =
+                item->owner >= 0 ? vec_at(draws, (size_t)item->owner) : NULL;
+            bool meets = owner ? !owner->check_only : meets_passes(frame, item->bounds);
+            draw->ready = owner ? owner->ready : all || meets;
+            draw->check_only = draw->ready && !meets;
             if (item->kind == ITEM_SURFACE)
                 *(uint64_t *)vec_push(&frame->shown_keys) = item->key;
             if (!draw->ready) continue;
@@ -2114,7 +2544,11 @@ static void prepare_frame(struct display_frame *frame, bool all) {
                 }
                 break;
             }
-            case ITEM_TEXT:
+            case ITEM_TEXT: {
+                /* Text a check's redraw alone draws is not rastered for it: the frame
+                 * shows what the buffer held there, which the redraw must too. */
+                double spare = server->text_spare;
+                if (draw->check_only) server->text_spare = 0;
                 if (item->text.glyphs) {
                     draw->first = frame->glyphs.length;
                     bool complete = content_text_prepare_glyphs(
@@ -2134,7 +2568,9 @@ static void prepare_frame(struct display_frame *frame, bool all) {
                                                        &frame->uploads, &draw->raster_scale)) {
                     draw->slot = item->text.slot;
                 }
+                if (draw->check_only) server->text_spare = spare;
                 break;
+            }
             case ITEM_IMAGE:
                 if (!content_image_prepare(server, item->node, &frame->uploads, &draw->slot))
                     draw->slot = 0;
@@ -2308,7 +2744,10 @@ static void check_frame(struct display_frame *frame, GLuint framebuffer) {
     render_begin_frame(server->renderer, width, height);
     /* With no spare time, the redraw uses the mipmaps the frame had. */
     render_spend_spare_time(server->renderer, now_seconds() - 1);
+    /* As the frame saw its shaders: one finishing its build meanwhile waits for the next. */
+    render_hold_builds(server->renderer, true);
     draw_pass(frame, (struct rect){0, 0, width, height});
+    render_hold_builds(server->renderer, false);
     render_finish_frame(server->renderer);
     gl_read_pixels(0, 0, width, height, full);
     gl_restore_binding(&saved);
@@ -2605,7 +3044,12 @@ static void read_region(void *data) {
                                      true};
     struct box whole = {0, 0, width, height};
     render_draw_texture(renderer, &texture,
-                        &(struct render_texture_draw){MAT3_IDENTITY, whole, uv, whole, 0, 1}, NULL,
+                        &(struct render_texture_draw){.transform = MAT3_IDENTITY,
+                                                      .box = whole,
+                                                      .uv = uv,
+                                                      .mask = whole,
+                                                      .opacity = 1},
+                        NULL,
                         NULL);
     render_finish_frame(renderer);
     gl_read_pixels(0, 0, width, height, read->pixels);
@@ -2664,7 +3108,12 @@ static void read_window(void *data) {
         surface_uv(draw, uv);
         struct box box = {draw->x, draw->y, draw->width, draw->height};
         render_draw_texture(renderer, &source,
-                            &(struct render_texture_draw){transform, box, uv, box, 0, 1}, NULL,
+                            &(struct render_texture_draw){.transform = transform,
+                                                          .box = box,
+                                                          .uv = uv,
+                                                          .mask = box,
+                                                          .opacity = 1},
+                            NULL,
                             NULL);
     }
     render_finish_frame(renderer);

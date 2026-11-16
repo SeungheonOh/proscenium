@@ -1,0 +1,15 @@
+# shot-at: 3400
+# page: 3
+# File menu from a click, then Down three times: the highlight moves by keyboard.
+extent 1280 800
+move 300 300
+glide $K_FILE_X $K_FILE_Y 200
+click left
+sleep 300
+move 300 300
+sleep 100
+key Down
+key Down
+key Down
+sleep 300
+sleep 3000

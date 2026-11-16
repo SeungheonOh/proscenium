@@ -180,12 +180,22 @@ static bool parse_string(struct parser *p, struct json_value *out) {
             unsigned code;
             if (!hex4(p, &code)) return false;
             if (code >= 0xd800 && code <= 0xdbff) {
-                unsigned low;
-                if (!expect(p, '\\') || !expect(p, 'u') || !hex4(p, &low)) return false;
-                if (low < 0xdc00 || low > 0xdfff) return fail(p, "Invalid Unicode surrogate pair.");
-                code = 0x10000 + (code - 0xd800) * 1024 + (low - 0xdc00);
+                /* A high surrogate pairs with the low one escaped after it; alone, as a
+                 * JavaScript string cut between the two leaves it, it is U+FFFD. */
+                unsigned low = 0;
+                size_t at = p->position;
+                bool paired = at + 6 <= p->length && p->text[at] == '\\' &&
+                              p->text[at + 1] == 'u';
+                for (int i = 0; paired && i < 4; i++) {
+                    int digit = hex_digit((unsigned char)p->text[at + 2 + i]);
+                    paired = digit >= 0;
+                    low = low * 16 + (unsigned)(paired ? digit : 0);
+                }
+                paired = paired && low >= 0xdc00 && low <= 0xdfff;
+                if (paired) p->position = at + 6;
+                code = paired ? 0x10000 + (code - 0xd800) * 1024 + (low - 0xdc00) : 0xfffd;
             } else if (code >= 0xdc00 && code <= 0xdfff) {
-                return fail(p, "Unexpected low Unicode surrogate.");
+                code = 0xfffd;
             }
             length += put_utf8(chars + length, code);
             break;

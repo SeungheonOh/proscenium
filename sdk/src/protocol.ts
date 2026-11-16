@@ -149,6 +149,10 @@ export type Op =
  */
 export type InjectedPointer = { motion: [number, number] } | { button: number; pressed: boolean } | { wheel: number };
 
+/** What an `edit` message does to an editable text node. */
+export type EditAction = "select" | "select-all" | "insert" | "delete" | "undo" | "redo" | "cut" | "copy"
+  | "paste" | "yank" | "kill-line" | "kill-region" | "transpose-chars" | (string & {});
+
 export type ClientMessage =
   | { type: "hello"; protocol: number; client: string }
   | { type: "commit"; ops: Op[] }
@@ -161,6 +165,13 @@ export type ClientMessage =
   | { type: "inject"; window: number; events: readonly InjectedPointer[] }
   /** While GRAB, keys no shortcut takes come as `key` messages instead of reaching clients. */
   | { type: "grab-keyboard"; grab: boolean }
+  /** Keyboard focus to a node with `tabIndex`, or from whatever node has it; VISIBLE shows focusVisible. */
+  | { type: "focus-node"; node: number | null; visible?: boolean }
+  /** An editable text node's selection, text and clipboard; offsets in UTF-16 code units. */
+  | { type: "edit"; node: number; action: EditAction; start?: number; end?: number;
+      direction?: "forward" | "backward"; text?: string }
+  /** A scroll container's offset, moving with TRANSITION or at once. */
+  | { type: "scroll-to"; node: number; x?: number; y?: number; transition?: WireValue }
   /** While WATCH, every press, scroll and gesture start is also told as an `input` message. */
   | { type: "watch-input"; watch: boolean }
   | { type: "share-accept"; id: number; window?: number; output?: string; region?: WireRect }

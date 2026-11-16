@@ -792,6 +792,8 @@ void focus_window(struct server *server, struct window *window) {
     struct seat_state *state = &server->seat_state;
     struct window *old = state->focused;
     if (window) state->focused_page = NULL;
+    /* A window focused takes focus from a node. */
+    if (window) input_blur_node(server);
     if (old != window) {
         if (old) {
             history_remove(state, old);

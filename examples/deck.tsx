@@ -30,6 +30,7 @@ import { Fullscreen } from "./deck/Fullscreen.js";
 import { HandLabel } from "./deck/HandLabel.js";
 import { Keybindings } from "./deck/Keybindings.js";
 import { Table } from "./deck/Table.js";
+import { OverlayHost } from "proscenium/ui";
 
 function DeckLauncher() {
   const { output } = useDeck();
@@ -40,12 +41,14 @@ export default function Deck() {
   return (
     <ScreenEffects>
       <DeckProvider>
-        <Table />
-        <Cards />
-        <Desktop barStart={HandLabel} />
-        <Fullscreen />
-        <DeckLauncher />
-        <Keybindings />
+        <OverlayHost>
+          <Table />
+          <Cards />
+          <Desktop barStart={HandLabel} />
+          <Fullscreen />
+          <DeckLauncher />
+          <Keybindings />
+        </OverlayHost>
       </DeckProvider>
     </ScreenEffects>
   );

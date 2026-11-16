@@ -1,335 +1,351 @@
-import { memo, useEffect, useImperativeHandle, useRef, useState, useSyncExternalStore, type Ref } from "react";
-import { Box, Group, Text } from "../components.js";
-import type { StageKeyEvent } from "../events.js";
-import { useClipboard, useInput, useKeyboardGrab } from "../hooks.js";
+import { memo, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode,
+  type Ref } from "react";
+import { Box, Text } from "../components.js";
+import type { StageElement, StageKeyboardEvent, StageKeyEvent, StageMeasureEvent, StageSelectEvent,
+  StageSubmitEvent, StageTextInputEvent } from "../events.js";
 import type { BoxProps, Style, TextProps } from "../props.js";
 import type { Dimension } from "../layout.js";
-import { escapeMarkup } from "../props.js";
-import { resolveStyle, StyleSheet, variants, type StateStyle } from "./styles.js";
-import { makeStyles, useTheme } from "./theme.js";
+import type { EditAction } from "../protocol.js";
+import { currentSession } from "../session.js";
+import { useContextMenu, type MenuEntry } from "./Menu.js";
+import { controlTransition, ringed } from "./parts.js";
+import { resolveStyle, StyleSheet, type StateStyle } from "./styles.js";
+import { makeStyles, useTheme, type TextKeymap } from "./theme.js";
 
-// A text field drawn by the world, not by a client: it holds the keyboard while
-// focused (useKeyboardGrab), so keys come to it and windows and pages lose
-// keyboard focus meanwhile; shortcuts still work. One field is focused at a
-// time. A press anywhere else, Escape, or the field going away lets go.
+// A text field the compositor edits: its text is an editable text node (`editable`), which
+// keeps the text, the caret, the selection and the undo history itself, takes keys and
+// pointer presses in the frame they come, and draws its caret and selection. The field
+// hears of the text as it changes (`onInput`) and declares the value it is given back with
+// the revision it last heard, so a value echoed late never undoes newer typing, while a
+// value the world chooses (cleared after sending, say) replaces the text.
 //
-// The caret is drawn by a second, see-through copy of the text laid over the
-// first, with a caret glyph at the caret: Pango wraps both alike, so the caret
-// lands where the text is, on any line, without measuring anything.
+// A value the world chooses is on its way while the compositor goes on taking keys: the
+// compositor adds what was typed meanwhile to it and answers with a `replaced` report, and
+// until then the field passes on no typing it heard, which that answer includes. Return
+// fences typing after it until the world has rendered: a world clearing the field as it
+// sends does so before what was typed after Return reaches it, as in a browser.
+
+/** What the field knows of its text: see reconcile. */
+export interface FieldSync {
+  /** The text the compositor last reported, and its revision. */
+  reported: string;
+  revision: number;
+  /** A value of the world's is on its way: typing heard meanwhile is not passed on. */
+  awaiting: boolean;
+  /** Return was pressed at this revision with this text, and the world has not rendered since. */
+  submitted: { revision: number; text: string } | null;
+  /** Typing after Return, held until the world rendered. */
+  held: StageTextInputEvent | null;
+}
+
+/**
+ * What a field does with EVENT, the compositor's report of its text: the text to pass on
+ * to `onChangeText`, or null. SYNC changes with it.
+ */
+export function fieldInput(sync: FieldSync, event: StageTextInputEvent): string | null {
+  if (event.replaced) {
+    sync.awaiting = false;
+    sync.held = null;
+  } else if (sync.awaiting) {
+    return null;
+  } else if (sync.submitted && event.revision > sync.submitted.revision) {
+    sync.held = event;
+    return null;
+  }
+  sync.reported = event.text;
+  sync.revision = event.revision;
+  return event.text;
+}
+
+/**
+ * After the world rendered VALUE: whether that is a value of its own, now on its way, and
+ * the held typing to pass on, if any.
+ */
+export function fieldRendered(sync: FieldSync, value: string): StageTextInputEvent | null {
+  const submitted = sync.submitted;
+  sync.submitted = null;
+  if (submitted && value === submitted.text) {
+    const held = sync.held;
+    sync.held = null;
+    if (held) {
+      sync.reported = held.text;
+      sync.revision = held.revision;
+    }
+    return held;
+  }
+  sync.held = null;
+  if (value !== sync.reported) sync.awaiting = true;
+  return null;
+}
 
 /** What a field's style functions see. */
 export interface TextFieldState {
   focused: boolean;
+  /** Always false: the pointer over it shows through the theme's `states`, without rendering. */
   hovered: boolean;
   disabled: boolean;
+  readOnly: boolean;
   empty: boolean;
 }
 
-/** Ways to move a field's focus from outside: `ref.current?.focus()`. */
+/** Ways to act on a field from outside: `ref.current?.focus()`. Offsets are string indices. */
 export interface TextFieldHandle {
   focus(): void;
   blur(): void;
+  selectAll(): void;
+  /** Select START to END, or put the caret at START. */
+  setSelection(start: number, end?: number, direction?: "forward" | "backward"): void;
+  /** Type TEXT over the selection, as a paste does: an emoji picker, a completion. */
+  insertText(text: string): void;
 }
 
 export interface TextFieldProps {
   value: string;
   onChangeText?: (text: string) => void;
-  /** Return pressed: the text as it stands. Shift+Return types a new line in a multiline field. */
+  /**
+   * Return pressed: the text as it stood then. In a multiline field Return sends and
+   * Shift+Return types a line break, unless `submitOnEnter` is false.
+   */
   onSubmit?: (text: string) => void;
-  /** A key before the field acts on it; return true to say it was handled, e.g. Up for history. */
-  onKey?: (event: StageKeyEvent) => boolean;
+  /**
+   * Keys the field leaves to the world, heard by `onKey` (and as keydown) instead of
+   * editing, e.g. Up and Down to walk a list or a history, Tab to complete: keysym names,
+   * with modifiers as "Control+Return". With `onKey` and no list, single-line fields leave
+   * Up, Down, PageUp, PageDown and Escape, multiline ones Escape.
+   */
+  captureKeys?: readonly string[];
+  /**
+   * The keys a field does not edit with: those it captures, and those it has no use for
+   * (Tab, Escape, shortcuts). The return value is ignored: what a field captures is said
+   * ahead by `captureKeys`, as the compositor edits without waiting for the world.
+   */
+  onKey?: (event: StageKeyEvent) => boolean | void;
   onFocusChange?: (focused: boolean) => void;
+  /** The selection moved: string indices, START equal to END for a caret alone. */
+  onSelectionChange?: (start: number, end: number) => void;
   placeholder?: string;
-  /** Wraps, and Shift+Return types a new line. */
+  /** Lines that wrap; Return sends with `onSubmit` and Shift+Return types a line break. */
   multiline?: boolean;
-  /** Lines shown before the field grows no more; its newest lines stay in view. Defaults to 6. */
+  /** Lines shown before the field grows no more and scrolls instead. Defaults to 6. */
   maxLines?: number;
-  /** Takes the keyboard as soon as it appears. */
+  /** Multiline: Return submits (the default with `onSubmit`). */
+  submitOnEnter?: boolean;
+  /** Takes keyboard focus as soon as it appears. */
   autoFocus?: boolean;
+  /** Focus selects all the text, so typing replaces it: a search box opened again. */
+  selectOnFocus?: boolean;
+  /** The keys it takes, "emacs" or "standard": the theme's `textKeymap` by default. */
+  keymap?: TextKeymap;
   disabled?: boolean;
+  /** Selectable and copyable, not editable. */
+  readOnly?: boolean;
+  /** Bullets for the characters, which are never copied. */
+  password?: boolean;
+  /** At most this many characters (UTF-16 code units, as `value.length` counts). */
+  maxLength?: number;
+  /**
+   * No fill, edge or focus ring of its own: a field inside something drawn as the field,
+   * as a search bar with an icon.
+   */
+  bare?: boolean;
+  /** Inside the field before and after the text: a search icon, a clear button. */
+  leading?: ReactNode;
+  trailing?: ReactNode;
   width?: Dimension;
   ref?: Ref<TextFieldHandle>;
   style?: StateStyle<BoxProps, TextFieldState>;
   textStyle?: Style<TextProps>;
+  /** Only its `color` applies: the placeholder takes the text's font. */
   placeholderStyle?: Style<TextProps>;
 }
 
-/** The caret's copy of the text: every glyph clear but the caret. */
-const hidden = { color: "#00000001" } as const;
+/** Fields that have focus now: blurTextFields takes it from them. */
+const focusedFields = new Set<StageElement>();
 
-let focusedField: object | null = null;
-const focusListeners = new Set<() => void>();
-
-function focusField(field: object | null): void {
-  if (focusedField === field) return;
-  focusedField = field;
-  for (const listener of [...focusListeners]) listener();
-}
-
-function subscribeFocus(listener: () => void): () => void {
-  focusListeners.add(listener);
-  return () => focusListeners.delete(listener);
-}
-
-/** Let go of the keyboard if a text field holds it. */
+/** Take keyboard focus from whichever text field has it. */
 export function blurTextFields(): void {
-  focusField(null);
+  if (focusedFields.size > 0) currentSession().focusNode(null);
 }
 
-const word = /[\p{L}\p{N}_]/u;
+/** What a field leaves the world when it has `onKey` but no `captureKeys`. */
+const singleLineKeys = ["Up", "Down", "Prior", "Next", "Escape"];
+const multilineKeys = ["Escape"];
 
-function previousWord(text: string, from: number): number {
-  let at = from;
-  while (at > 0 && !word.test(text[at - 1]!)) at--;
-  while (at > 0 && word.test(text[at - 1]!)) at--;
-  return at;
+const useStyles = makeStyles((theme) => {
+  const { colors, type, radii, shadows, controls } = theme;
+  const ring = ringed(theme, shadows.control);
+  const linePitch = Math.round((type.body.size ?? 13) * (type.body.lineHeight ?? 18 / 13));
+  // Lines of a multiline field sit as one line sits in a single-line field of medium height.
+  const paddingY = Math.max(2, Math.floor((controls.medium - 2 - linePitch) / 2));
+  return {
+    ...StyleSheet.create({
+      field: { flexDirection: "row", alignItems: "stretch", radius: radii.sm,
+               fill: colors.field, border: { width: 1, color: colors.border }, shadow: ring.rest,
+               transition: controlTransition(theme), clip: true, cursor: "text" },
+      singleLine: { height: controls.medium },
+      disabled: { opacity: 0.45 },
+      bare: { fill: colors.clear, border: { width: 0 }, shadow: [], radius: 0 },
+      slot: { flexDirection: "row", alignItems: "center", flexShrink: 0 },
+      text: { ...type.body, color: colors.ink },
+    }),
+    // A field shows its ring while its text has focus, as browsers show one on a focused input.
+    states: { hover: { border: { color: colors.borderHover } },
+              focusWithin: { border: { color: colors.accent }, shadow: ring.focus } },
+    colors,
+    linePitch,
+    paddingX: 8,
+    paddingY,
+  };
+});
+
+function flatStyle(style: Style<TextProps> | undefined): TextProps {
+  if (!style) return {};
+  if (Array.isArray(style)) return Object.assign({}, ...style.map((part) => flatStyle(part as Style<TextProps>)));
+  return style as TextProps;
 }
-
-function nextWord(text: string, from: number): number {
-  let at = from;
-  while (at < text.length && !word.test(text[at]!)) at++;
-  while (at < text.length && word.test(text[at]!)) at++;
-  return at;
-}
-
-/** Where a character starts that is not inside a surrogate pair, going BACK or forward from AT. */
-function characterEdge(text: string, at: number, back: boolean): number {
-  const step = back ? -1 : 1;
-  let next = at + step;
-  const code = text.charCodeAt(back ? next : at);
-  // Step over the whole of a surrogate pair.
-  if (back && code >= 0xdc00 && code <= 0xdfff && next > 0) next--;
-  if (!back && code >= 0xd800 && code <= 0xdbff && next < text.length) next++;
-  return Math.min(Math.max(next, 0), text.length);
-}
-
-function lineStart(text: string, at: number): number {
-  return text.lastIndexOf("\n", at - 1) + 1;
-}
-
-function lineEnd(text: string, at: number): number {
-  const end = text.indexOf("\n", at);
-  return end === -1 ? text.length : end;
-}
-
-/** Text whose control characters say nothing a field can type. */
-function typed(text: string): string {
-  return text.replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "");
-}
-
-const useStyles = makeStyles(({ colors, type, radii, motion }) => ({
-  field: variants({
-    base: { flexDirection: "column", paddingX: 10, paddingY: 7, radius: radii.md, fill: colors.hover,
-            border: { width: 1, color: colors.accentClear }, transition: motion.pop, clip: true },
-    variants: {
-      focused: { true: { fill: colors.raised, border: { width: 1, color: colors.accentLine } }, false: {} },
-      hovered: { true: {}, false: {} },
-      disabled: { true: { opacity: 0.4 }, false: {} },
-    },
-    defaults: { focused: false, hovered: false, disabled: false },
-    compound: [{ when: { focused: false, hovered: true }, style: { fill: colors.press } }],
-  }),
-  ...StyleSheet.create({
-    lines: { flexDirection: "column", justifyContent: "flex-end" },
-    stack: { flexDirection: "column" },
-    text: { ...type.body, color: colors.ink },
-    placeholder: { ...type.body, color: colors.faint },
-    // The compositor draws no text that is wholly clear, so the copy is all but clear.
-    // The caret glyph's own side bearing would put it into the next letter; a whole
-    // pixel back keeps it on the pixel grid, where it stays sharp.
-    caret: { position: "absolute", x: -1, y: 0, width: "100%", ...type.body, color: "#00000001" },
-    hit: { position: "absolute", x: 0, y: 0, width: "100%", height: "100%" },
-  }),
-  colors,
-  /** Pixels from one line to the next: the body's own spacing. */
-  linePitch: Math.round((type.body.size ?? 13) * (type.body.lineHeight ?? 18 / 13)),
-}));
 
 /**
  * A field to type into: `<TextField value={text} onChangeText={setText} onSubmit={send} multiline />`.
- * Click it, or give it `autoFocus`, and it takes the keyboard; it keeps a caret
- * and a selection (Shift with arrows, Ctrl+A), moves by words with Ctrl, and
- * copies, cuts and pastes with Ctrl+C, X and V.
+ * Click it, Tab to it or give it `autoFocus`, and it takes keyboard focus. The compositor
+ * edits it as a browser edits an `<input>`, with the readline and Emacs keys too (C-a,
+ * C-e, C-k, C-y, M-f, …) unless `keymap` or the theme's `textKeymap` is "standard": the
+ * caret moves by characters, words and lines; Shift extends the selection, as do dragging
+ * (past an edge it scrolls), a double click (words) and a triple click (lines); Ctrl+C, X
+ * and V use the clipboard, a middle click pastes the primary selection, Ctrl+Z and
+ * Ctrl+Shift+Z undo and redo, and dead keys and Compose sequences type what they make.
+ * Its context menu has the same. docs/GUIDE.md lists every key.
  */
-export const TextField = memo(function TextField({ value, onChangeText, onSubmit, onKey, onFocusChange, placeholder,
-                                                   multiline = false, maxLines = 6, autoFocus = false,
-                                                   disabled = false, width, ref, style, textStyle,
+export const TextField = memo(function TextField({ value, onChangeText, onSubmit, captureKeys, onKey, onFocusChange,
+                                                   onSelectionChange, placeholder, multiline = false, maxLines = 6,
+                                                   submitOnEnter, autoFocus = false, selectOnFocus = false, keymap,
+                                                   disabled = false, readOnly = false, password = false, maxLength,
+                                                   bare = false, leading, trailing, width, ref, style, textStyle,
                                                    placeholderStyle }: TextFieldProps) {
   const styles = useStyles();
-  const { colors } = useTheme();
-  const clipboard = useClipboard();
-  const self = useRef({}).current;
-  const focused = useSyncExternalStore(subscribeFocus, () => focusedField === self) && !disabled;
-  // The caret, and the other end of the selection while there is one.
-  const [caret, setCaret] = useState(value.length);
-  const [anchor, setAnchor] = useState<number | null>(null);
-  // What the field last showed, so a value changed from outside puts the caret at its end.
-  const known = useRef(value);
-  const pressedSelf = useRef(0);
-  const [hovered, setHovered] = useState(false);
-  const latest = useRef({ value, caret, anchor });
-  latest.current = { value, caret: Math.min(caret, value.length), anchor: anchor === null ? null : Math.min(anchor, value.length) };
+  const theme = useTheme();
+  const self = useRef<StageElement | null>(null);
+  const [focused, setFocused] = useState(false);
+  const sync = useRef<FieldSync>({ reported: value, revision: 0, awaiting: false, submitted: null, held: null });
+  const latest = useRef(value);
+  latest.current = value;
+  // Renders the field once Return is handled, whatever the world does, to let typing go on.
+  const [, rendered] = useState(0);
+  const [selected, setSelected] = useState(false);
+  // Lines of a multiline field, as the compositor measured them (up to maxLines).
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
 
-  useImperativeHandle(ref, () => ({ focus: () => focusField(self), blur: () => focusedField === self && focusField(null) }), [self]);
+  const edit = (action: EditAction, extra: { start?: number; end?: number; text?: string;
+                                             direction?: "forward" | "backward" } = {}) => {
+    if (self.current) currentSession().editText(self.current, { action, ...extra });
+  };
+  const focus = () => {
+    if (self.current && !disabled) currentSession().focusNode(self.current);
+  };
+  const blur = () => {
+    if (self.current && focusedFields.has(self.current)) currentSession().focusNode(null);
+  };
+  useImperativeHandle(ref, () => ({
+    focus, blur,
+    selectAll: () => edit("select-all"),
+    setSelection: (start, end = start, direction) => edit("select", { start, end, direction }),
+    insertText: (text) => edit("insert", { text }),
+  }), [disabled]);
+
+  useLayoutEffect(() => {
+    const held = fieldRendered(sync.current, value);
+    if (held && held.text !== value) onChangeText?.(held.text);
+  });
 
   useEffect(() => {
-    if (known.current === value) return;
-    known.current = value;
-    setCaret(value.length);
-    setAnchor(null);
-  }, [value]);
-
-  useEffect(() => {
-    if (autoFocus && !disabled) focusField(self);
+    if (autoFocus && !disabled) focus();
     return () => {
-      if (focusedField === self) focusField(null);
+      if (self.current) focusedFields.delete(self.current);
     };
   }, []);
 
-  const wasFocused = useRef(focused);
-  useEffect(() => {
-    if (wasFocused.current === focused) return;
-    wasFocused.current = focused;
-    if (!focused) setAnchor(null);
-    onFocusChange?.(focused);
-  }, [focused]);
+  const text = { ...flatStyle(styles.text), ...flatStyle(textStyle) };
+  const placeholderColor = flatStyle(placeholderStyle).color ?? styles.colors.faint;
+  const pitch = text.size === undefined || (text.size === 13 && text.lineHeight === 18 / 13)
+    ? styles.linePitch : Math.round(text.size * (text.lineHeight ?? 18 / 13));
+  // The text lies inside the field's edge and padding, as an input's does: its node covers the
+  // whole field, so a press anywhere in it places the caret.
+  const edge = bare ? 0 : 1;
+  const padX = bare ? 0 : styles.paddingX;
+  const padY = multiline ? (bare ? 0 : styles.paddingY) : 0;
+  const inset: [number, number, number, number] = [edge + padY, edge + (trailing ? 4 : padX), edge + padY,
+                                                   edge + (leading ? 4 : padX)];
+  const lines = Math.max(pitch, Math.min(contentHeight ?? pitch, pitch * Math.max(1, maxLines)));
+  const captured = captureKeys ?? (onKey ? (multiline ? multilineKeys : singleLineKeys) : undefined);
 
-  // A press elsewhere lets go. The field's own press arrives just after the
-  // press is heard, so wait a moment for it.
-  useInput(focused ? (event) => {
-    if (event.kind !== "button") return;
-    const heard = performance.now();
-    setTimeout(() => {
-      if (pressedSelf.current < heard - 5 && focusedField === self) focusField(null);
-    }, 60);
-  } : null);
+  const state: TextFieldState = { focused, hovered: false, disabled, readOnly, empty: value === "" };
+  const menuItems: MenuEntry[] = [
+    { label: "Undo", shortcut: "Ctrl+Z", disabled: readOnly, onSelect: () => edit("undo") },
+    { label: "Redo", shortcut: "Ctrl+Shift+Z", disabled: readOnly, onSelect: () => edit("redo") },
+    "-",
+    { label: "Cut", shortcut: "Ctrl+X", disabled: !selected || readOnly || password, onSelect: () => edit("cut") },
+    { label: "Copy", shortcut: "Ctrl+C", disabled: !selected || password, onSelect: () => edit("copy") },
+    { label: "Paste", shortcut: "Ctrl+V", disabled: readOnly, onSelect: () => edit("paste") },
+    "-",
+    { label: "Select all", shortcut: (keymap ?? theme.textKeymap) === "emacs" ? "Ctrl+Shift+A" : "Ctrl+A",
+      disabled: !value, onSelect: () => edit("select-all") },
+  ];
+  const menu = useContextMenu(menuItems, {
+    disabled,
+    // Focus comes back to the field as its menu closes, its selection still there.
+    onOpenChange: (open) => {
+      if (!open) focus();
+    },
+  });
 
-  function change(text: string, at: number) {
-    known.current = text;
-    setCaret(at);
-    setAnchor(null);
-    onChangeText?.(text);
-  }
-
-  function move(to: number, select: boolean) {
-    const { caret, anchor } = latest.current;
-    setAnchor(select ? anchor ?? caret : null);
-    setCaret(to);
-  }
-
-  useKeyboardGrab(focused ? (event) => {
-    if (!event.pressed) return;
-    if (onKey?.(event)) return;
-    const { value: text, caret, anchor } = latest.current;
-    const modifiers = new Set(event.modifiers);
-    const ctrl = modifiers.has("control");
-    const shift = modifiers.has("shift");
-    const [from, to] = anchor === null ? [caret, caret] : [Math.min(anchor, caret), Math.max(anchor, caret)];
-    const insert = (words: string) => change(text.slice(0, from) + words + text.slice(to), from + words.length);
-    switch (event.key) {
-      case "Return":
-      case "KP_Enter":
-        if (multiline && shift) insert("\n");
-        else onSubmit?.(text);
-        return;
-      case "Escape":
-        focusField(null);
-        return;
-      case "BackSpace":
-        if (from !== to) insert("");
-        else if (caret > 0) {
-          const start = ctrl ? previousWord(text, caret) : characterEdge(text, caret, true);
-          change(text.slice(0, start) + text.slice(caret), start);
-        }
-        return;
-      case "Delete":
-      case "KP_Delete":
-        if (from !== to) insert("");
-        else if (caret < text.length) {
-          const end = ctrl ? nextWord(text, caret) : characterEdge(text, caret, false);
-          change(text.slice(0, caret) + text.slice(end), caret);
-        }
-        return;
-      case "Left":
-      case "KP_Left":
-        if (from !== to && !shift) move(from, false);
-        else move(ctrl ? previousWord(text, caret) : characterEdge(text, caret, true), shift);
-        return;
-      case "Right":
-      case "KP_Right":
-        if (from !== to && !shift) move(to, false);
-        else move(ctrl ? nextWord(text, caret) : characterEdge(text, caret, false), shift);
-        return;
-      case "Home":
-      case "KP_Home":
-        move(ctrl ? 0 : lineStart(text, caret), shift);
-        return;
-      case "End":
-      case "KP_End":
-        move(ctrl ? text.length : lineEnd(text, caret), shift);
-        return;
-      case "Up":
-      case "Down": {
-        const start = lineStart(text, caret);
-        const column = caret - start;
-        if (event.key === "Up") {
-          if (start === 0) return move(0, shift);
-          const above = lineStart(text, start - 1);
-          return move(Math.min(above + column, start - 1), shift);
-        }
-        const end = lineEnd(text, caret);
-        if (end === text.length) return move(text.length, shift);
-        return move(Math.min(end + 1 + column, lineEnd(text, end + 1)), shift);
-      }
-    }
-    if (ctrl) {
-      const key = event.key.toLowerCase();
-      if (key === "a") {
-        setAnchor(0);
-        setCaret(text.length);
-      } else if ((key === "c" || key === "x") && from !== to) {
-        clipboard.copy(text.slice(from, to));
-        if (key === "x") insert("");
-      } else if (key === "v" && clipboard.history[0] !== undefined) {
-        const pasted = typed(multiline ? clipboard.history[0] : clipboard.history[0].replace(/\s*\n\s*/g, " "));
-        insert(pasted);
-      }
-      return;
-    }
-    if (modifiers.has("alt") || modifiers.has("logo")) return;
-    const words = typed(event.text);
-    if (words) insert(words);
-  } : null);
-
-  const shown = latest.current;
-  const state: TextFieldState = { focused, hovered: hovered && !disabled, disabled, empty: value === "" };
-  const selection = shown.anchor === null || shown.anchor === shown.caret
-    ? null : [Math.min(shown.anchor, shown.caret), Math.max(shown.anchor, shown.caret)] as const;
-  const accent = String(colors.accent).slice(0, 7);
-  const markup = selection
-    ? escapeMarkup(value.slice(0, selection[0])) + `<span background="${accent}" bgalpha="28%">`
-      + escapeMarkup(value.slice(selection[0], selection[1])) + "</span>" + escapeMarkup(value.slice(selection[1]))
-    : escapeMarkup(value);
-  // A word joiner either side keeps the caret glyph from opening a line break.
-  const caretMarkup = escapeMarkup(value.slice(0, shown.caret))
-    + `\u2060<span foreground="${accent}">|</span>\u2060` + escapeMarkup(value.slice(shown.caret));
-  const single = multiline ? undefined : 1;
   return (
-    <Box style={[styles.field(state), resolveStyle(style, state)]} width={width}
-         maxHeight={multiline ? styles.linePitch * maxLines + 14 : undefined}>
-      <Box style={styles.lines} flexGrow={1}>
-        <Box style={styles.stack}>
-          {value === "" && placeholder !== undefined
-            ? <Text style={[styles.placeholder, placeholderStyle]} maxLines={single}>{placeholder}</Text>
-            : <Text markup style={[styles.text, textStyle]} maxLines={single}>{markup || " "}</Text>}
-          {focused && <Text markup style={[styles.caret, textStyle, hidden]}>{caretMarkup}</Text>}
-        </Box>
-      </Box>
-      <Group style={styles.hit} cursor={disabled ? undefined : "text"} onPointerEnter={() => setHovered(true)}
-             onPointerLeave={() => setHovered(false)} onPointerDown={disabled ? undefined : () => {
-        pressedSelf.current = performance.now();
-        focusField(self);
-      }} />
+    <Box style={[styles.field, !multiline && styles.singleLine, bare && styles.bare, disabled && styles.disabled,
+                 resolveStyle(style, state)]}
+         width={width} states={disabled || bare ? undefined : styles.states}
+         cursor={disabled ? "default" : "text"} onContextMenu={menu.onContextMenu}>
+      {leading && <Box style={styles.slot} paddingLeft={bare ? 0 : 8}>{leading}</Box>}
+      <Text ref={(node: StageElement | null) => { self.current = node; }}
+            {...text} editable text={value} valueRevision={sync.current.revision} multiline={multiline}
+            maxLines={multiline ? Math.max(1, maxLines) : undefined}
+            height={multiline ? lines + 2 * (padY + edge) : undefined}
+            flexGrow={1} flexShrink={1} alignSelf={multiline ? "flex-start" : "stretch"}
+            contentInset={inset} placeholder={placeholder} placeholderColor={placeholderColor}
+            readOnly={readOnly || disabled} password={password} maxLength={maxLength}
+            caretColor={styles.colors.accent} selectionColor={styles.colors.selection}
+            captureKeys={captured} selectOnFocus={selectOnFocus} keymap={keymap ?? theme.textKeymap}
+            submitOnEnter={multiline ? submitOnEnter ?? onSubmit !== undefined : undefined}
+            tabIndex={disabled ? undefined : 0} interactive={!disabled} cursor={disabled ? "default" : "text"}
+            onInput={(event: StageTextInputEvent) => {
+              const text = fieldInput(sync.current, event);
+              if (text === null) return;
+              setSelected(event.selectionStart !== event.selectionEnd);
+              if (text !== latest.current) onChangeText?.(text);
+            }}
+            onSubmit={(event: StageSubmitEvent) => {
+              sync.current.submitted = { revision: event.revision, text: event.text };
+              rendered((count) => count + 1);
+              onSubmit?.(event.text);
+            }}
+            onSelect={(event: StageSelectEvent) => {
+              setSelected(event.selectionStart !== event.selectionEnd);
+              onSelectionChange?.(event.selectionStart, event.selectionEnd);
+            }}
+            onMeasure={multiline ? (event: StageMeasureEvent) => setContentHeight(event.height) : undefined}
+            onKeyDown={onKey ? (event: StageKeyboardEvent) => {
+              onKey({ key: event.key, text: event.text, code: event.code, pressed: true, repeat: event.repeat,
+                      modifiers: event.modifiers });
+            } : undefined}
+            onFocus={() => {
+              if (self.current) focusedFields.add(self.current);
+              setFocused(true);
+              onFocusChange?.(true);
+            }}
+            onBlur={() => {
+              if (self.current) focusedFields.delete(self.current);
+              setFocused(false);
+              onFocusChange?.(false);
+            }} />
+      {trailing && <Box style={styles.slot} paddingRight={bare ? 0 : 6}>{trailing}</Box>}
+      {menu.element}
     </Box>
   );
 });
